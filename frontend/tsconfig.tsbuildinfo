@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/types.ts","./src/components/activitylog.tsx","./src/components/configform.tsx","./src/components/equitychart.tsx","./src/components/stattiles.tsx","./src/hooks/usebacktest.ts"],"version":"5.9.3"}

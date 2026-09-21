@@ -1,0 +1,125 @@
+services:
+  # The decision-support API (FastAPI + LangGraph agent)
+  decision-service:
+    build: ./decision-service          # build the image from decision-service/Dockerfile
+    ports:
+      - "8000:8000"                    # host:container, so localhost:8000 reaches the API
+    env_file:
+      - ./decision-service/.env        # API keys (OpenAI, Alpaca, ...) + monitoring config
+    volumes:
+      - ./decision-service/app:/code/app   # live code reload in dev
+      - chroma-data:/data                  # persisted news vector store
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload   # --reload restarts on code changes
+
+  # The backtest engine API (FastAPI + WebSocket)
+  backtest-service:
+    build: ./backtest-service
+    ports:
+      - "8001:8000"                    # API/docs at http://localhost:8001/docs
+    env_file:
+      - ./backtest-service/.env        # DECISION_SERVICE_URL + optional SENTRY_DSN
+    volumes:
+      - ./backtest-service/app:/code/app       # live code reload in dev
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      - decision-service               # start decision-service first
+
+  # React + Ant Design dashboard, served by nginx which proxies API + WebSocket to backtest-service
+  frontend:
+    build: ./frontend
+    ports:
+      - "8080:80"                      # open http://localhost:8080 for the dashboard
+    depends_on:
+      - backtest-service
+
+  # ------------------------------------------------------------------
+  # Monitoring (all local, all free)
+  # ------------------------------------------------------------------
+
+  # Langfuse: LLM tracing UI at http://localhost:3000  (login admin@local.dev / langfuse123)
+  langfuse-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse
+      POSTGRES_DB: langfuse
+    volumes:
+      - langfuse-db:/var/lib/postgresql/data
+
+  langfuse:
+    image: langfuse/langfuse:2      # v2 is light: needs only Postgres
+    depends_on:
+      - langfuse-db
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://langfuse:langfuse@langfuse-db:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: local-dev-secret-change-me
+      SALT: local-dev-salt-change-me
+      ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      TELEMETRY_ENABLED: "false"
+      # Headless bootstrap: creates the org/project/user and fixes the API keys on first boot,
+      # so decision-service can send traces immediately (keys are in decision-service/.env).
+      LANGFUSE_INIT_ORG_ID: trading
+      LANGFUSE_INIT_ORG_NAME: Trading
+      LANGFUSE_INIT_PROJECT_ID: trading
+      LANGFUSE_INIT_PROJECT_NAME: Trading
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: pk-lf-local-dev
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: sk-lf-local-dev
+      LANGFUSE_INIT_USER_EMAIL: admin@local.dev
+      LANGFUSE_INIT_USER_NAME: Admin
+      LANGFUSE_INIT_USER_PASSWORD: langfuse123
+
+  # GlitchTip: error tracking (Sentry-API compatible) at http://localhost:8082
+  glitchtip-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: glitchtip
+      POSTGRES_PASSWORD: glitchtip
+      POSTGRES_DB: glitchtip
+    volumes:
+      - glitchtip-db:/var/lib/postgresql/data
+
+  glitchtip-redis:
+    image: redis:7
+
+  glitchtip-web:
+    image: glitchtip/glitchtip
+    depends_on:
+      - glitchtip-db
+      - glitchtip-redis
+    ports:
+      - "8082:8080"
+    environment: &glitchtip-env
+      DATABASE_URL: postgres://glitchtip:glitchtip@glitchtip-db:5432/glitchtip
+      SECRET_KEY: local-dev-secret-change-me
+      REDIS_URL: redis://glitchtip-redis:6379/0
+      PORT: "8080"
+      EMAIL_URL: consolemail://              # no SMTP needed; emails go to the console
+      GLITCHTIP_DOMAIN: http://localhost:8082
+      DEFAULT_FROM_EMAIL: admin@local.dev
+      ENABLE_OPEN_USER_REGISTRATION: "true"  # so you can sign up the first user in the UI
+      CELERY_WORKER_AUTOSCALE: "1,3"
+
+  glitchtip-worker:
+    image: glitchtip/glitchtip
+    depends_on:
+      - glitchtip-db
+      - glitchtip-redis
+    command: ./bin/run-celery-with-beat.sh
+    environment: *glitchtip-env
+
+  glitchtip-migrate:
+    image: glitchtip/glitchtip
+    depends_on:
+      - glitchtip-db
+    command: ./manage.py migrate
+    environment: *glitchtip-env
+    restart: on-failure                       # retries until the DB is ready, then exits
+
+# Named volumes managed by Docker (persist data between runs)
+volumes:
+  chroma-data:
+  langfuse-db:
+  glitchtip-db:

@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+pydantic
+# Pinned to the 0.3 generation: Langfuse v2's LangChain integration needs the old
+# `langchain.callbacks` layout, which langchain v1 removed.
+langgraph<0.3
+langchain<0.4
+langchain-core<0.4
+langchain-openai<0.4
+yfinance
+pandas
+httpx
+chromadb
+sentry-sdk[fastapi]
+langfuse>=2,<3

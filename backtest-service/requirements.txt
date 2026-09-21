@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]      # includes websockets support for live monitoring
+httpx                  # async HTTP client to call decision-service
+yfinance               # historical prices for the backtest
+pandas
+pydantic
+# nautilus_trader     # optional, heavy: enable when using the Nautilus engine (see engines/nautilus.py)
+sentry-sdk[fastapi]
