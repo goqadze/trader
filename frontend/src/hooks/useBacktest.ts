@@ -43,7 +43,16 @@ export function useBacktest() {
         const isDecision = ev.action === "BUY" || ev.action === "SELL" || ev.action === "HOLD";
         const log = isDecision
           ? [
-              { key: ev.seq, date: ev.date, action: ev.action, confidence: ev.confidence, price: ev.price, equity: ev.equity },
+              {
+                key: ev.seq,
+                date: ev.date,
+                action: ev.action,
+                confidence: ev.confidence,
+                price: ev.price,
+                equity: ev.equity,
+                sentiment: ev.sentiment,
+                reasoning: ev.reasoning,
+              },
               ...s.log,
             ].slice(0, 200)
           : s.log;

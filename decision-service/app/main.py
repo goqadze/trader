@@ -30,6 +30,7 @@ class Signal(BaseModel):
     as_of: date  # the date the analysis was done "as of"
     action: str  # BUY | SELL | HOLD
     confidence: float  # 0..1
+    sentiment: str = "unavailable"  # bullish | bearish | neutral | unavailable (from the news layer)
     reasoning: str  # human-readable explanation
     position: dict | None = None  # share count + stop/target for a BUY; None for SELL/HOLD
     steps: list[str]  # step-by-step trail of what the agent did ("show your work")

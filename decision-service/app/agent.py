@@ -76,8 +76,9 @@ def news_rag(state: State) -> State:
         return {"headlines": [], "sentiment": "neutral", "steps": state["steps"] + [f"Ingested {report}, none relevant"]}
     from langchain_openai import ChatOpenAI
 
-    # with_structured_output forces the LLM to answer in the Sentiment schema (label + rationale)
-    llm = ChatOpenAI(model=os.getenv("LLM_MODEL", "gpt-4.1-nano")).with_structured_output(Sentiment)
+    # with_structured_output forces the LLM to answer in the Sentiment schema (label + rationale).
+    # temperature=0 so the same headlines classify the same way every run -> reproducible backtests.
+    llm = ChatOpenAI(model=os.getenv("LLM_MODEL", "gpt-4.1-nano"), temperature=0).with_structured_output(Sentiment)
     out = llm.invoke(
         f"Classify overall sentiment for {state['symbol']} from these headlines as bullish, bearish or neutral, "
         "with a one-sentence rationale:\n- " + "\n- ".join(heads),

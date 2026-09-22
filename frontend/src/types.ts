@@ -60,6 +60,7 @@ export interface StepEvent {
   cash: number;
   position: number;
   equity: number;
+  sentiment: string;
   reasoning: string;
 }
 export interface TradeEvent {
@@ -91,6 +92,8 @@ export interface LogRow {
   confidence: number;
   price: number;
   equity: number;
+  sentiment: string; // bullish | bearish | neutral | unavailable
+  reasoning: string; // the agent's "show your work" explanation for this decision
 }
 
 /** One point on the equity chart. */
