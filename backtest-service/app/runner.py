@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 import pandas as pd
@@ -20,7 +20,7 @@ class Run:
         self.id = uuid.uuid4().hex[:12]
         self.cfg = cfg
         self.status = "pending"  # pending | running | done | error
-        self.created_at = datetime.utcnow().isoformat()
+        self.created_at = datetime.now(timezone.utc).isoformat()
         self.events: list[dict] = []  # full history, so late joiners can catch up
         self.result: dict | None = None
         self.subscribers: set[asyncio.Queue] = set()
