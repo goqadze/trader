@@ -31,6 +31,7 @@ class Signal(BaseModel):
     action: str  # BUY | SELL | HOLD
     confidence: float  # 0..1
     reasoning: str  # human-readable explanation
+    position: dict | None = None  # share count + stop/target for a BUY; None for SELL/HOLD
     steps: list[str]  # step-by-step trail of what the agent did ("show your work")
 
 
@@ -41,15 +42,16 @@ def health():
 
 
 @app.post("/signal", response_model=Signal)
-def signal(symbol: str, as_of: date | None = None, mode: str = "rules"):
+def signal(symbol: str, as_of: date | None = None, mode: str = "rules", account_balance: float = 500.0):
     """as_of lets the backtester replay history without look-ahead.
-    mode = 'rules' (SMA/RSI logic) or 'llm' (the model decides)."""
+    mode = 'rules' (SMA/RSI logic) or 'llm' (the model decides).
+    account_balance sizes a BUY (risk a fixed % of it)."""
     as_of = as_of or date.today()  # default to today for live use
     if mode not in ("rules", "llm"):
         raise HTTPException(422, "mode must be 'rules' or 'llm'")
     try:
-        # Run the whole graph: fetch_data -> news_rag -> decide -> explain
-        out = agent.invoke({"symbol": symbol.upper(), "as_of": as_of, "mode": mode})
+        # Run the whole graph: fetch_data -> news_rag -> decide -> size_position -> explain
+        out = agent.invoke({"symbol": symbol.upper(), "as_of": as_of, "mode": mode, "account_balance": account_balance})
     except ValueError as e:
         # e.g. unknown ticker or not enough price history -> 422 instead of a server crash
         raise HTTPException(status_code=422, detail=str(e))

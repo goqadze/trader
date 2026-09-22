@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 
 from .observability import trace_config
+from .risk import position_size
 from .tools import get_prices, indicators
 
 
@@ -16,11 +17,13 @@ class State(TypedDict, total=False):
     symbol: str
     as_of: date
     mode: str  # "rules" (SMA/RSI logic) or "llm" (the model decides)
+    account_balance: float  # used to size a BUY (risk a fixed % of this)
     indicators: dict  # SMA20, SMA50, RSI14, last close
     action: str  # BUY | SELL | HOLD
     confidence: float
     headlines: list[str]  # news retrieved from the vector store
     sentiment: str  # bullish | bearish | neutral | unavailable
+    position: dict  # sizing for a BUY: shares, entry, stop, target, risk/reward
     steps: list[str]  # "show your work" trail
     reasoning: str  # final human-readable explanation
 
@@ -151,8 +154,42 @@ def _decide_llm(state: State) -> State:
     }
 
 
+def size_position(state: State) -> State:
+    """Node 4: turn a BUY into an actual share count using fixed-fractional risk sizing.
+    Only sizes BUYs (this is a long-only cash account); SELL/HOLD need no sizing."""
+    if state.get("action") != "BUY":
+        return {}
+    entry = state["indicators"]["last_close"]  # buy at the latest close
+    # Derive a stop and target from the entry so the caller doesn't have to supply them.
+    # Defaults give a 2:1 reward:risk (target 8% up vs stop 4% down); tune via env.
+    stop_pct = float(os.getenv("STOP_PCT", "0.04"))  # stop-loss 4% below entry
+    target_pct = float(os.getenv("TARGET_PCT", "0.08"))  # target 8% above entry
+    risk_pct = float(os.getenv("RISK_PCT", "0.02"))  # risk 2% of the account per trade
+    balance = state.get("account_balance", 500.0)
+    stop = round(entry * (1 - stop_pct), 2)
+    target = round(entry * (1 + target_pct), 2)
+    plan = position_size(balance, entry, stop, target, risk_pct)
+    pos = {
+        "shares": plan.shares,
+        "entry": round(entry, 2),
+        "stop_loss": stop,
+        "target": target,
+        "risk_amount": plan.risk_amount,
+        "reward_amount": plan.reward_amount,
+        "risk_reward_ratio": plan.risk_reward_ratio,
+    }
+    # 0 shares means the stock is too pricey to buy even one within the risk budget
+    note = "" if plan.shares > 0 else " (0 shares: entry too large for this account's risk budget)"
+    step = (
+        f"Sized BUY: {plan.shares} shares @ ~${entry:.2f} "
+        f"(stop ${stop}, target ${target}); risk ${plan.risk_amount}, "
+        f"reward ${plan.reward_amount}, R:R {plan.risk_reward_ratio}{note}"
+    )
+    return {"position": pos, "steps": state["steps"] + [step]}
+
+
 def explain(state: State) -> State:
-    """Node 4: write a short human-readable explanation (rules mode only; llm mode already wrote one)."""
+    """Node 5: write a short human-readable explanation (rules mode only; llm mode already wrote one)."""
     if state.get("reasoning"):  # llm decision already produced a rationale — don't spend another call
         return {}
     facts = "; ".join(state["steps"])
@@ -170,15 +207,17 @@ def explain(state: State) -> State:
     return {"reasoning": f"{state['action']} {state['symbol']}: {facts}"}
 
 
-# --- Build the LangGraph workflow: a straight line of four nodes ---
+# --- Build the LangGraph workflow: a straight line of five nodes ---
 _graph = StateGraph(State)
 _graph.add_node("fetch_data", fetch_data)
 _graph.add_node("news_rag", news_rag)
 _graph.add_node("decide", decide)
+_graph.add_node("size_position", size_position)
 _graph.add_node("explain", explain)
 _graph.add_edge(START, "fetch_data")
 _graph.add_edge("fetch_data", "news_rag")
 _graph.add_edge("news_rag", "decide")
-_graph.add_edge("decide", "explain")
+_graph.add_edge("decide", "size_position")
+_graph.add_edge("size_position", "explain")
 _graph.add_edge("explain", END)
 agent = _graph.compile()  # main.py calls agent.invoke({...})
