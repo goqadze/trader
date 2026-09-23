@@ -1,24 +1,56 @@
+import math
 import os
-from datetime import date, datetime, timedelta, timezone
+import re
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import chromadb
 import httpx
 from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
 
-# Local vector database; /data is a Docker volume so news survives restarts
-_client = chromadb.PersistentClient(path="/data/chroma")
+# Local vector database; /data is a Docker volume so news survives restarts.
+# Opened lazily so importing this module (e.g. in tests) doesn't touch the disk.
+_client = None
 
 # Every source is converted to the same shape:
-# {"id", "headline", "summary", "day": date, "source"}
+# {"id", "headline", "summary", "ts": unix seconds (UTC), "source"}
+
+# The backtest fills at the day's close, so a decision "as of" a day may only use news published
+# before ~15:30 New York time -- after-hours news (e.g. 16:05 earnings) belongs to the NEXT day.
+MARKET_TZ = ZoneInfo("America/New_York")
+DECISION_TIME = time(15, 30)
+
+# News older than this is ignored entirely; within it, relevance decays with age (see _rank).
+LOOKBACK_DAYS = 7
+HALF_LIFE_HOURS = 36  # ordinary headlines: most of the price impact is gone within a day or two
+EVENT_HALF_LIFE_HOURS = 168  # earnings/guidance/M&A: known to drift for days to weeks
+_EVENT_RE = re.compile(
+    r"\b(earnings|eps|quarterly results|revenue|guidance|outlook|forecast|beats?|miss(es|ed)?|"
+    r"acquir\w*|acquisition|merger|buyout)\b",
+    re.IGNORECASE,
+)
 
 
-def _to_int(d: date) -> int:
-    """2025-06-02 -> 20250602. Chroma filters compare numbers, not dates."""
-    return d.year * 10000 + d.month * 100 + d.day
+def decision_cutoff(as_of: date) -> int:
+    """Unix timestamp of 15:30 New York time on as_of: the latest moment news can influence that day's trade."""
+    return int(datetime.combine(as_of, DECISION_TIME, tzinfo=MARKET_TZ).timestamp())
+
+
+def _half_life_hours(text: str) -> float:
+    """Earnings/guidance/M&A news keeps mattering for longer than ordinary headlines."""
+    return EVENT_HALF_LIFE_HOURS if _EVENT_RE.search(text) else HALF_LIFE_HOURS
+
+
+def _age_label(hours: float) -> str:
+    """Human-readable age for the LLM prompt: '3h ago' or '2d ago'."""
+    return f"{max(0, round(hours))}h ago" if hours < 24 else f"{round(hours / 24)}d ago"
 
 
 def _collection():
     """Open (or create) the 'news' collection; OpenAI turns text into embedding vectors for search."""
+    global _client
+    if _client is None:
+        _client = chromadb.PersistentClient(path="/data/chroma")
     ef = OpenAIEmbeddingFunction(api_key=os.environ["OPENAI_API_KEY"], model_name="text-embedding-3-small")
     return _client.get_or_create_collection("news", embedding_function=ef)
 
@@ -43,7 +75,7 @@ def _alpaca(symbol: str, start: date, end: date) -> list[dict]:
             "id": f"alpaca-{a['id']}",
             "headline": a["headline"],
             "summary": a.get("summary") or "",
-            "day": datetime.fromisoformat(a["created_at"].replace("Z", "+00:00")).date(),
+            "ts": int(datetime.fromisoformat(a["created_at"].replace("Z", "+00:00")).timestamp()),
             "source": "alpaca",
         }
         for a in data.get("news", [])
@@ -68,7 +100,7 @@ def _polygon(symbol: str, start: date, end: date) -> list[dict]:
             "id": f"polygon-{a['id']}",
             "headline": a["title"],
             "summary": a.get("description") or "",
-            "day": datetime.fromisoformat(a["published_utc"].replace("Z", "+00:00")).date(),
+            "ts": int(datetime.fromisoformat(a["published_utc"].replace("Z", "+00:00")).timestamp()),
             "source": "polygon",
         }
         for a in data.get("results", [])
@@ -86,7 +118,7 @@ def _finnhub(symbol: str, start: date, end: date) -> list[dict]:
             "id": f"finnhub-{a['id']}",
             "headline": a["headline"],
             "summary": a.get("summary") or "",
-            "day": datetime.fromtimestamp(a["datetime"], tz=timezone.utc).date(),  # Finnhub gives a unix timestamp
+            "ts": int(a["datetime"]),  # Finnhub already gives a unix timestamp
             "source": "finnhub",
         }
         for a in data[:50]  # cap at 50 items per call
@@ -106,13 +138,14 @@ def enabled_sources() -> list[str]:
     return [n for n, (envs, _) in SOURCES.items() if all(os.getenv(e) for e in envs)]
 
 
-def ingest_news(symbol: str, as_of: date, days: int = 14) -> dict[str, str]:
+def ingest_news(symbol: str, as_of: date, days: int = LOOKBACK_DAYS) -> dict[str, str]:
     """Pull every enabled source for the window ending at as_of. One source failing doesn't stop the rest."""
     start = as_of - timedelta(days=days)
+    cutoff = decision_cutoff(as_of)
     report, docs, ids, metas = {}, [], [], []  # report = per-source count or error, shown in the steps trail
     for name in enabled_sources():
         try:
-            articles = [a for a in SOURCES[name][1](symbol, start, as_of) if a["day"] <= as_of]  # no look-ahead
+            articles = [a for a in SOURCES[name][1](symbol, start, as_of) if a["ts"] <= cutoff]  # no look-ahead
         except Exception as e:
             report[name] = f"failed ({e})"
             continue
@@ -120,22 +153,41 @@ def ingest_news(symbol: str, as_of: date, days: int = 14) -> dict[str, str]:
         for a in articles:
             docs.append(f"{a['headline']}. {a['summary']}".strip())  # the text that gets embedded
             ids.append(a["id"])
-            metas.append({"symbol": symbol, "day": _to_int(a["day"]), "source": a["source"]})  # used for filtering
+            metas.append({"symbol": symbol, "ts": a["ts"], "source": a["source"]})  # used for filtering (Chroma compares numbers)
     if docs:
         # upsert = insert or update by id, so re-running the same request doesn't create duplicates
         _collection().upsert(documents=docs, ids=ids, metadatas=metas)
     return report
 
 
+def _rank(docs: list[str], metas: list[dict], distances: list[float], cutoff: int, k: int) -> list[str]:
+    """Re-rank semantic matches so fresh news wins: score = similarity * 0.5 ** (age / half-life).
+    Returns the top k as '[source, age] text', newest-weighted."""
+    scored = []
+    for d, m, dist in zip(docs, metas, distances):
+        # Chroma's default distance is squared L2; OpenAI vectors are unit length, so cosine = 1 - dist/2
+        similarity = max(0.0, 1 - dist / 2)
+        age_h = (cutoff - m["ts"]) / 3600
+        score = similarity * math.pow(0.5, age_h / _half_life_hours(d))
+        scored.append((score, f"[{m['source']}, {_age_label(age_h)}] {d}"))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [text for _, text in scored[:k]]
+
+
 def search_news(symbol: str, as_of: date, k: int = 8) -> list[str]:
-    """Top-k relevant items for the symbol from on/before as_of, tagged with their source."""
+    """Top-k items for the symbol from the LOOKBACK_DAYS before the decision cutoff, relevance x recency."""
+    cutoff = decision_cutoff(as_of)
     res = _collection().query(
         query_texts=[f"{symbol} stock outlook, earnings, risks"],  # semantic query: what matters for the outlook
-        n_results=k,
-        # Only this symbol and only articles dated on/before as_of (again: no look-ahead)
-        where={"$and": [{"symbol": symbol}, {"day": {"$lte": _to_int(as_of)}}]},
+        n_results=k * 3,  # over-fetch, then _rank re-orders by recency and keeps k
+        # Only this symbol, only the lookback window, nothing after the cutoff (no look-ahead).
+        # Rows ingested before timestamps existed have no "ts" and are skipped automatically.
+        where={"$and": [
+            {"symbol": symbol},
+            {"ts": {"$gte": cutoff - LOOKBACK_DAYS * 86400}},
+            {"ts": {"$lte": cutoff}},
+        ]},
     )
-    if not res["documents"]:
+    if not res["documents"] or not res["documents"][0]:
         return []
-    # Prefix each item with its source, e.g. "[alpaca] Apple beats earnings..."
-    return [f"[{m['source']}] {d}" for d, m in zip(res["documents"][0], res["metadatas"][0])]
+    return _rank(res["documents"][0], res["metadatas"][0], res["distances"][0], cutoff, k)

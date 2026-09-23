@@ -81,7 +81,8 @@ def news_rag(state: State) -> State:
     llm = ChatOpenAI(model=os.getenv("LLM_MODEL", "gpt-4.1-nano"), temperature=0).with_structured_output(Sentiment)
     out = llm.invoke(
         f"Classify overall sentiment for {state['symbol']} from these headlines as bullish, bearish or neutral, "
-        "with a one-sentence rationale:\n- " + "\n- ".join(heads),
+        "with a one-sentence rationale. Each headline is tagged with its age: weight recent items most; "
+        "only earnings/guidance/M&A news stays relevant beyond a couple of days:\n- " + "\n- ".join(heads),
         config=trace_config(),
     )
     label = out.label.lower()

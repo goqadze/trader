@@ -11,5 +11,6 @@ yfinance
 pandas
 httpx
 chromadb
+tzdata  # IANA timezones for zoneinfo (market close in New York time), independent of the OS image
 sentry-sdk[fastapi]
 langfuse>=2,<3
