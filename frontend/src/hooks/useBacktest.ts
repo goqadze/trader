@@ -16,6 +16,7 @@ const INITIAL: BacktestState = {
   log: [],
   result: null,
   error: null,
+  config: null,
 };
 
 /**
@@ -78,7 +79,7 @@ export function useBacktest() {
   const start = useCallback(
     async (cfg: RunConfig) => {
       wsRef.current?.close();
-      setState({ ...INITIAL, status: "starting", symbol: cfg.symbol });
+      setState({ ...INITIAL, status: "starting", symbol: cfg.symbol, config: cfg });
       let run: { run_id: string };
       try {
         run = await createRun(cfg);

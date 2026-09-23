@@ -24,13 +24,30 @@ services:
     depends_on:
       - decision-service               # start decision-service first
 
-  # React + Ant Design dashboard, served by nginx which proxies API + WebSocket to backtest-service
+  # Live/paper trading bots: scheduler + broker adapters + trading history database
+  trading-service:
+    build: ./trading-service
+    ports:
+      - "127.0.0.1:8002:8000"          # API/docs at http://localhost:8002/docs (localhost only: it can place orders)
+    env_file:
+      - ./trading-service/.env         # broker keys, ALLOW_LIVE_TRADING, scheduler timing
+    volumes:
+      - ./trading-service/app:/code/app    # live code reload in dev
+      - trading-data:/data                 # trading history (SQLite) survives restarts and rebuilds
+    # --reload for dev; still ONE process, so the scheduler never runs twice
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped            # bots keep running after a crash or a Docker restart
+    depends_on:
+      - decision-service
+
+  # React + Ant Design dashboard, served by nginx which proxies the backtest and trading APIs
   frontend:
     build: ./frontend
     ports:
-      - "8080:80"                      # open http://localhost:8080 for the dashboard
+      - "127.0.0.1:8080:80"            # http://localhost:8080 -- localhost only, since it can control trading bots
     depends_on:
       - backtest-service
+      - trading-service                # nginx refuses to start if a proxied host doesn't exist yet
 
   # ------------------------------------------------------------------
   # Monitoring (all local, all free)
@@ -121,5 +138,6 @@ services:
 # Named volumes managed by Docker (persist data between runs)
 volumes:
   chroma-data:
+  trading-data:
   langfuse-db:
   glitchtip-db:

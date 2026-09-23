@@ -55,3 +55,11 @@ def test_default_balance_used_when_missing(monkeypatch):
     out = size_position(state)
     # default balance 500, risk 2% = $10 budget, rps $2 -> 5 shares
     assert out["position"]["shares"] == 5
+
+
+def test_per_request_stop_and_target_override_env(monkeypatch):
+    """A trading bot or backtest can pass its own levels; env values are only the defaults."""
+    _pin_env(monkeypatch)
+    out = size_position({**_buy_state(50.0, 500.0), "stop_pct": 0.10, "target_pct": 0.20})
+    assert out["position"]["stop_loss"] == 45.0  # 50 * (1 - 0.10)
+    assert out["position"]["target"] == 60.0  # 50 * (1 + 0.20)

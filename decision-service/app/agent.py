@@ -18,6 +18,8 @@ class State(TypedDict, total=False):
     as_of: date
     mode: str  # "rules" (SMA/RSI logic) or "llm" (the model decides)
     account_balance: float  # used to size a BUY (risk a fixed % of this)
+    stop_pct: float  # optional per-request stop-loss distance (else STOP_PCT env)
+    target_pct: float  # optional per-request target distance (else TARGET_PCT env)
     indicators: dict  # SMA20, SMA50, RSI14, last close
     action: str  # BUY | SELL | HOLD
     confidence: float
@@ -164,8 +166,9 @@ def size_position(state: State) -> State:
     entry = state["indicators"]["last_close"]  # buy at the latest close
     # Derive a stop and target from the entry so the caller doesn't have to supply them.
     # Defaults give a 2:1 reward:risk (target 8% up vs stop 4% down); tune via env.
-    stop_pct = float(os.getenv("STOP_PCT", "0.04"))  # stop-loss 4% below entry
-    target_pct = float(os.getenv("TARGET_PCT", "0.08"))  # target 8% above entry
+    # Per-request values (a trading bot's or backtest's own settings) win over the env defaults
+    stop_pct = state.get("stop_pct") or float(os.getenv("STOP_PCT", "0.04"))  # stop-loss 4% below entry
+    target_pct = state.get("target_pct") or float(os.getenv("TARGET_PCT", "0.08"))  # target 8% above entry
     risk_pct = float(os.getenv("RISK_PCT", "0.02"))  # risk 2% of the account per trade
     balance = state.get("account_balance", 500.0)
     stop = round(entry * (1 - stop_pct), 2)

@@ -133,6 +133,15 @@ SOURCES = {
 }
 
 
+def _safe_error(e: Exception) -> str:
+    """Error text that is safe to store and display. httpx errors embed the full request URL, and
+    Polygon/Finnhub take the API key as a URL parameter (apiKey=, token=), so the raw message would
+    leak secrets into the decision history, the UI and the LLM traces."""
+    if isinstance(e, httpx.HTTPStatusError):
+        return f"HTTP {e.response.status_code} from {e.request.url.host}"
+    return re.sub(r"\?[^\s'\"]*", "?<redacted>", str(e))  # drop every query string
+
+
 def enabled_sources() -> list[str]:
     """Sources whose API keys are all set in the environment."""
     return [n for n, (envs, _) in SOURCES.items() if all(os.getenv(e) for e in envs)]
@@ -147,7 +156,7 @@ def ingest_news(symbol: str, as_of: date, days: int = LOOKBACK_DAYS) -> dict[str
         try:
             articles = [a for a in SOURCES[name][1](symbol, start, as_of) if a["ts"] <= cutoff]  # no look-ahead
         except Exception as e:
-            report[name] = f"failed ({e})"
+            report[name] = f"failed ({_safe_error(e)})"
             continue
         report[name] = str(len(articles))
         for a in articles:

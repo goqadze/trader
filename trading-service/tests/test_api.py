@@ -1,0 +1,163 @@
+"""HTTP API: validation, lifecycle controls, guard rails, and history endpoints."""
+
+import pytest
+from conftest import FakeBroker, at
+from fastapi.testclient import TestClient
+
+from app import main
+from app.brokers import catalog as real_catalog
+
+CLOSED = at(23, 0)  # Monday 19:00 New York
+OPEN = at(15, 0)  # Monday 11:00 New York
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """Freeze the API's clock; returns a setter."""
+    now = {"t": CLOSED}
+    monkeypatch.setattr(main, "utcnow", lambda: now["t"])
+    return now
+
+
+@pytest.fixture
+def broker(monkeypatch, clock):
+    b = FakeBroker(price=100.0, now=CLOSED)
+    monkeypatch.setattr(main, "get_broker", lambda bot: b)
+    return b
+
+
+@pytest.fixture
+def client(broker):
+    with TestClient(main.app) as c:
+        yield c
+
+
+def _create(client, **kw):
+    body = {"symbol": "aapl", "allocated_cash": 5000, "min_confidence": 0.65, "rebalance_days": 3, **kw}
+    r = client.post("/bots", json=body)
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def test_create_bot_uses_the_quote_as_buy_and_hold_baseline(client):
+    bot = _create(client)
+    assert bot["symbol"] == "AAPL" and bot["name"] == "AAPL rules"
+    assert bot["status"] == "active" and bot["broker"] == "paper" and bot["live"] is False
+    assert bot["cash"] == 5000 and bot["equity"] == 5000 and bot["return_pct"] == 0
+    assert bot["benchmark_price"] == 100.0
+    events = client.get(f"/bots/{bot['id']}/events").json()
+    assert events[0]["kind"] == "created"
+
+
+@pytest.mark.parametrize("bad", [
+    {"stop_pct": 0.9},  # 90% stop-loss is almost certainly a typo
+    {"position_pct": 0},
+    {"min_confidence": 1.5},
+    {"symbol": "not a symbol"},
+    {"allocated_cash": 10},
+])
+def test_invalid_parameters_are_rejected(client, bad):
+    r = client.post("/bots", json={"symbol": "AAPL", **bad})
+    assert r.status_code == 422
+
+
+def test_unavailable_broker_is_rejected_with_the_reason(client):
+    r = client.post("/bots", json={"symbol": "AAPL", "broker": "alpaca-paper"})
+    assert r.status_code == 422 and "ALPACA_PAPER_KEY_ID" in r.text
+
+
+def test_real_money_bot_needs_explicit_confirmation(client, monkeypatch):
+    monkeypatch.setattr(main, "catalog", lambda: [
+        {**b, "available": True} if b["name"] == "alpaca-live" else b for b in real_catalog()
+    ])
+    r = client.post("/bots", json={"symbol": "AAPL", "broker": "alpaca-live"})
+    assert r.status_code == 422 and "confirm_live" in r.text
+    r = client.post("/bots", json={"symbol": "AAPL", "broker": "alpaca-live", "confirm_live": True})
+    assert r.status_code == 201 and r.json()["live"] is True
+
+
+def test_one_bot_per_symbol_on_a_real_account_but_many_on_the_simulator(client, monkeypatch):
+    monkeypatch.setattr(main, "catalog", lambda: [{**b, "available": True} for b in real_catalog()])
+    _create(client, broker="alpaca-paper")
+    assert client.post("/bots", json={"symbol": "AAPL", "broker": "alpaca-paper"}).status_code == 409
+    _create(client, broker="paper", name="AAPL aggressive", min_confidence=0.5)
+    _create(client, broker="paper", name="AAPL careful", min_confidence=0.8)
+    assert len(client.get("/bots").json()) == 3
+
+
+def test_pause_resume_and_status_guards(client):
+    bot = _create(client)
+    assert client.post(f"/bots/{bot['id']}/pause").json()["status"] == "paused"
+    assert client.post(f"/bots/{bot['id']}/pause").status_code == 409  # already paused
+    assert client.post(f"/bots/{bot['id']}/resume").json()["status"] == "active"
+
+
+def test_halt_pauses_every_active_bot(client):
+    _create(client)
+    _create(client, symbol="MSFT")
+    assert client.post("/halt").json() == {"paused": 2}
+    assert {x["status"] for x in client.get("/bots").json()} == {"paused"}
+    assert client.get("/events").json()[0]["kind"] == "halt"
+
+
+def test_param_changes_are_audited(client):
+    bot = _create(client)
+    r = client.patch(f"/bots/{bot['id']}", json={"min_confidence": 0.75, "stop_pct": 0.05})
+    assert r.json()["min_confidence"] == 0.75
+    msg = client.get(f"/bots/{bot['id']}/events").json()[0]["message"]
+    assert "min_confidence 0.65 → 0.75" in msg and "stop_pct 0.04 → 0.05" in msg
+
+
+def test_run_now_while_closed_is_a_preview(client, monkeypatch):
+    monkeypatch.setattr(main, "evaluate", _evaluate_with(lambda bot, d: {"action": "BUY", "confidence": 0.9}))
+    bot = _create(client)
+    d = client.post(f"/bots/{bot['id']}/run").json()
+    assert d["kind"] == "preview" and d["action"] == "BUY"
+    assert client.get(f"/bots/{bot['id']}/orders").json() == []
+
+
+def test_run_now_while_open_trades_and_shows_in_history(client, clock, broker, monkeypatch):
+    monkeypatch.setattr(main, "evaluate", _evaluate_with(lambda bot, d: {"action": "BUY", "confidence": 0.9}))
+    bot = _create(client, slippage_pct=0)  # no sizing buffer, so $5000 at $100 is exactly 50 shares
+    clock["t"] = broker.now = OPEN
+    d = client.post(f"/bots/{bot['id']}/run").json()
+    assert d["kind"] == "manual" and d["outcome"].startswith("BUY 50 sh filled")
+    detail = client.get(f"/bots/{bot['id']}").json()
+    assert detail["shares"] == 50 and detail["stop_price"] == 96.0
+    orders = client.get(f"/bots/{bot['id']}/orders").json()
+    assert orders[0]["side"] == "BUY" and orders[0]["decision_id"] == d["id"]
+    assert client.get(f"/bots/{bot['id']}/equity").json()[0]["equity"] == 5000
+
+    # Can't archive while holding; can close manually, then archive
+    assert client.post(f"/bots/{bot['id']}/archive").status_code == 409
+    sell = client.post(f"/bots/{bot['id']}/close").json()
+    assert sell["reason"] == "manual" and sell["status"] == "filled"
+    assert client.post(f"/bots/{bot['id']}/archive").json()["status"] == "archived"
+    assert client.get("/bots").json() == []  # hidden by default...
+    assert len(client.get("/bots?include_archived=true").json()) == 1  # ...but never deleted
+
+
+def test_close_position_refused_when_market_closed(client):
+    bot = _create(client)
+    r = client.post(f"/bots/{bot['id']}/close")
+    assert r.status_code == 409
+
+
+def test_status_reports_market_clock_and_brokers(client):
+    s = client.get("/status").json()
+    assert s["market_open"] is False
+    assert s["next_decision_at"].startswith("2025-06-03T19:30")  # Tuesday 15:30 New York
+    assert {b["name"] for b in s["brokers"]} == {"paper", "alpaca-paper", "alpaca-live"}
+    assert s["live_trading_allowed"] is False
+
+
+def test_unknown_bot_is_404(client):
+    assert client.get("/bots/999").status_code == 404
+    assert client.get("/bots/999/decisions").status_code == 404
+
+
+def _evaluate_with(signal_fn):
+    """evaluate() with a canned signal instead of calling decision-service."""
+    from app.trader import evaluate
+
+    return lambda session, bot, broker, now, kind: evaluate(session, bot, broker, now, kind, signal_fn)

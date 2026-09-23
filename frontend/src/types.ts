@@ -15,6 +15,8 @@ export interface RunConfig {
   min_confidence: number;
   rebalance_days: number;
   position_pct: number;
+  stop_pct?: number; // stop-loss distance below entry as a fraction (0.04 = 4%); omitted = server default
+  target_pct?: number; // take-profit distance above entry as a fraction
   engine: Engine;
   mode: Mode;
 }
@@ -32,6 +34,7 @@ export interface Result {
   final_equity: number;
   total_return_pct: number;
   buy_hold_return_pct: number;
+  alpha_vs_buy_hold_pct?: number; // strategy return minus buy & hold
   max_drawdown_pct: number;
   num_trades: number;
   win_rate_pct: number;
@@ -117,4 +120,5 @@ export interface BacktestState {
   log: LogRow[];
   result: Result | null;
   error: string | null;
+  config: RunConfig | null; // what was run, so a good result can be deployed as a trading bot
 }

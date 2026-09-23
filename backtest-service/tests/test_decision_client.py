@@ -24,6 +24,7 @@ class _Client:
         self._exc = exc
 
     async def post(self, url, **kwargs):
+        self.kwargs = kwargs
         if self._exc:
             raise self._exc
         return self._resp
@@ -49,3 +50,11 @@ def test_non_200_returns_hold_with_status_in_reason():
     out = asyncio.run(get_signal(client, "AAPL", date(2025, 1, 1)))
     assert out["action"] == "HOLD"
     assert "422" in out["reasoning"]
+
+
+def test_stop_and_target_are_sent_only_when_set():
+    client = _Client(resp=_Resp(200, {"action": "HOLD", "confidence": 0.5}))
+    asyncio.run(get_signal(client, "AAPL", date(2025, 1, 1)))
+    assert "stop_pct" not in client.kwargs["params"]  # decision-service env defaults apply
+    asyncio.run(get_signal(client, "AAPL", date(2025, 1, 1), "rules", 0.05, 0.1))
+    assert client.kwargs["params"]["stop_pct"] == 0.05 and client.kwargs["params"]["target_pct"] == 0.1

@@ -112,3 +112,23 @@ def test_ingest_drops_news_published_after_the_cutoff(monkeypatch):
 @pytest.mark.parametrize("text", ["Apple misses revenue forecast", "Nvidia to acquire startup"])
 def test_event_regex_variants(text):
     assert news._half_life_hours(text) == news.EVENT_HALF_LIFE_HOURS
+
+
+def test_source_errors_never_leak_api_keys(monkeypatch):
+    """httpx puts the whole URL (with apiKey=/token=) in its error text; the report must not."""
+    import httpx
+
+    req = httpx.Request("GET", "https://api.polygon.io/v2/reference/news?ticker=AAPL&apiKey=SECRET123")
+    status_err = httpx.HTTPStatusError("401 Unauthorized for url " + str(req.url), request=req,
+                                       response=httpx.Response(401, request=req))
+    assert news._safe_error(status_err) == "HTTP 401 from api.polygon.io"
+
+    conn_err = httpx.ConnectError("failed for https://finnhub.io/api/v1/company-news?symbol=AAPL&token=SECRET456")
+    assert "SECRET456" not in news._safe_error(conn_err)
+
+    def failing_source(symbol, start, end):
+        raise status_err
+
+    monkeypatch.setattr(news, "SOURCES", {"polygon": ((), failing_source)})
+    report = news.ingest_news("AAPL", AS_OF)
+    assert "SECRET123" not in report["polygon"]

@@ -10,6 +10,8 @@ interface FormValues {
   min_confidence: number;
   rebalance_days: number;
   position_pct: number;
+  stop_pct: number; // percent in the form; sent as a fraction
+  target_pct: number;
   engine: Engine;
   mode: Mode;
 }
@@ -33,6 +35,8 @@ export default function ConfigForm({ onRun, running }: Props) {
       min_confidence: v.min_confidence,
       rebalance_days: v.rebalance_days,
       position_pct: v.position_pct,
+      stop_pct: v.stop_pct / 100,
+      target_pct: v.target_pct / 100,
       engine: v.engine,
       mode: v.mode,
     });
@@ -51,6 +55,8 @@ export default function ConfigForm({ onRun, running }: Props) {
           min_confidence: 0.6,
           rebalance_days: 5,
           position_pct: 1.0,
+          stop_pct: 4, // same defaults as decision-service (STOP_PCT / TARGET_PCT)
+          target_pct: 8,
           engine: "simple",
           mode: "rules",
         }}
@@ -72,6 +78,12 @@ export default function ConfigForm({ onRun, running }: Props) {
         </Form.Item>
         <Form.Item name="position_pct" label="Position size (fraction of cash)">
           <InputNumber min={0.1} max={1} step={0.1} style={{ width: "100%" }} />
+        </Form.Item>
+        <Form.Item name="stop_pct" label="Stop-loss (% below entry)">
+          <InputNumber min={0.1} max={50} step={0.5} addonAfter="%" style={{ width: "100%" }} />
+        </Form.Item>
+        <Form.Item name="target_pct" label="Take-profit (% above entry)">
+          <InputNumber min={0.1} max={200} step={0.5} addonAfter="%" style={{ width: "100%" }} />
         </Form.Item>
         <Form.Item name="engine" label="Engine">
           <Select

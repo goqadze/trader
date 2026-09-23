@@ -16,6 +16,9 @@ class RunConfig(BaseModel):
     # --- Trading-cost realism (make backtests honest) ---
     fee_pct: float = Field(0.0, ge=0)  # commission per trade as a fraction of value; 0 = commission-free stocks, ~0.0015 for crypto
     slippage_pct: float = Field(0.0005, ge=0)  # fill worse than the close by this fraction (0.0005 = 0.05%); buys fill higher, sells lower
+    # --- Risk levels for each entry (None = decision-service's STOP_PCT / TARGET_PCT defaults) ---
+    stop_pct: float | None = Field(None, gt=0, le=0.5)  # stop-loss this far below the entry (0.04 = 4%)
+    target_pct: float | None = Field(None, gt=0, le=2)  # take profit this far above the entry
     engine: str = "simple"  # "simple" (built-in simulator) or "nautilus"
     mode: str = "rules"  # how decision-service decides: "rules" or "llm"
 
