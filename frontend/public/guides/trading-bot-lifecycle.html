@@ -1,0 +1,644 @@
+<!doctype html>
+<!-- Served by the dashboard at /guides/trading-bot-lifecycle.html and shown in-app at /guide.
+     data-theme="dark" pins the dark palette to match the dashboard (remove it to follow the OS theme). -->
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trading Bot Lifecycle</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+  /* Palette borrowed from the trading dashboard itself (#4f8cff blue, #8b98b5 muted, #33c088 / #ef5b6b P&L) */
+  :root {
+    --bg: #eef2f8;
+    --surface: #ffffff;
+    --surface-2: #f5f7fb;
+    --ink: #14203a;
+    --muted: #56627c;
+    --line: #d6ddea;
+    --accent: #2f6bff;
+    --accent-soft: #e3ecff;
+    --buy: #16875a;
+    --buy-soft: #e0f4ea;
+    --sell: #c63d3d;
+    --sell-soft: #fbe6e5;
+    --warn: #a86c0a;
+    --warn-soft: #fbf0d9;
+    --code-bg: #eaf0fa;
+    --display: "IBM Plex Sans Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+    --body: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #0d1220; --surface: #161d2e; --surface-2: #1b2438; --ink: #e6ebf5; --muted: #8b98b5;
+      --line: #2a3550; --accent: #4f8cff; --accent-soft: #1d2a4a; --buy: #33c088; --buy-soft: #12301f;
+      --sell: #ef5b6b; --sell-soft: #3a1a20; --warn: #e0a441; --warn-soft: #33270f; --code-bg: #1f2940;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0d1220; --surface: #161d2e; --surface-2: #1b2438; --ink: #e6ebf5; --muted: #8b98b5;
+    --line: #2a3550; --accent: #4f8cff; --accent-soft: #1d2a4a; --buy: #33c088; --buy-soft: #12301f;
+    --sell: #ef5b6b; --sell-soft: #3a1a20; --warn: #e0a441; --warn-soft: #33270f; --code-bg: #1f2940;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg); color: var(--ink); font: 15px/1.6 var(--body);
+    padding-inline: 16px; padding-block: 28px 64px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; display: grid; gap: 44px; }
+  h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; line-height: 1.15; }
+  h1 { font-size: clamp(30px, 5vw, 44px); font-weight: 700; letter-spacing: -0.01em; }
+  h2 { font-size: 26px; font-weight: 600; }
+  h3 { font-size: 18px; font-weight: 600; }
+  p { margin: 0; }
+  code, .mono { font-family: var(--mono); font-size: 0.88em; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; white-space: nowrap; }
+  .muted { color: var(--muted); }
+  .eyebrow { font: 600 12px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+  a { color: var(--accent); }
+  a:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ---------- header ---------- */
+  header { display: grid; gap: 14px; }
+  header .lede { max-width: 66ch; color: var(--muted); font-size: 16.5px; }
+  nav.jump { display: flex; flex-wrap: wrap; gap: 8px; }
+  nav.jump a {
+    font: 500 13px/1 var(--mono); text-decoration: none; color: var(--ink);
+    border: 1px solid var(--line); background: var(--surface); padding: 8px 12px; border-radius: 999px;
+  }
+  nav.jump a:hover { border-color: var(--accent); color: var(--accent); }
+
+  section { display: grid; gap: 18px; }
+  .section-head { display: grid; gap: 6px; }
+  .section-head p { color: var(--muted); max-width: 70ch; }
+
+  /* ---------- who talks to whom ---------- */
+  .pipe { overflow-x: auto; }
+  .pipe-row { display: flex; align-items: stretch; gap: 0; min-width: 760px; }
+  .node {
+    flex: 1; background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; display: grid; gap: 4px; align-content: start;
+  }
+  .node b { font-family: var(--display); font-size: 16px; }
+  .node .mono { color: var(--muted); font-size: 12px; }
+  .node.hub { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .arrow { flex: 0 0 34px; display: grid; place-items: center; color: var(--muted); font: 18px var(--mono); }
+  .stack { flex: 1.25; display: grid; gap: 8px; }
+  .stack .node { flex: none; }
+
+  /* ---------- timeline ---------- */
+  .timeline { display: grid; gap: 0; }
+  .phase { display: grid; grid-template-columns: 190px 1fr; gap: 0 22px; position: relative; }
+  .when {
+    padding-top: 18px; text-align: right; font: 500 13px/1.35 var(--mono); color: var(--muted);
+  }
+  .when strong { display: block; color: var(--ink); font: 600 15px/1.3 var(--mono); margin-bottom: 2px; }
+  .rail { position: relative; padding: 14px 0 26px 26px; border-left: 2px solid var(--line); }
+  .rail::before {
+    content: ""; position: absolute; left: -8px; top: 22px; width: 14px; height: 14px; border-radius: 50%;
+    background: var(--surface); border: 3px solid var(--accent);
+  }
+  .phase:last-child .rail { border-left-color: transparent; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; display: grid; gap: 12px; }
+  .card h3 .tag { margin-left: 8px; vertical-align: 2px; }
+  ol.steps { margin: 0; padding-left: 22px; display: grid; gap: 7px; }
+  ol.steps li::marker { font: 600 13px var(--mono); color: var(--accent); }
+  ul.plain { margin: 0; padding-left: 18px; display: grid; gap: 5px; }
+  .where { font: 12.5px/1.5 var(--mono); color: var(--muted); border-top: 1px dashed var(--line); padding-top: 10px; }
+  .where span { color: var(--ink); }
+  .note {
+    font-size: 14px; border-radius: 8px; padding: 10px 12px; background: var(--warn-soft); color: var(--ink);
+    border-left: 3px solid var(--warn);
+  }
+  .note.safe { background: var(--buy-soft); border-left-color: var(--buy); }
+  .note.info { background: var(--accent-soft); border-left-color: var(--accent); }
+
+  .tag {
+    display: inline-block; font: 600 11.5px/1 var(--mono); padding: 4px 7px; border-radius: 5px;
+    background: var(--surface-2); color: var(--muted); border: 1px solid var(--line); white-space: nowrap;
+  }
+  .tag.buy { background: var(--buy-soft); color: var(--buy); border-color: transparent; }
+  .tag.sell { background: var(--sell-soft); color: var(--sell); border-color: transparent; }
+  .tag.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+  .tag.blue { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+
+  /* ---------- worked example: an order ticket ---------- */
+  .ticket-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .ticket { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .ticket header {
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    padding: 12px 16px; background: var(--surface-2); border-bottom: 1px dashed var(--line);
+  }
+  .ticket header b { font: 600 15px var(--mono); }
+  .ticket dl { margin: 0; padding: 12px 16px 16px; display: grid; grid-template-columns: 1fr auto; gap: 7px 14px; }
+  .ticket dt { color: var(--muted); font-size: 14px; }
+  .ticket dd { margin: 0; font: 500 14px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+  .ticket dd small { display: block; color: var(--muted); font-size: 11.5px; font-weight: 400; }
+  .ticket .total { border-top: 1px solid var(--line); padding-top: 8px; font-weight: 600; }
+  .pos { color: var(--buy); } .neg { color: var(--sell); }
+
+  /* ---------- tables ---------- */
+  .table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+  table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font: 600 12px/1.2 var(--mono); letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); background: var(--surface-2); }
+  tr:last-child td { border-bottom: none; }
+  td.nowrap { white-space: nowrap; }
+
+  /* ---------- state chips ---------- */
+  .states { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .flow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .flow .arr { color: var(--muted); font-family: var(--mono); }
+
+  /* ---------- glossary ---------- */
+  .gloss-tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .gloss-tools input {
+    flex: 1 1 260px; font: 15px var(--body); padding: 10px 14px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+  }
+  .gloss-tools .count { font: 13px var(--mono); color: var(--muted); }
+  .gloss-groups { display: grid; gap: 22px; }
+  .gloss-group { display: grid; gap: 10px; }
+  .gloss-group h3 { font-size: 15px; font-family: var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .terms { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; }
+  .term { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: grid; gap: 4px; align-content: start; }
+  .term dt { font: 600 14.5px var(--mono); }
+  .term dd { margin: 0; font-size: 14px; }
+  .term dd .ex { color: var(--muted); display: block; margin-top: 3px; font-size: 13px; }
+  .empty { color: var(--muted); font-style: italic; }
+
+  footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 16px; }
+
+  @media (max-width: 720px) {
+    .phase { grid-template-columns: 1fr; }
+    .when { text-align: left; padding: 0 0 6px 26px; }
+    .when strong { display: inline; margin-right: 6px; }
+    .rail { padding-top: 6px; }
+    .rail::before { top: 12px; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    nav.jump a { transition: border-color .15s, color .15s; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <span class="eyebrow">trading-service · cheat sheet</span>
+    <h1>What happens when you create a bot</h1>
+    <p class="lede">From the moment you click <b>Create bot</b> to the day it sells: every step the system takes, the rules it follows, and every term on the bot page. All times are New York time (ET), because the stock market runs on that clock.</p>
+    <nav class="jump" aria-label="Sections">
+      <a href="#map">Who talks to whom</a>
+      <a href="#flow">The flow</a>
+      <a href="#example">Worked example</a>
+      <a href="#rules">Rules</a>
+      <a href="#states">Statuses</a>
+      <a href="#controls">Buttons</a>
+      <a href="#glossary">Glossary</a>
+    </nav>
+  </header>
+
+  <!-- ================= MAP ================= -->
+  <section id="map">
+    <div class="section-head">
+      <h2>Who talks to whom</h2>
+      <p>Your browser never talks to a broker directly. Everything goes through trading-service, which asks decision-service what to do and a broker to do it, and writes everything down.</p>
+    </div>
+    <div class="pipe">
+      <div class="pipe-row">
+        <div class="node"><b>Your browser</b><span class="mono">localhost:8080</span><span>Dashboard pages. Refreshes every 15 s.</span></div>
+        <div class="arrow">→</div>
+        <div class="node"><b>nginx</b><span class="mono">/api/trading/*</span><span>Forwards requests to the right service.</span></div>
+        <div class="arrow">→</div>
+        <div class="node hub"><b>trading-service</b><span class="mono">localhost:8002</span><span>The bots. A scheduler wakes every 30 s and checks each one.</span></div>
+        <div class="arrow">→</div>
+        <div class="stack">
+          <div class="node"><b>decision-service</b><span class="mono">POST /signal</span><span>“BUY, SELL or HOLD?” Prices + news + AI.</span></div>
+          <div class="node"><b>Broker</b><span class="mono">paper · alpaca-paper · alpaca-live</span><span>Gets prices, fills orders.</span></div>
+          <div class="node"><b>Database</b><span class="mono">SQLite · trading-data volume</span><span>Bots, decisions, orders, equity, audit log.</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= FLOW ================= -->
+  <section id="flow">
+    <div class="section-head">
+      <h2>The flow, step by step</h2>
+      <p>Five moments in a bot's life. The left column says <em>when</em> each one happens.</p>
+    </div>
+
+    <div class="timeline">
+
+      <!-- 1. create -->
+      <div class="phase">
+        <div class="when"><strong>Once</strong>you click Create bot</div>
+        <div class="rail">
+          <div class="card">
+            <h3>1 · The bot is born</h3>
+            <ol class="steps">
+              <li>The form turns your percentages into fractions: <code>4%</code> → <code>0.04</code>.</li>
+              <li>The browser sends <code>POST /bots</code>; nginx forwards it to trading-service.</li>
+              <li><b>Validation:</b> symbol looks like a ticker, stop-loss ≤ 50%, position size ≤ 100%, capital ≥ $100, and so on. Anything wrong → a clear error in the form.</li>
+              <li><b>Broker check:</b> is that broker set up? A live broker also needs the “real money” tick. A real account allows only <em>one bot per symbol</em>.</li>
+              <li><b>Price check:</b> the broker fetches a live quote. No price = unknown symbol = rejected. The price is saved as the <b>buy &amp; hold baseline</b>.</li>
+              <li>The bot is saved: status <span class="tag buy">active</span>, cash = your capital, 0 shares, peak equity = your capital.</li>
+              <li>An audit event “Created …” is written, and the browser opens the bot's page.</li>
+            </ol>
+            <p class="note info">Nothing is bought yet. A new bot waits for its first decision time.</p>
+            <div class="where">code: <span>main.py → create_bot()</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. heartbeat -->
+      <div class="phase">
+        <div class="when"><strong>Every 30 s</strong>all day, every day</div>
+        <div class="rail">
+          <div class="card">
+            <h3>2 · The scheduler checks in</h3>
+            <p>For each bot that isn't archived, up to 4 at a time:</p>
+            <ol class="steps">
+              <li><b>Lock the bot</b> so a button click and the scheduler can't act at the same moment. Busy? Skip it until the next tick.</li>
+              <li><b>Finish pending orders:</b> any order still waiting at the broker gets looked up and booked.</li>
+              <li><b>Market closed?</b> Stop here. Nothing trades outside 9:30–16:00 ET, on weekends, or on holidays.</li>
+              <li><b>Reconcile</b> (real brokers only): does the account really hold the shares the bot thinks it holds? If not → <span class="tag warn">paused</span>.</li>
+              <li><b>Every 5 min: watch.</b> Get a fresh price, update today's equity point, check the drawdown breaker, check stop-loss / take-profit (see step 5).</li>
+              <li><b>Decision due?</b> If yes → step 3.</li>
+            </ol>
+            <div class="where">code: <span>scheduler.py → tick() → process_bot()</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. decision -->
+      <div class="phase">
+        <div class="when"><strong>15:30 ET</strong>every N trading days<br>(12:30 on half days)</div>
+        <div class="rail">
+          <div class="card">
+            <h3>3 · The bot asks: buy, sell or hold?</h3>
+            <p>A decision is due only when <b>all</b> of these are true: it's a trading day · it's between 15:30 and the 16:00 close · the bot is <span class="tag buy">active</span> · it hasn't decided today · at least <code>N</code> trading days have passed since its last decision.</p>
+            <ol class="steps">
+              <li>trading-service calls <code>decision-service /signal</code> with the symbol, today's date, the mode, and the bot's stop / target %.</li>
+              <li><b>Prices:</b> ~120 days of daily prices → SMA20, SMA50, RSI14.</li>
+              <li><b>News:</b> last 7 days of headlines, published before 15:30 today. Recent ones count most. An AI labels the mood bullish / bearish / neutral.</li>
+              <li><b>Decide</b> (rules mode): trend + RSI give BUY / SELL / HOLD at 0.60 confidence. News that agrees adds <code>+0.15</code>; news that disagrees subtracts <code>0.15</code>.</li>
+              <li><b>Explain:</b> the AI writes 2 sentences of reasoning.</li>
+              <li>trading-service saves a <b>Decision</b> row (signal, confidence, news mood, reasoning, every step) and marks today as decided.</li>
+              <li>It applies the trading rule (see <a href="#rules">Rules</a>) and writes what it did in <b>“What the bot did”</b>.</li>
+            </ol>
+            <p class="note">If decision-service fails, the bot records a HOLD with the error, trades nothing, and <b>retries 5 min later</b>. Today isn't marked as decided until a call succeeds.</p>
+            <div class="where">code: <span>trader.py → evaluate() → _act()</span> · decision-service <span>agent.py</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. order -->
+      <div class="phase">
+        <div class="when"><strong>Seconds later</strong>only if the rule says trade</div>
+        <div class="rail">
+          <div class="card">
+            <h3>4 · Placing the order <span class="tag buy">BUY</span></h3>
+            <ol class="steps">
+              <li><b>Fresh price:</b> a quote older than 20 min is refused. No trading on stale data.</li>
+              <li><b>Budget</b> = cash × position size (a real account also caps it at the broker's buying power).</li>
+              <li><b>Shares</b> = budget ÷ (price × (1 + slippage) × (1 + fee)), rounded <em>down</em> to whole shares.</li>
+              <li><b>Save the order first</b> as <span class="tag">new</span> with a unique client order id. Only then send it to the broker.</li>
+              <li>The broker fills it. On paper: at price + slippage, instantly. On Alpaca: usually within seconds.</li>
+              <li><b>Book the fill:</b> cash goes down, shares go up, entry price and cost basis are set.</li>
+              <li><b>Stop-loss</b> = fill × (1 − stop %). <b>Take-profit</b> = fill × (1 + target %). They're based on the <em>actual</em> fill price.</li>
+              <li>Equity point updated; audit event “BUY 29 AAPL @ $337.74”.</li>
+            </ol>
+            <p class="note safe">Saving before sending means an order can't be lost or sent twice. If the network drops mid-order, the scheduler asks the broker “did you get order X?” instead of guessing.</p>
+            <div class="where">code: <span>trader.py → submit_order() → apply_broker_state() → _book_fill()</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 5. holding -->
+      <div class="phase">
+        <div class="when"><strong>Every 5 min</strong>while holding, in market hours</div>
+        <div class="rail">
+          <div class="card">
+            <h3>5 · Holding, then selling <span class="tag sell">SELL</span></h3>
+            <p>The position is closed, always <em>all</em> shares, by whichever comes first:</p>
+            <ul class="plain">
+              <li><b>Stop-loss hit:</b> price ≤ stop → sell, reason <span class="tag sell">stop-loss</span>. Works even when the bot is paused.</li>
+              <li><b>Take-profit hit:</b> price ≥ target → sell, reason <span class="tag buy">target</span>. Also works when paused.</li>
+              <li><b>SELL signal</b> at a decision time with confidence ≥ minimum → reason <span class="tag">signal</span>.</li>
+              <li><b>You</b> press Close position → reason <span class="tag blue">manual</span>.</li>
+            </ul>
+            <p>On the fill: <b>P&amp;L</b> = sale money − fee − cost basis. It's added to realized P&amp;L, and the bot is flat again, waiting for the next BUY.</p>
+            <p class="note">Drawdown breaker: if equity falls more than 20% (your setting) below its best level, the bot <b>pauses itself</b>. It does not panic-sell; the stop-loss still protects the position.</p>
+            <div class="where">code: <span>trader.py → watch() · mark_to_market() · close_position()</span></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ================= EXAMPLE ================= -->
+  <section id="example">
+    <div class="section-head">
+      <h2>Worked example</h2>
+      <p>The AAPL test bot from our session: $10,000 capital, position size 100%, stop 4%, target 8%, paper broker with 0.05% slippage and no fee.</p>
+    </div>
+    <div class="ticket-grid">
+      <article class="ticket">
+        <header><b>BUY · AAPL</b><span class="tag buy">filled</span></header>
+        <dl>
+          <dt>Quote at decision</dt><dd>$337.57</dd>
+          <dt>Budget (100% of cash)</dt><dd>$10,000.00</dd>
+          <dt>Shares</dt><dd>29<small>10,000 ÷ (337.57 × 1.0005) = 29.6 → 29</small></dd>
+          <dt>Fill price (+0.05%)</dt><dd>$337.74</dd>
+          <dt>Cost basis</dt><dd>$9,794.43</dd>
+          <dt class="total">Cash left</dt><dd class="total">$205.57</dd>
+        </dl>
+      </article>
+      <article class="ticket">
+        <header><b>The safety levels</b><span class="tag">set at fill</span></header>
+        <dl>
+          <dt>Stop-loss (−4%)</dt><dd class="neg">$324.23<small>337.74 × 0.96</small></dd>
+          <dt>Take-profit (+8%)</dt><dd class="pos">$364.76<small>337.74 × 1.08</small></dd>
+          <dt>If the stop is hit</dt><dd class="neg">≈ −$396</dd>
+          <dt>If the target is hit</dt><dd class="pos">≈ +$778</dd>
+          <dt class="total">Reward : risk</dt><dd class="total">≈ 2 : 1</dd>
+        </dl>
+      </article>
+      <article class="ticket">
+        <header><b>SELL · AAPL</b><span class="tag blue">manual</span></header>
+        <dl>
+          <dt>Quote</dt><dd>$338.09</dd>
+          <dt>Fill price (−0.05%)</dt><dd>$337.92</dd>
+          <dt>Sale money (29 sh)</dt><dd>$9,799.71</dd>
+          <dt>minus cost basis</dt><dd>−$9,794.43</dd>
+          <dt class="total">P&amp;L</dt><dd class="total pos">≈ +$5</dd>
+          <dt>Drawdown breaker floor</dt><dd>$8,000<small>peak $10,000 × (1 − 20%)</small></dd>
+        </dl>
+      </article>
+    </div>
+    <p class="muted">Notice the price barely moved, yet slippage cost about 34¢ per share round trip. That's why the backtest includes slippage too.</p>
+  </section>
+
+  <!-- ================= RULES ================= -->
+  <section id="rules">
+    <div class="section-head">
+      <h2>The trading rule</h2>
+      <p>Identical to the backtest engine, so the live bot behaves like the backtest you trusted. One position at a time, long only, whole shares.</p>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Signal</th><th>Bot is…</th><th>Confidence</th><th>What happens</th></tr></thead>
+        <tbody>
+          <tr><td><span class="tag buy">BUY</span></td><td>flat</td><td>≥ minimum</td><td>Buys with position size × cash</td></tr>
+          <tr><td><span class="tag buy">BUY</span></td><td>flat</td><td>&lt; minimum</td><td>Nothing: “Confidence 0.60 below minimum 0.65”</td></tr>
+          <tr><td><span class="tag buy">BUY</span></td><td>holding</td><td>any</td><td>Nothing: “Already holding 29 sh”</td></tr>
+          <tr><td><span class="tag sell">SELL</span></td><td>holding</td><td>≥ minimum</td><td>Sells everything (reason: signal)</td></tr>
+          <tr><td><span class="tag sell">SELL</span></td><td>holding</td><td>&lt; minimum</td><td>Keeps the position</td></tr>
+          <tr><td><span class="tag sell">SELL</span></td><td>flat</td><td>any</td><td>Nothing: “Flat; nothing to sell (long-only)”</td></tr>
+          <tr><td><span class="tag">HOLD</span></td><td>any</td><td>any</td><td>Nothing</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 style="margin-top:8px">Where confidence comes from (rules mode)</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Trend</th><th>RSI14</th><th>Signal</th><th>Base</th><th>News agrees</th><th>News disagrees</th><th>No / neutral news</th></tr></thead>
+        <tbody>
+          <tr><td>SMA20 &gt; SMA50 (up)</td><td>&lt; 70</td><td><span class="tag buy">BUY</span></td><td class="mono">0.60</td><td class="mono pos">0.75</td><td class="mono neg">0.45</td><td class="mono">0.60</td></tr>
+          <tr><td>SMA20 ≤ SMA50 (down)</td><td>&gt; 30</td><td><span class="tag sell">SELL</span></td><td class="mono">0.60</td><td class="mono pos">0.75</td><td class="mono neg">0.45</td><td class="mono">0.60</td></tr>
+          <tr><td colspan="2">anything else (overbought / oversold)</td><td><span class="tag">HOLD</span></td><td class="mono">0.40</td><td colspan="3" class="muted">no trade either way</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">Why a bot sits still: with minimum confidence 0.65, only a signal <b>backed by agreeing news</b> (0.75) trades. With no news, 0.60 never clears the bar. That's working as designed.</p>
+  </section>
+
+  <!-- ================= STATES ================= -->
+  <section id="states">
+    <div class="section-head">
+      <h2>Statuses you'll see</h2>
+    </div>
+    <div class="states">
+      <div class="card">
+        <h3>Bot status</h3>
+        <ul class="plain">
+          <li><span class="tag buy">active</span> decides on schedule, buys and sells.</li>
+          <li><span class="tag warn">paused</span> no new decisions or buys. <b>Stop-loss and take-profit still work.</b> Paused by you, Halt all, the drawdown breaker, or a reconcile mismatch.</li>
+          <li><span class="tag">archived</span> retired for good (only when flat). Hidden, never deleted.</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Order status</h3>
+        <div class="flow">
+          <span class="tag">new</span><span class="arr">→</span><span class="tag blue">submitted</span><span class="arr">→</span><span class="tag buy">filled</span>
+        </div>
+        <ul class="plain">
+          <li><span class="tag">new</span> saved, being sent</li>
+          <li><span class="tag blue">submitted</span> broker has it, not filled yet</li>
+          <li><span class="tag warn">partially_filled</span> finished with only some shares</li>
+          <li><span class="tag">canceled</span> / <span class="tag sell">rejected</span> nothing bought or sold</li>
+          <li><span class="tag sell">failed</span> never reached the broker (checked after 2 min)</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Decision type</h3>
+        <ul class="plain">
+          <li><span class="tag blue">scheduled</span> the daily 15:30 decision</li>
+          <li><span class="tag">manual</span> you pressed Run now while the market was open. It can trade.</li>
+          <li><span class="tag">preview</span> Run now while closed or paused: shows what it <em>would</em> do, sends nothing, doesn't use up today's decision</li>
+        </ul>
+        <h3>Order reason</h3>
+        <div class="flow"><span class="tag">signal</span><span class="tag sell">stop-loss</span><span class="tag buy">target</span><span class="tag blue">manual</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= CONTROLS ================= -->
+  <section id="controls">
+    <div class="section-head">
+      <h2>What each button does</h2>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Button</th><th>What it does</th><th>When it's allowed</th></tr></thead>
+        <tbody>
+          <tr><td class="nowrap"><b>Run now</b></td><td>Decides immediately and trades on the result. Counts as today's decision.</td><td>Market open and bot active</td></tr>
+          <tr><td class="nowrap"><b>Preview decision</b></td><td>Same question, but sends no order. Shows what the bot would do.</td><td>Market closed or bot paused</td></tr>
+          <tr><td class="nowrap"><b>Pause</b></td><td>Stops new decisions. The open position keeps its stop-loss and take-profit.</td><td>Always; never waits</td></tr>
+          <tr><td class="nowrap"><b>Resume</b></td><td>Back to active. Resets the drawdown peak to today's equity, so the breaker doesn't trip again at once.</td><td>When paused</td></tr>
+          <tr><td class="nowrap"><b>Close position</b></td><td>Sells all shares at market right now (reason: manual).</td><td>Market open, holding shares, no pending order</td></tr>
+          <tr><td class="nowrap"><b>Edit</b></td><td>Changes strategy settings from the next decision on. Symbol, broker and capital are fixed; make a new bot to change those. Every change is audited.</td><td>Not archived</td></tr>
+          <tr><td class="nowrap"><b>Archive</b></td><td>Retires the bot. History stays.</td><td>Flat, no pending order</td></tr>
+          <tr><td class="nowrap"><b>Halt all</b></td><td>Kill switch: pauses every active bot at once. Positions stay protected.</td><td>Any time</td></tr>
+          <tr><td class="nowrap"><b>Trade this strategy</b></td><td>On a finished backtest: opens New bot with the same settings.</td><td>After a backtest</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= GLOSSARY ================= -->
+  <section id="glossary">
+    <div class="section-head">
+      <h2>Glossary</h2>
+      <p>Every word on the bot pages, in plain language.</p>
+    </div>
+    <div class="gloss-tools">
+      <label for="gloss-search" class="muted" style="font-size:14px">Find a term</label>
+      <input id="gloss-search" type="search" placeholder="e.g. slippage, cost basis, RSI" autocomplete="off">
+      <span class="count" id="gloss-count" aria-live="polite"></span>
+    </div>
+    <div class="gloss-groups" id="gloss-groups">
+
+      <div class="gloss-group">
+        <h3>Money &amp; results</h3>
+        <dl class="terms">
+          <div class="term"><dt>Capital (allocated cash)</dt><dd>The money you give this bot. It never spends more. Fixed for the bot's life.</dd></div>
+          <div class="term"><dt>Cash</dt><dd>Money the bot isn't using right now.<span class="ex">After the AAPL buy: $205.57</span></dd></div>
+          <div class="term"><dt>Equity</dt><dd>What the bot is worth now: cash + shares × current price.</dd></div>
+          <div class="term"><dt>Return</dt><dd>Equity vs. starting capital, in %.</dd></div>
+          <div class="term"><dt>Buy &amp; hold (B&amp;H)</dt><dd>What you'd have if you simply bought on day one and waited. The bar the bot has to beat.</dd></div>
+          <div class="term"><dt>Benchmark price</dt><dd>The price when the bot was created. The starting point for buy &amp; hold.</dd></div>
+          <div class="term"><dt>Realized P&amp;L</dt><dd>Profit or loss from trades that are finished (sold).</dd></div>
+          <div class="term"><dt>Unrealized P&amp;L</dt><dd>Profit or loss “on paper” for shares you still hold. Changes with the price.</dd></div>
+          <div class="term"><dt>Win rate</dt><dd>Share of finished trades that made money.</dd></div>
+          <div class="term"><dt>Peak equity</dt><dd>The bot's best equity so far. Used by the drawdown breaker.</dd></div>
+          <div class="term"><dt>Drawdown</dt><dd>How far equity has fallen from its peak, in %.</dd></div>
+        </dl>
+      </div>
+
+      <div class="gloss-group">
+        <h3>Position</h3>
+        <dl class="terms">
+          <div class="term"><dt>Position</dt><dd>The shares the bot holds right now. “Flat” = none.</dd></div>
+          <div class="term"><dt>Long</dt><dd>Owning shares, hoping the price goes up. The only kind of position these bots take.</dd></div>
+          <div class="term"><dt>Entry price</dt><dd>The price the shares were actually bought at (the fill).</dd></div>
+          <div class="term"><dt>Cost basis</dt><dd>Everything it cost to open the position: shares × fill price + fee.<span class="ex">29 × $337.7388 = $9,794.43 (the screen rounds the fill to $337.74)</span></dd></div>
+          <div class="term"><dt>Stop-loss</dt><dd>A price below entry where the bot sells to cap the loss.<span class="ex">entry × (1 − stop %)</span></dd></div>
+          <div class="term"><dt>Take-profit (target)</dt><dd>A price above entry where the bot sells to lock in the gain.<span class="ex">entry × (1 + target %)</span></dd></div>
+          <div class="term"><dt>Reward : risk</dt><dd>Possible gain ÷ possible loss. 8% target vs 4% stop = 2 : 1.</dd></div>
+        </dl>
+      </div>
+
+      <div class="gloss-group">
+        <h3>Bot settings</h3>
+        <dl class="terms">
+          <div class="term"><dt>Mode</dt><dd><b>rules</b> = SMA/RSI formula plus a news nudge. <b>llm</b> = the AI makes the call itself.</dd></div>
+          <div class="term"><dt>Min confidence</dt><dd>Signals weaker than this are ignored. Higher = fewer, pickier trades.</dd></div>
+          <div class="term"><dt>Every N trading days</dt><dd>How often the bot decides. 1 = daily, 5 ≈ weekly. Weekends and holidays don't count.</dd></div>
+          <div class="term"><dt>Position size</dt><dd>Share of the bot's cash spent on each BUY. 100% = all in.</dd></div>
+          <div class="term"><dt>Drawdown breaker</dt><dd>Auto-pause when equity falls this % below its peak. 0 = off.</dd></div>
+          <div class="term"><dt>Slippage</dt><dd>Paying a bit more when buying and getting a bit less when selling than the quoted price. Paper broker: simulated. Real brokers: a cash buffer kept aside when sizing.</dd></div>
+          <div class="term"><dt>Fee</dt><dd>Commission per trade. Only simulated by the paper broker (Alpaca stocks are commission-free).</dd></div>
+        </dl>
+      </div>
+
+      <div class="gloss-group">
+        <h3>Signals &amp; analysis</h3>
+        <dl class="terms">
+          <div class="term"><dt>Signal</dt><dd>decision-service's answer: BUY, SELL or HOLD.</dd></div>
+          <div class="term"><dt>Confidence</dt><dd>How sure the signal is, from 0 to 1.</dd></div>
+          <div class="term"><dt>SMA20 / SMA50</dt><dd>Average closing price of the last 20 / 50 days. SMA20 above SMA50 = uptrend.</dd></div>
+          <div class="term"><dt>RSI14</dt><dd>Momentum score from 0 to 100. Above 70 = overbought (rose too fast), below 30 = oversold.</dd></div>
+          <div class="term"><dt>Sentiment (News)</dt><dd>The AI's read of recent headlines: bullish (good), bearish (bad), or neutral.</dd></div>
+          <div class="term"><dt>RAG</dt><dd>“Retrieval-augmented generation”: find the most relevant stored news first, then let the AI read only that.</dd></div>
+          <div class="term"><dt>Reasoning / steps</dt><dd>The agent's explanation plus its step-by-step trail. Expand a decision row to see them.</dd></div>
+          <div class="term"><dt>What the bot did (outcome)</dt><dd>What happened after the signal: filled, skipped and why, or error.</dd></div>
+        </dl>
+      </div>
+
+      <div class="gloss-group">
+        <h3>Market &amp; time</h3>
+        <dl class="terms">
+          <div class="term"><dt>ET</dt><dd>New York time, the exchange's clock. Your clock (UTC+4) is 8 h ahead while the US is on summer time, 9 h in winter.<span class="ex">15:30 ET = 23:30 or 00:30 your time</span></dd></div>
+          <div class="term"><dt>Market hours</dt><dd>9:30–16:00 ET, Monday–Friday, except holidays. Orders only go out in these hours.</dd></div>
+          <div class="term"><dt>Trading day (session)</dt><dd>A day the exchange is open. Weekends and holidays aren't trading days.</dd></div>
+          <div class="term"><dt>Half day (early close)</dt><dd>Days the market closes at 13:00 (e.g. the day after Thanksgiving). Bots then decide at 12:30.</dd></div>
+          <div class="term"><dt>Decision time</dt><dd>30 min before the close: 15:30 ET normally.</dd></div>
+          <div class="term"><dt>Quote</dt><dd>The latest traded price and when it happened.</dd></div>
+          <div class="term"><dt>Stale quote</dt><dd>A price older than 20 min. The bot refuses to trade on it.</dd></div>
+        </dl>
+      </div>
+
+      <div class="gloss-group">
+        <h3>Orders &amp; brokers</h3>
+        <dl class="terms">
+          <div class="term"><dt>Broker</dt><dd>The company that actually buys and sells for you.</dd></div>
+          <div class="term"><dt>paper</dt><dd>Built-in simulator: real live prices, pretend money, instant fills. No account needed.</dd></div>
+          <div class="term"><dt>alpaca-paper</dt><dd>Alpaca's practice account: real order handling, pretend money. Needs paper keys.</dd></div>
+          <div class="term"><dt>alpaca-live</dt><dd>Real money. Locked until you set <code>ALLOW_LIVE_TRADING=true</code>, add live keys, and tick the confirmation.</dd></div>
+          <div class="term"><dt>Market order</dt><dd>“Buy/sell now at whatever the price is.” The only order type the bots use.</dd></div>
+          <div class="term"><dt>Fill</dt><dd>The moment an order actually happens, and the price it happened at.</dd></div>
+          <div class="term"><dt>Partial fill</dt><dd>Only some of the shares got bought or sold.</dd></div>
+          <div class="term"><dt>Pending order</dt><dd>Sent but not filled yet. While one is pending, the bot places no other orders.</dd></div>
+          <div class="term"><dt>Client order id</dt><dd>Our own unique label for each order, e.g. <code>bot1-cf01dd…</code>. Lets us ask the broker about it and prevents duplicates.</dd></div>
+          <div class="term"><dt>Buying power</dt><dd>How much a real account can spend right now. A bot's budget never exceeds it.</dd></div>
+        </dl>
+      </div>
+
+      <div class="gloss-group">
+        <h3>Safety &amp; system</h3>
+        <dl class="terms">
+          <div class="term"><dt>Scheduler</dt><dd>The background loop in trading-service that runs every bot.</dd></div>
+          <div class="term"><dt>Tick</dt><dd>One pass of the scheduler, every 30 s. “Scheduler running” = ticks are arriving.</dd></div>
+          <div class="term"><dt>Watch</dt><dd>The 5-minute check: new price, equity point, breaker, stop / target.</dd></div>
+          <div class="term"><dt>Lock</dt><dd>Makes sure only one thing works on a bot at a time. A click during a decision gets “bot is busy”.</dd></div>
+          <div class="term"><dt>Write-ahead order</dt><dd>Saving an order before sending it, so a crash can't lose or duplicate it.</dd></div>
+          <div class="term"><dt>Reconcile</dt><dd>Comparing the real account's shares with the bot's records. A mismatch pauses the bot.</dd></div>
+          <div class="term"><dt>Kill switch (Halt all)</dt><dd>One button that pauses every bot.</dd></div>
+          <div class="term"><dt>Equity snapshot</dt><dd>One chart point per bot per trading day, updated during the day.</dd></div>
+          <div class="term"><dt>Audit log (events)</dt><dd>Diary of everything: created, paused, settings changed, orders, errors.</dd></div>
+          <div class="term"><dt>Archive</dt><dd>Retire a bot without deleting its history.</dd></div>
+        </dl>
+      </div>
+
+      <p class="empty" id="gloss-empty" hidden>No term matches that. Try a shorter word.</p>
+    </div>
+  </section>
+
+  <footer>
+    Matches the code on branch <code>live-trading</code> (commit 7033923). Settings like 15:30, 5 min and 20 min come from <code>trading-service/.env</code>. Paper-trade for weeks before switching a strategy to real money.
+  </footer>
+</div>
+
+<script>
+  // Glossary filter: hides terms (and empty groups) that don't contain the typed text.
+  (function () {
+    const input = document.getElementById("gloss-search");
+    const groups = [...document.querySelectorAll(".gloss-group")];
+    const count = document.getElementById("gloss-count");
+    const empty = document.getElementById("gloss-empty");
+    const total = document.querySelectorAll(".term").length;
+
+    function apply() {
+      const q = input.value.trim().toLowerCase();
+      let shown = 0;
+      for (const g of groups) {
+        let inGroup = 0;
+        for (const t of g.querySelectorAll(".term")) {
+          const hit = !q || t.textContent.toLowerCase().includes(q);
+          t.hidden = !hit;
+          if (hit) inGroup++;
+        }
+        g.hidden = inGroup === 0;
+        shown += inGroup;
+      }
+      empty.hidden = shown !== 0;
+      count.textContent = q ? `${shown} of ${total} terms` : `${total} terms`;
+    }
+    input.addEventListener("input", apply);
+    apply();
+  })();
+</script>
+</body>
+</html>
