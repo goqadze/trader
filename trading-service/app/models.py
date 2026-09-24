@@ -61,6 +61,9 @@ class Bot(Base):
     mode: Mapped[str] = mapped_column(String(8), default="rules")  # rules | llm (passed to decision-service)
     min_confidence: Mapped[float] = mapped_column(Float, default=0.6)  # ignore weaker signals
     rebalance_days: Mapped[int] = mapped_column(Integer, default=5)  # decide every N trading days
+    # When, on a decision day: close (30 min before the close, like the backtest) | open (30 min after the
+    # open) | both. Live-only: the backtest always decides at the close. server_default: see db.init_db
+    decide_at: Mapped[str] = mapped_column(String(8), default="close", server_default="close")
     position_pct: Mapped[float] = mapped_column(Float, default=1.0)  # fraction of the bot's cash per BUY
     stop_pct: Mapped[float] = mapped_column(Float, default=0.04)  # stop-loss this far below the entry fill
     target_pct: Mapped[float] = mapped_column(Float, default=0.08)  # take profit this far above the entry fill
@@ -85,6 +88,8 @@ class Bot(Base):
     last_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_price_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
     last_decision_date: Mapped[date | None] = mapped_column(Date, nullable=True)  # trading day of the last real decision
+    # The exact moment of that decision: tells the scheduler which of the day's slots are already done
+    last_decision_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)

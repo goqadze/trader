@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 Mode = Literal["rules", "llm"]
+DecideAt = Literal["close", "open", "both"]  # which of the day's decision slots a bot uses (see market.slot_window)
 
 
 class StrategyParams(BaseModel):
@@ -15,6 +16,7 @@ class StrategyParams(BaseModel):
     mode: Mode = "rules"
     min_confidence: float = Field(0.6, ge=0, le=1)
     rebalance_days: int = Field(5, ge=1, le=60)
+    decide_at: DecideAt = "close"  # live bots only: the backtest always decides at the close
     position_pct: float = Field(1.0, gt=0, le=1)
     stop_pct: float = Field(0.04, gt=0, le=0.5)
     target_pct: float = Field(0.08, gt=0, le=2)
@@ -40,6 +42,7 @@ class BotUpdate(BaseModel):
     mode: Mode | None = None
     min_confidence: float | None = Field(None, ge=0, le=1)
     rebalance_days: int | None = Field(None, ge=1, le=60)
+    decide_at: DecideAt | None = None
     position_pct: float | None = Field(None, gt=0, le=1)
     stop_pct: float | None = Field(None, gt=0, le=0.5)
     target_pct: float | None = Field(None, gt=0, le=2)
@@ -70,8 +73,10 @@ class BotOut(StrategyParams):
     last_price: float | None
     last_price_at: datetime | None
     last_decision_date: date | None
+    last_decision_at: datetime | None
     created_at: datetime
     # --- derived for the dashboard ---
+    next_decision_at: datetime | None  # when the scheduler will next decide for this bot (None = paused/archived)
     equity: float
     return_pct: float
     unrealized_pnl: float
@@ -152,8 +157,9 @@ class StatusOut(BaseModel):
     market_open: bool
     session_open: datetime | None  # today's open/close (UTC), None on a non-trading day
     session_close: datetime | None
-    next_decision_at: datetime
+    next_decision_at: datetime  # the soonest decision of any active bot (or the next close slot if none)
     decision_minutes_before_close: int
+    decision_minutes_after_open: int
     risk_check_minutes: int
     scheduler_enabled: bool
     scheduler_running: bool

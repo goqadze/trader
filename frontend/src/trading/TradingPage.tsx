@@ -5,21 +5,27 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { tradingApi } from "./api";
 import BotForm, { type BotFormInitial } from "./BotForm";
-import { STATUS_COLOR, localTime, nyTime, pct, pnlColor, relative, usd } from "./format";
+import { STATUS_COLOR, checkTimes, localTime, nyTime, pct, pnlColor, relative, slotTimes, usd } from "./format";
 import type { Bot, BotCreate, TradingEvent, TradingStatus } from "./types";
 import { usePolling } from "./usePolling";
 
-/** Market clock + scheduler heartbeat, shown on both trading pages. */
-export function MarketStatus({ status }: { status: TradingStatus | null }) {
+/** Market clock + scheduler heartbeat, shown on both trading pages. Given a bot, shows that bot's next decision. */
+export function MarketStatus({ status, bot }: { status: TradingStatus | null; bot?: Bot }) {
   if (!status) return null;
   // The scheduler ticks every ~30s; no tick for 3 minutes means the loop is stuck or the service is down
   const stale = !status.scheduler_last_tick || Date.now() - new Date(status.scheduler_last_tick).getTime() > 180_000;
+  const t = slotTimes(status);
+  const next = bot ? bot.next_decision_at : status.next_decision_at;
   return (
     <Space wrap size="middle">
       <Badge status={status.market_open ? "success" : "default"} text={status.market_open ? "Market open" : "Market closed"} />
-      <Tooltip title={`Bots decide ${status.decision_minutes_before_close} min before the close (earlier on half days)`}>
+      <Tooltip
+        title={bot
+          ? `Every ${bot.rebalance_days} trading day${bot.rebalance_days === 1 ? "" : "s"} at ${checkTimes(bot.decide_at, t)} (earlier on half days)`
+          : `The soonest decision of any active bot. Bots check at ${t.open} and/or ${t.close} ET, as each is set (earlier on half days)`}
+      >
         <span style={{ color: "#8b98b5" }}>
-          Next decision {nyTime(status.next_decision_at)} ({relative(status.next_decision_at)})
+          {next ? `Next decision ${nyTime(next)} (${relative(next)})` : `No scheduled decisions while ${bot?.status}`}
         </span>
       </Tooltip>
       {!status.scheduler_enabled ? (
@@ -91,11 +97,12 @@ const columns: ColumnsType<Bot> = [
     key: "params",
     render: (_, b) => (
       <span style={{ fontSize: 12, color: "#8b98b5" }}>
-        {b.mode} · conf ≥ {b.min_confidence} · every {b.rebalance_days}d · stop {+(b.stop_pct * 100).toFixed(1)}% / tgt {+(b.target_pct * 100).toFixed(1)}%
+        {b.mode} · conf ≥ {b.min_confidence} · every {b.rebalance_days}d at {checkTimes(b.decide_at, slotTimes())} · stop {+(b.stop_pct * 100).toFixed(1)}% / tgt {+(b.target_pct * 100).toFixed(1)}%
       </span>
     ),
   },
-  { title: "Last decision", dataIndex: "last_decision_date", render: (v: string | null) => v ?? "—" },
+  { title: "Last decision", key: "last", render: (_, b) => (b.last_decision_at ? nyTime(b.last_decision_at) : b.last_decision_date ?? "—") },
+  { title: "Next decision", dataIndex: "next_decision_at", render: (v: string | null) => (v ? nyTime(v) : "—") },
 ];
 
 const LEVEL_COLOR: Record<string, string> = { info: "default", warning: "orange", error: "red" };
@@ -244,6 +251,7 @@ export default function TradingPage() {
         editing={false}
         initial={initial}
         brokers={status.data?.brokers ?? [{ name: "paper", label: "Paper (built-in simulator)", live: false, available: true, reason: "" }]}
+        times={slotTimes(status.data)}
         onCancel={() => setFormOpen(false)}
         onSubmit={create}
       />

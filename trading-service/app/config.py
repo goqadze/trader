@@ -17,6 +17,8 @@ class Settings:
     scheduler_enabled: bool = _bool("SCHEDULER_ENABLED", True)
     tick_seconds: int = int(os.getenv("TICK_SECONDS", "30"))  # how often the scheduler wakes up
     decision_minutes_before_close: int = int(os.getenv("DECISION_MINUTES_BEFORE_CLOSE", "30"))
+    # For bots that also (or only) decide in the morning: N minutes after the open (30 = 10:00 New York)
+    decision_minutes_after_open: int = int(os.getenv("DECISION_MINUTES_AFTER_OPEN", "30"))
     risk_check_minutes: int = int(os.getenv("RISK_CHECK_MINUTES", "5"))
     # Refuse to trade on a quote older than this during market hours (a frozen feed is worse than no trade)
     max_quote_age_minutes: int = int(os.getenv("MAX_QUOTE_AGE_MINUTES", "20"))

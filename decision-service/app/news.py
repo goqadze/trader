@@ -20,6 +20,7 @@ _store: NewsStore | None = None
 
 # The backtest fills at the day's close, so a decision "as of" a day may only use news published
 # before ~15:30 New York time -- after-hours news (e.g. 16:05 earnings) belongs to the NEXT day.
+# That is the default cutoff; a live bot deciding at another time (e.g. 10:00) passes its exact moment.
 MARKET_TZ = ZoneInfo("America/New_York")
 DECISION_TIME = time(15, 30)
 
@@ -162,11 +163,12 @@ def enabled_sources() -> list[str]:
     return [n for n, (envs, _) in SOURCES.items() if all(os.getenv(e) for e in envs)]
 
 
-def ingest_news(symbol: str, as_of: date, days: int = LOOKBACK_DAYS) -> dict[str, str]:
+def ingest_news(symbol: str, as_of: date, days: int = LOOKBACK_DAYS, cutoff: int | None = None) -> dict[str, str]:
     """Pull every enabled source for the window ending at as_of and store it. One source failing doesn't
-    stop the rest. Only articles never seen before are embedded, so re-running a window costs nothing."""
+    stop the rest. Only articles never seen before are embedded, so re-running a window costs nothing.
+    cutoff: unix time after which news is ignored (default: 15:30 New York on as_of)."""
     start = as_of - timedelta(days=days)
-    cutoff = decision_cutoff(as_of)
+    cutoff = cutoff or decision_cutoff(as_of)
     report: dict[str, str] = {}  # per-source count or error, shown in the decision's steps trail
     articles: dict[str, dict] = {}  # by id: the same article can't be stored twice in one batch
     for name in enabled_sources():
@@ -212,11 +214,12 @@ def _rank(candidates: list[dict], cutoff: int, k: int) -> list[str]:
     return [text for _, text in scored[:k]]
 
 
-def search_news(symbol: str, as_of: date, k: int = 8) -> list[str]:
+def search_news(symbol: str, as_of: date, k: int = 8, cutoff: int | None = None) -> list[str]:
     """Top-k items for the symbol from the LOOKBACK_DAYS before the decision cutoff, relevance x recency.
     The database returns EVERY article in the window (exact similarity, no approximate index), so an
-    older-but-relevant or newer-but-less-similar item is never lost before the recency re-ranking."""
-    cutoff = decision_cutoff(as_of)
+    older-but-relevant or newer-but-less-similar item is never lost before the recency re-ranking.
+    cutoff: as in ingest_news; headline ages ("2h ago") are measured from it."""
+    cutoff = cutoff or decision_cutoff(as_of)
     end = datetime.fromtimestamp(cutoff, tz=timezone.utc)
     found = _get_store().candidates(symbol, end - timedelta(days=LOOKBACK_DAYS), end, list(_query_vector(symbol)))
     return _rank(found, cutoff, k)

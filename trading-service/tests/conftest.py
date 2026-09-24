@@ -186,9 +186,11 @@ def signal(action="BUY", confidence=0.8, **extra):
     """A stand-in for decision-service: returns a fixed signal and counts calls."""
     calls = []
 
-    def fn(bot, as_of):
+    def fn(bot, as_of, at=None):
         calls.append(as_of)
+        fn.times.append(at)
         return {"action": action, "confidence": confidence, "sentiment": "bullish", "reasoning": "test", "steps": ["s"], **extra}
 
     fn.calls = calls
+    fn.times = []  # the decision moment passed with each call (the news cutoff)
     return fn

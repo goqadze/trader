@@ -360,7 +360,8 @@ def evaluate(session: Session, bot: Bot, broker: Broker, now: datetime, kind: st
 
     kind: 'scheduled' (the daily run), 'manual' (Run now while the market is open),
           'preview'   (Run now while closed or paused: shows what the bot WOULD do, trades nothing).
-    Marks today as decided only when the signal call succeeded, so a failed call gets retried."""
+    Marks the decision as made (last_decision_at) only when the signal call succeeded, so a failed call
+    gets retried; the scheduler reads it to know which of today's slots are done."""
     today = ny_date(now)
     decision = Decision(bot_id=bot.id, session_date=today, kind=kind, action="HOLD", created_at=now)
     session.add(decision)
@@ -371,7 +372,7 @@ def evaluate(session: Session, bot: Bot, broker: Broker, now: datetime, kind: st
         decision.price = bot.last_price
 
     try:
-        sig = signal_fn(bot, today)
+        sig = signal_fn(bot, today, now)  # `now`: news published after this moment is never used
     except SignalError as e:
         decision.outcome = f"Signal failed, no trade: {e}"
         log_event(session, bot.id, "error", decision.outcome, "error", now)
@@ -392,7 +393,7 @@ def evaluate(session: Session, bot: Bot, broker: Broker, now: datetime, kind: st
         session.commit()
         return decision
 
-    bot.last_decision_date = today
+    bot.last_decision_date, bot.last_decision_at = today, now
     decision.outcome = _act(session, bot, broker, decision, now)
     protect(session, bot, broker, now)  # a new position gets its broker-held stop-loss at once
     if decision.price:

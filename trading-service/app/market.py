@@ -44,6 +44,30 @@ def decision_time(day: date, minutes_before_close: int) -> datetime | None:
     return None if bounds is None else bounds[1] - timedelta(minutes=minutes_before_close)
 
 
+# A trading day has up to two decision slots, in time order. Each bot picks one or both (Bot.decide_at).
+SLOTS = ("open", "close")
+OPEN_SLOT_LENGTH = timedelta(minutes=30)
+
+
+def slot_window(day: date, slot: str, minutes_after_open: int, minutes_before_close: int) -> tuple[datetime, datetime] | None:
+    """[start, end) in UTC of a decision slot on a trading day, or None on weekends/holidays.
+
+    open:  starts N min after the open and lasts 30 min (10:00-10:30 New York on a normal day). Skipping
+           the first minutes avoids the opening auction's jumpy prices and wide spreads.
+    close: starts N min before the close and lasts until the close (15:30-16:00; 12:30-13:00 on half days).
+    If the service is down for a slot's whole window, that slot is skipped (never made up later)."""
+    bounds = session_bounds(day)
+    if bounds is None:
+        return None
+    open_, close = bounds
+    if slot == "open":
+        start = open_ + timedelta(minutes=minutes_after_open)
+        return start, min(start + OPEN_SLOT_LENGTH, close)
+    if slot == "close":
+        return close - timedelta(minutes=minutes_before_close), close
+    raise ValueError(f"unknown decision slot {slot!r}")
+
+
 def sessions_since(last: date | None, today: date) -> int:
     """Trading days after `last` up to and including `today`. Used for "decide every N trading days"."""
     if last is None:

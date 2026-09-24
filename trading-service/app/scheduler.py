@@ -4,18 +4,19 @@
      and keeps the stop-loss resting at the broker         (brokers that can hold one: Alpaca)
   2. checks the real account matches the bot's records   (market hours, real brokers only)
   3. refreshes the price, records equity, enforces stops  (market hours, every RISK_CHECK_MINUTES)
-  4. makes the daily decision when it is due              (active bots, DECISION_MINUTES_BEFORE_CLOSE before the close,
-                                                           every `rebalance_days` trading days)
+  4. makes a decision when one is due                     (active bots, every `rebalance_days` trading days, at the
+                                                           slots the bot chose: 30 min after the open and/or 30 min
+                                                           before the close, see market.slot_window)
 
-Restart-safe by design: "did we already decide today?" lives in the database (Bot.last_decision_date),
-not in memory, so a restart at 15:40 doesn't decide twice. If the service is down for the whole
-decision window, that day is simply skipped and the next trading day catches up.
+Restart-safe by design: "which slots are already done?" comes from the database (Bot.last_decision_at),
+not from memory, so a restart at 15:40 doesn't decide twice. If the service is down for a slot's whole
+window, that slot is simply skipped and the next one catches up.
 """
 
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import select
 
@@ -23,7 +24,7 @@ from .brokers import BrokerError, get_broker
 from .config import settings
 from .db import SessionLocal, utcnow
 from .decision_client import get_signal
-from .market import decision_time, is_open, ny_date, session_bounds, sessions_since
+from .market import NY, is_open, ny_date, session_bounds, sessions_since, slot_window
 from .models import Bot
 from .trader import bot_lock, evaluate, log_event, protect, reconcile, sync_pending, watch
 
@@ -39,18 +40,72 @@ SIGNAL_RETRY = timedelta(minutes=5)
 ERROR_LOG_EVERY = timedelta(hours=1)
 
 
-def decision_due(bot: Bot, now: datetime) -> bool:
-    """True inside today's decision window if this bot hasn't decided today and N trading days have passed."""
+# Bot.decide_at -> its slots, in time order
+BOT_SLOTS = {"close": ("close",), "open": ("open",), "both": ("open", "close")}
+
+
+def _window(day: date, slot: str) -> tuple[datetime, datetime] | None:
+    return slot_window(day, slot, settings.decision_minutes_after_open, settings.decision_minutes_before_close)
+
+
+def _last_decided(bot: Bot) -> datetime | None:
+    """When the bot last made a real decision. Bots from before decision slots existed only stored the
+    date; count that whole day as decided."""
+    if bot.last_decision_at is not None:
+        return bot.last_decision_at
+    if bot.last_decision_date is not None:
+        return datetime.combine(bot.last_decision_date, time(23, 59), tzinfo=NY)
+    return None
+
+
+def _slot_open(bot: Bot, day: date, slot: str, last: datetime | None) -> bool:
+    """Does this slot on this trading day still need a decision? (The caller checks the clock.)
+
+    - The day must be a decision day: `rebalance_days` trading days since the last one, or the same day
+      (so a bot on "both" that decided at 10:00 still decides again at 15:30).
+    - The slot is done once any decision -- scheduled, or a manual "Run now" -- happened after the
+      previous slot's window ended (for the day's first slot: after the open)."""
+    last_day = ny_date(last) if last else None
+    if last_day != day and sessions_since(last_day, day) < bot.rebalance_days:
+        return False
+    slots = BOT_SLOTS[bot.decide_at]
+    i = slots.index(slot)
+    done_after = _window(day, slots[i - 1])[1] if i > 0 else session_bounds(day)[0]
+    return last is None or last < done_after
+
+
+def due_slot(bot: Bot, now: datetime) -> str | None:
+    """The slot this bot should decide for right now ("open" / "close"), or None."""
     today = ny_date(now)
-    at = decision_time(today, settings.decision_minutes_before_close)
-    if at is None:
-        return False  # weekend / holiday
-    close = session_bounds(today)[1]
-    if not (at <= now < close):
-        return False
-    if bot.last_decision_date == today:
-        return False
-    return sessions_since(bot.last_decision_date, today) >= bot.rebalance_days
+    last = _last_decided(bot)
+    for slot in BOT_SLOTS[bot.decide_at]:
+        window = _window(today, slot)
+        if window is None:
+            return None  # weekend / holiday
+        if window[0] <= now < window[1] and _slot_open(bot, today, slot, last):
+            return slot
+    return None
+
+
+def decision_due(bot: Bot, now: datetime) -> bool:
+    return due_slot(bot, now) is not None
+
+
+def next_decision_at(bot: Bot, now: datetime) -> datetime | None:
+    """When the scheduler will next decide for this bot (the dashboard shows it). None unless active."""
+    if bot.status != "active":
+        return None
+    last = _last_decided(bot)
+    day = ny_date(now)
+    for _ in range(100):  # rebalance_days <= 60 trading days, plus weekends and holidays
+        for slot in BOT_SLOTS[bot.decide_at]:
+            window = _window(day, slot)
+            if window is None:
+                break  # not a trading day
+            if window[1] > now and _slot_open(bot, day, slot, last):
+                return max(window[0], now)
+        day += timedelta(days=1)
+    return None
 
 
 def process_bot(bot_id: int, now: datetime, signal_fn=get_signal, broker_factory=get_broker) -> None:
@@ -76,8 +131,9 @@ def process_bot(bot_id: int, now: datetime, signal_fn=get_signal, broker_factory
                     _last_watch[bot.id] = now
                     watch(session, bot, broker, now)
                 if bot.status == "active" and decision_due(bot, now) and now >= _retry_after.get(bot.id, now):
+                    before = bot.last_decision_at
                     evaluate(session, bot, broker, now, "scheduled", signal_fn)
-                    if bot.last_decision_date != ny_date(now):  # the signal call failed
+                    if bot.last_decision_at == before:  # the signal call failed
                         _retry_after[bot.id] = now + SIGNAL_RETRY
                 session.commit()
             except Exception as e:  # BrokerError, network, DB... record it and move on

@@ -39,9 +39,15 @@ every order, and an audit log of every change.
 
 How a bot runs (`trading-service/app/scheduler.py`):
 
-- **Decides once per trading day, 30 min before the close** (15:30 New York; earlier on half days),
-  every `rebalance_days` trading days. That matches the backtest (which fills at the close) and the
-  news cutoff. Holidays and early closes come from the NYSE calendar.
+- **Decides every `rebalance_days` trading days, at the time(s) set per bot in "Check at"**:
+  - **Before the close** (default): 15:30 New York, earlier on half days. That matches the backtest
+    (which fills at the close) and the news cutoff.
+  - **After the open**: 10:00 New York, skipping the jumpy first 30 minutes.
+  - **Both**: 10:00 and 15:30 on each decision day.
+
+  Every check uses the same daily indicators, with that moment's price. News only counts up to the
+  decision moment. "Before the close" is the only one the backtest tests. Holidays and early closes
+  come from the NYSE calendar.
 - **Same rules as the backtest**: BUY when flat and confidence ≥ minimum, spending `position_pct`
   of the bot's cash; SELL the whole position on a SELL signal, the stop-loss, or the take-profit.
 - **Stricter than the backtest where money is at stake**: stops/targets are checked every 5 minutes
@@ -72,7 +78,8 @@ Safety built in:
   a network drop the scheduler asks the broker what happened instead of re-sending.
 - **Reconciliation** (real brokers): if the account's shares don't match the bot's records (e.g. you traded by
   hand), the bot pauses. Only one bot per symbol per real account, so positions can't mix.
-- **Restart-safe**: "already decided today" is stored in the database, so a restart never decides twice.
+- **Restart-safe**: the time of the last decision is stored in the database, so a restart never repeats a
+  check (and never skips the afternoon one because the morning one ran).
 - **History is never deleted**: bots are archived, not removed. Data lives in its own Postgres container
   (`trading-db`, Docker volume `trading-db`), separate from Langfuse's database.
 - **Every port listens on localhost only**: nothing here has a login, and the dashboard can place orders.
@@ -143,7 +150,7 @@ Browser ──► frontend :8080 (React + antd, nginx)
 
 Browser ──► /api/trading/*  (proxied by nginx)
                 ▼
-        trading-service :8002 ── scheduler (every 30s) ──► decision-service  (15:30 ET decision)
+        trading-service :8002 ── scheduler (every 30s) ──► decision-service  (10:00 and/or 15:30 ET)
                 │                     │
                 │                     └──► broker: paper simulator | Alpaca paper | Alpaca live
                 │                                  (Alpaca also holds each position's stop-loss order)

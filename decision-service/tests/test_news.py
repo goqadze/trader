@@ -182,3 +182,23 @@ def test_source_errors_never_leak_api_keys(monkeypatch):
     monkeypatch.setattr(news, "SOURCES", {"polygon": ((), failing_source)})
     report = news.ingest_news("AAPL", AS_OF)
     assert "SECRET123" not in report["polygon"]
+
+
+def test_a_morning_decision_uses_news_up_to_its_own_time(monkeypatch, embed_calls):
+    """A live bot deciding at 10:00 New York passes that moment: later news is dropped, ages count from 10:00."""
+    ten_am = int(datetime(2025, 6, 2, 14, 0, tzinfo=timezone.utc).timestamp())  # 10:00 EDT
+
+    def fake_source(symbol, start, end):
+        return [
+            {"id": "x-1", "headline": "Pre-market upgrade", "summary": "", "ts": ten_am - HOUR, "source": "x"},
+            {"id": "x-2", "headline": "Midday recall", "summary": "", "ts": ten_am + 2 * HOUR, "source": "x"},
+        ]
+
+    fake = FakeStore([_cand("Pre-market upgrade.", "x", ten_am - HOUR, 0.8)])
+    monkeypatch.setattr(news, "SOURCES", {"x": ((), fake_source)})
+    monkeypatch.setattr(news, "_get_store", lambda: fake)
+
+    assert news.ingest_news("AAPL", AS_OF, cutoff=ten_am) == {"x": "1", "newly embedded": "1"}
+    assert [r["id"] for r in fake.upserted] == ["x-1"]  # 12:00 news didn't exist yet at 10:00
+    assert news.search_news("AAPL", AS_OF, cutoff=ten_am) == ["[x, 1h ago] Pre-market upgrade."]  # not "4h ago"
+    assert fake.candidates_args[2] == datetime.fromtimestamp(ten_am, tz=timezone.utc)

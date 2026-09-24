@@ -50,6 +50,9 @@ app = FastAPI(title="Trading Service", lifespan=lifespan)
 # Helpers
 # ---------------------------------------------------------------------------
 
+DECIDE_AT_LABEL = {"close": "before the close", "open": "after the open", "both": "after the open and before the close"}
+
+
 def _get_bot(session: Session, bot_id: int) -> Bot:
     bot = session.get(Bot, bot_id)
     if bot is None:
@@ -61,6 +64,7 @@ def _bot_out(session: Session, bot: Bot) -> BotOut:
     price = bot.last_price or bot.entry_price or 0.0
     equity = round(bot.cash + bot.shares * price, 2)
     live = next((b["live"] for b in catalog() if b["name"] == bot.broker), False)
+    now = utcnow()
     return BotOut.model_validate({
         **{c: getattr(bot, c) for c in BotOut.model_fields if hasattr(bot, c)},
         "live": live,
@@ -70,6 +74,7 @@ def _bot_out(session: Session, bot: Bot) -> BotOut:
         "buy_hold_return_pct": round((price / bot.benchmark_price - 1) * 100, 2) if bot.benchmark_price and price else None,
         "pending_order": bool(open_orders(session, bot)),
         "stop_at_broker": resting_stop(session, bot) is not None,
+        "next_decision_at": scheduler.next_decision_at(bot, now),
     })
 
 
@@ -104,17 +109,21 @@ def health():
 
 
 @app.get("/status", response_model=StatusOut)
-def status():
+def status(session: Session = Depends(get_session)):
     """Market clock + scheduler heartbeat + which brokers are usable. The dashboard header shows this."""
     now = utcnow()
     bounds = session_bounds(ny_date(now))
+    # The soonest decision of any active bot; with none, the next regular close slot
+    upcoming = [t for b in session.scalars(select(Bot).where(Bot.status == "active"))
+                if (t := scheduler.next_decision_at(b, now)) is not None]
     return StatusOut(
         now=now,
         market_open=is_open(now),
         session_open=bounds[0] if bounds else None,
         session_close=bounds[1] if bounds else None,
-        next_decision_at=next_decision_time(now, settings.decision_minutes_before_close),
+        next_decision_at=min(upcoming, default=next_decision_time(now, settings.decision_minutes_before_close)),
         decision_minutes_before_close=settings.decision_minutes_before_close,
+        decision_minutes_after_open=settings.decision_minutes_after_open,
         risk_check_minutes=settings.risk_check_minutes,
         scheduler_enabled=settings.scheduler_enabled,
         scheduler_running=scheduler.state["running"],
@@ -167,7 +176,7 @@ def create_bot(body: BotCreate, session: Session = Depends(get_session)):
     session.flush()
     log_event(session, bot.id, "created",
               f"Created {bot.name}: {symbol} on {bot.broker} with ${bot.allocated_cash:,.2f}, {bot.mode} mode, "
-              f"min conf {bot.min_confidence}, every {bot.rebalance_days} trading days, "
+              f"min conf {bot.min_confidence}, every {bot.rebalance_days} trading days {DECIDE_AT_LABEL[bot.decide_at]}, "
               f"stop {bot.stop_pct:.1%} / target {bot.target_pct:.1%}", "warning" if info["live"] else "info")
     session.commit()
     return _bot_out(session, bot)

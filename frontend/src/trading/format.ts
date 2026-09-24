@@ -1,6 +1,8 @@
 // Formatting helpers shared by the trading pages. Market times are shown in New York time,
 // because that's the clock the exchange (and the bots' schedule) runs on.
 
+import type { DecideAt, TradingStatus } from "./types";
+
 // Values within half a cent of zero print as $0.00 (float dust would otherwise show "-$0.00")
 export const usd = (v: number | null | undefined, digits = 2) =>
   v == null
@@ -15,6 +17,20 @@ export const frac = (v: number) => `${+(v * 100).toFixed(2)}%`;
 export const pnlColor = (v: number | null | undefined) => (v == null || Math.abs(v) < 0.005 ? undefined : v > 0 ? "#33c088" : "#ef5b6b");
 
 const NY = "America/New_York";
+
+/** The two decision times in New York, from the service's settings: normally 10:00 and 15:30. */
+export function slotTimes(s?: Pick<TradingStatus, "decision_minutes_after_open" | "decision_minutes_before_close"> | null) {
+  const hhmm = (m: number) => `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`;
+  return {
+    open: hhmm(9 * 60 + 30 + (s?.decision_minutes_after_open ?? 30)),
+    close: hhmm(16 * 60 - (s?.decision_minutes_before_close ?? 30)),
+  };
+}
+
+/** "10:00 + 15:30 ET" for a bot's decide_at. */
+export function checkTimes(decideAt: DecideAt, t: { open: string; close: string }): string {
+  return `${decideAt === "close" ? t.close : decideAt === "open" ? t.open : `${t.open} + ${t.close}`} ET`;
+}
 
 export const nyTime = (iso: string | null | undefined) =>
   iso ? new Date(iso).toLocaleString("en-US", { timeZone: NY, month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) + " ET" : "—";

@@ -282,15 +282,15 @@
 
       <!-- 3. decision -->
       <div class="phase">
-        <div class="when"><strong>15:30 ET</strong>every N trading days<br>(12:30 on half days)</div>
+        <div class="when"><strong>15:30 ET</strong>and/or <strong>10:00 ET</strong><br>every N trading days<br>(close: 12:30 on half days)</div>
         <div class="rail">
           <div class="card">
             <h3>3 · The bot asks: buy, sell or hold?</h3>
-            <p>A decision is due only when <b>all</b> of these are true: it's a trading day · it's between 15:30 and the 16:00 close · the bot is <span class="tag buy">active</span> · it hasn't decided today · at least <code>N</code> trading days have passed since its last decision.</p>
+            <p>A decision is due only when <b>all</b> of these are true: it's a trading day · it's inside one of the bot's <b>Check at</b> windows (<b>after the open</b> 10:00–10:30, <b>before the close</b> 15:30–16:00, or <b>both</b>) · the bot is <span class="tag buy">active</span> · it hasn't already decided for that window · at least <code>N</code> trading days have passed since its last decision day (a bot on <b>both</b> decides twice on the same day).</p>
             <ol class="steps">
               <li>trading-service calls <code>decision-service /signal</code> with the symbol, today's date, the mode, and the bot's stop / target %.</li>
               <li><b>Prices:</b> ~120 days of daily prices → SMA20, SMA50, RSI14.</li>
-              <li><b>News:</b> last 7 days of headlines, published before 15:30 today. Recent ones count most. An AI labels the mood bullish / bearish / neutral.</li>
+              <li><b>News:</b> last 7 days of headlines, published before the decision moment (10:00 or 15:30). Recent ones count most. An AI labels the mood bullish / bearish / neutral.</li>
               <li><b>Decide</b> (rules mode): trend + RSI give BUY / SELL / HOLD at 0.60 confidence. News that agrees adds <code>+0.15</code>; news that disagrees subtracts <code>0.15</code>.</li>
               <li><b>Explain:</b> the AI writes 2 sentences of reasoning.</li>
               <li>trading-service saves a <b>Decision</b> row (signal, confidence, news mood, reasoning, every step) and marks today as decided.</li>
@@ -457,8 +457,8 @@
       <div class="card">
         <h3>Decision type</h3>
         <ul class="plain">
-          <li><span class="tag blue">scheduled</span> the daily 15:30 decision</li>
-          <li><span class="tag">manual</span> you pressed Run now while the market was open. It can trade.</li>
+          <li><span class="tag blue">scheduled</span> a decision at the bot's Check at time (10:00 and/or 15:30)</li>
+          <li><span class="tag">manual</span> you pressed Run now while the market was open. It can trade, and it counts as today's next scheduled check.</li>
           <li><span class="tag">preview</span> Run now while closed or paused: shows what it <em>would</em> do, sends nothing, doesn't use up today's decision</li>
         </ul>
         <h3>Order reason</h3>
@@ -567,7 +567,7 @@
           <div class="term"><dt>Market hours</dt><dd>9:30–16:00 ET, Monday–Friday, except holidays. Orders only go out in these hours.</dd></div>
           <div class="term"><dt>Trading day (session)</dt><dd>A day the exchange is open. Weekends and holidays aren't trading days.</dd></div>
           <div class="term"><dt>Half day (early close)</dt><dd>Days the market closes at 13:00 (e.g. the day after Thanksgiving). Bots then decide at 12:30.</dd></div>
-          <div class="term"><dt>Decision time</dt><dd>30 min before the close: 15:30 ET normally.</dd></div>
+          <div class="term"><dt>Decision time (Check at)</dt><dd>Per bot: <b>before the close</b> (15:30 ET, what the backtest tests), <b>after the open</b> (10:00 ET), or <b>both</b>.</dd></div>
           <div class="term"><dt>Quote</dt><dd>The latest traded price and when it happened.</dd></div>
           <div class="term"><dt>Stale quote</dt><dd>A price older than 20 min. The bot refuses to trade on it.</dd></div>
         </dl>

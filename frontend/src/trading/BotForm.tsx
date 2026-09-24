@@ -1,6 +1,7 @@
-import { Alert, Checkbox, Col, Divider, Form, Input, InputNumber, Modal, Row, Select, Tooltip } from "antd";
+import { Alert, Checkbox, Col, Divider, Form, Input, InputNumber, Modal, Radio, Row, Select, Tooltip } from "antd";
 import { useEffect, useRef, useState } from "react";
-import type { BotCreate, BotUpdate, BrokerInfo, Mode, StrategyParams } from "./types";
+import { slotTimes } from "./format";
+import type { BotCreate, BotUpdate, BrokerInfo, DecideAt, Mode, StrategyParams } from "./types";
 
 // The form works in human units (percent, dollars); the API wants fractions. These fields are
 // percentages on screen and fractions on the wire.
@@ -13,6 +14,7 @@ interface FormValues {
   allocated_cash: number;
   mode: Mode;
   rebalance_days: number;
+  decide_at: DecideAt;
   // all in percent here
   min_confidence: number;
   position_pct: number;
@@ -29,6 +31,7 @@ export const DEFAULT_PARAMS: StrategyParams = {
   mode: "rules",
   min_confidence: 0.6,
   rebalance_days: 5,
+  decide_at: "close", // what the backtest tests
   position_pct: 1.0,
   stop_pct: 0.04,
   target_pct: 0.08,
@@ -44,6 +47,7 @@ interface Props {
   editing: boolean; // edit mode: symbol, broker and capital are fixed for a bot's life
   initial: BotFormInitial;
   brokers: BrokerInfo[];
+  times?: { open: string; close: string }; // decision times in New York (from the service's /status)
   onCancel: () => void;
   onSubmit: (body: BotCreate | BotUpdate) => Promise<void>;
 }
@@ -60,7 +64,7 @@ function fromForm(v: FormValues): BotCreate {
   return out as unknown as BotCreate;
 }
 
-export default function BotForm({ open, editing, initial, brokers, onCancel, onSubmit }: Props) {
+export default function BotForm({ open, editing, initial, brokers, times = slotTimes(), onCancel, onSubmit }: Props) {
   const [form] = Form.useForm<FormValues>();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -164,11 +168,26 @@ export default function BotForm({ open, editing, initial, brokers, onCancel, onS
             </Form.Item>
           </Col>
           <Col span={8}>
-            <Form.Item name="rebalance_days" label="Every N trading days" tooltip="How often the bot decides: 1 = daily, 5 ≈ weekly. Decisions happen 30 min before the close.">
+            <Form.Item name="rebalance_days" label="Every N trading days" tooltip="How often the bot decides: 1 = every trading day, 5 ≈ weekly. On those days it checks at the time(s) set in “Check at”.">
               <InputNumber min={1} max={60} style={{ width: "100%" }} />
             </Form.Item>
           </Col>
         </Row>
+        <Form.Item
+          name="decide_at"
+          label="Check at (New York time)"
+          tooltip={`When the bot asks for a signal on a decision day. “Before the close” is what the backtest tests. “After the open” skips the jumpy first 30 minutes and uses the same daily indicators with the ${times.open} price. “Both” checks twice: a morning BUY can be sold at ${times.close} (and the reverse).`}
+        >
+          <Radio.Group
+            optionType="button"
+            buttonStyle="solid"
+            options={[
+              { value: "close", label: `Before the close · ${times.close}` },
+              { value: "open", label: `After the open · ${times.open}` },
+              { value: "both", label: "Both" },
+            ]}
+          />
+        </Form.Item>
         <Row gutter={12}>
           <Col span={8}>
             <Form.Item name="position_pct" label="Position size" tooltip="Share of the bot's cash spent on each BUY">

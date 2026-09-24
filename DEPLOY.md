@@ -1,11 +1,11 @@
 # Where to run it: laptop or server
 
-The stack is light (about 1.5 GB of RAM, almost no CPU) and the strategy decides once a day, so any
+The stack is light (about 1.5 GB of RAM, almost no CPU) and bots decide at most twice a day, so any
 machine works. What matters is **being awake**. The trading service only works while it runs:
 
 | Needs the service running | Works while it's down |
 |---|---|
-| The daily decision (15:30 New York). A missed day is skipped, never traded twice. | **Stop-loss on Alpaca bots.** It rests at Alpaca as a real stop order (`held at broker` on the bot page). |
+| The decisions (10:00 and/or 15:30 New York). A missed check is skipped, never traded twice. | **Stop-loss on Alpaca bots.** It rests at Alpaca as a real stop order (`held at broker` on the bot page). |
 | Take-profit, and the drawdown breaker | |
 | Stop-loss on the built-in **paper** simulator (`checked by app`) | |
 
@@ -21,7 +21,7 @@ The code and the setup are the same on both.
 
 ## Option A: your laptop (macOS)
 
-The US market is open 9:30–16:00 New York time. Bots decide at 15:30 New York time. Convert those to
+The US market is open 9:30–16:00 New York time. Bots decide at 15:30, and at 10:00 if set to check after the open. Convert those to
 your own time zone. For UTC+4 that's 17:30–00:00 while the US is on summer time (until the first
 Sunday of November), and 18:30–01:00 in winter.
 
@@ -190,7 +190,7 @@ ssh trader@SERVER_IP 'cd trading && docker compose up -d --build'
 ```
 
 A restart is safe at any time: pending orders are reconciled, and "already decided today" lives in the
-database. Still, avoid the decision window (15:30–16:00 New York) out of habit.
+database. Still, avoid the decision windows (10:00–10:30 and 15:30–16:00 New York) out of habit.
 
 ### 10. Keep an eye on it
 

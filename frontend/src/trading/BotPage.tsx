@@ -11,7 +11,7 @@ import { CartesianGrid, Legend, Line, LineChart, ReferenceDot, ResponsiveContain
 import { tradingApi } from "./api";
 import BotForm from "./BotForm";
 import {
-  ACTION_COLOR, ORDER_STATUS_COLOR, SENTIMENT_COLOR, STATUS_COLOR, frac, localTime, pct, pnlColor, usd,
+  ACTION_COLOR, ORDER_STATUS_COLOR, SENTIMENT_COLOR, STATUS_COLOR, checkTimes, frac, localTime, pct, pnlColor, slotTimes, usd,
 } from "./format";
 import { MarketStatus } from "./TradingPage";
 import type { Bot, BotUpdate, Decision, Order, Snapshot, TradingEvent } from "./types";
@@ -219,12 +219,12 @@ export default function BotPage() {
             <Tag color={bot.live ? "red" : "blue"}>{bot.live ? "LIVE — real money" : bot.broker === "paper" ? "PAPER (simulated)" : bot.broker}</Tag>
             {bot.pending_order && <Tag color="processing">order pending</Tag>}
           </Space>
-          <div style={{ marginTop: 4 }}><MarketStatus status={status.data} /></div>
+          <div style={{ marginTop: 4 }}><MarketStatus status={status.data} bot={bot} /></div>
         </Col>
         {bot.status !== "archived" && (
           <Col>
             <Space wrap>
-              <Tooltip title={marketOpen && bot.status === "active" ? "Decide now and trade on the result" : "Market closed or bot paused: shows what the bot would do, sends no order"}>
+              <Tooltip title={marketOpen && bot.status === "active" ? "Decide now and trade on the result. Counts as today's next scheduled check." : "Market closed or bot paused: shows what the bot would do, sends no order"}>
                 <Button icon={<ThunderboltOutlined />} loading={busy === "run"} onClick={runNow}>
                   {marketOpen && bot.status === "active" ? "Run now" : "Preview decision"}
                 </Button>
@@ -330,6 +330,7 @@ export default function BotPage() {
               <Descriptions.Item label="Mode">{bot.mode}</Descriptions.Item>
               <Descriptions.Item label="Min conf.">{bot.min_confidence}</Descriptions.Item>
               <Descriptions.Item label="Every">{bot.rebalance_days} trading day{bot.rebalance_days === 1 ? "" : "s"}</Descriptions.Item>
+              <Descriptions.Item label="Check at">{checkTimes(bot.decide_at, slotTimes(status.data))}</Descriptions.Item>
               <Descriptions.Item label="Position">{frac(bot.position_pct)} of cash</Descriptions.Item>
               <Descriptions.Item label="Stop">{frac(bot.stop_pct)}</Descriptions.Item>
               <Descriptions.Item label="Target">{frac(bot.target_pct)}</Descriptions.Item>
@@ -389,6 +390,7 @@ export default function BotPage() {
         editing
         initial={bot}
         brokers={status.data?.brokers ?? []}
+        times={slotTimes(status.data)}
         onCancel={() => setEditOpen(false)}
         onSubmit={save}
       />

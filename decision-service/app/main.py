@@ -1,6 +1,7 @@
 import logging
 import os
-from datetime import date
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
@@ -50,16 +51,25 @@ def signal(
     account_balance: float = 500.0,
     stop_pct: float | None = Query(None, gt=0, le=0.5),
     target_pct: float | None = Query(None, gt=0, le=2),
+    decided_at: datetime | None = None,
 ):
     """as_of lets the backtester replay history without look-ahead.
     mode = 'rules' (SMA/RSI logic) or 'llm' (the model decides).
     account_balance sizes a BUY (risk a fixed % of it).
     stop_pct / target_pct override the STOP_PCT / TARGET_PCT env defaults, so each trading bot or
-    backtest can run its own risk levels."""
+    backtest can run its own risk levels.
+    decided_at (live bots) = the exact decision moment, e.g. 10:00 New York: news published after it is
+    ignored. Without it the news cutoff is 15:30 New York on as_of."""
     as_of = as_of or date.today()  # default to today for live use
     if mode not in ("rules", "llm"):
         raise HTTPException(422, "mode must be 'rules' or 'llm'")
     state = {"symbol": symbol.upper(), "as_of": as_of, "mode": mode, "account_balance": account_balance}
+    if decided_at is not None:
+        decided_at = decided_at if decided_at.tzinfo else decided_at.replace(tzinfo=timezone.utc)
+        # Must fall on as_of's New York date, or a backtest could let tomorrow's news into today's decision
+        if decided_at.astimezone(ZoneInfo("America/New_York")).date() != as_of:
+            raise HTTPException(422, "decided_at must be on the as_of date (New York time)")
+        state["decided_at"] = decided_at
     if stop_pct is not None:
         state["stop_pct"] = stop_pct
     if target_pct is not None:

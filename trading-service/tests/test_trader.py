@@ -148,7 +148,7 @@ def test_preview_records_the_signal_but_never_trades(session):
 def test_signal_failure_is_recorded_as_hold_and_retried_later(session):
     bot = make_bot(session)
 
-    def boom(bot, as_of):
+    def boom(bot, as_of, at=None):
         raise SignalError("decision-service 500")
 
     d = evaluate(session, bot, FakeBroker(now=T), T, "scheduled", boom)

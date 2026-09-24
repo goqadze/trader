@@ -2,7 +2,7 @@
 
 from datetime import date, datetime, timezone
 
-from app.market import decision_time, is_open, next_decision_time, ny_date, session_bounds, sessions_since
+from app.market import decision_time, is_open, next_decision_time, ny_date, session_bounds, sessions_since, slot_window
 
 
 def test_regular_session_is_930_to_1600_new_york():
@@ -42,3 +42,15 @@ def test_sessions_since_skips_weekends_and_holidays():
 def test_next_decision_time_rolls_over_the_weekend():
     friday_evening = datetime(2025, 6, 6, 22, 0, tzinfo=timezone.utc)
     assert next_decision_time(friday_evening, 30) == datetime(2025, 6, 9, 19, 30, tzinfo=timezone.utc)  # Monday 15:30
+
+
+def test_decision_slots_after_the_open_and_before_the_close():
+    # Normal day: 10:00-10:30 and 15:30-16:00 New York
+    assert slot_window(date(2025, 6, 2), "open", 30, 30) == (datetime(2025, 6, 2, 14, 0, tzinfo=timezone.utc),
+                                                             datetime(2025, 6, 2, 14, 30, tzinfo=timezone.utc))
+    assert slot_window(date(2025, 6, 2), "close", 30, 30) == (datetime(2025, 6, 2, 19, 30, tzinfo=timezone.utc),
+                                                              datetime(2025, 6, 2, 20, 0, tzinfo=timezone.utc))
+    # Half day (closes 13:00): the morning slot is unchanged, the close slot moves to 12:30
+    assert slot_window(date(2025, 11, 28), "open", 30, 30)[0] == datetime(2025, 11, 28, 15, 0, tzinfo=timezone.utc)
+    assert slot_window(date(2025, 11, 28), "close", 30, 30)[0] == datetime(2025, 11, 28, 17, 30, tzinfo=timezone.utc)
+    assert slot_window(date(2025, 12, 25), "open", 30, 30) is None  # holiday

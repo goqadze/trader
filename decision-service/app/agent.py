@@ -1,5 +1,5 @@
 import os
-from datetime import date
+from datetime import date, datetime
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -16,6 +16,7 @@ class State(TypedDict, total=False):
 
     symbol: str
     as_of: date
+    decided_at: datetime  # optional: the exact decision moment (live bots); news after it is ignored
     mode: str  # "rules" (SMA/RSI logic) or "llm" (the model decides)
     account_balance: float  # used to size a BUY (risk a fixed % of this)
     stop_pct: float  # optional per-request stop-loss distance (else STOP_PCT env)
@@ -67,11 +68,15 @@ def news_rag(state: State) -> State:
     # No keys configured: skip gracefully so the service still works with technicals only
     if not _news_enabled():
         return {"headlines": [], "sentiment": "unavailable", "steps": state["steps"] + ["News RAG skipped (need OPENAI_API_KEY and at least one news source key)"]}
-    from .news import ingest_news, search_news
+    from .news import MARKET_TZ, ingest_news, search_news
 
+    # A live bot passes its decision moment (e.g. 10:00): only news published before then counts, and
+    # headline ages are measured from then. Without it (backtests): 15:30 New York on as_of.
+    cutoff = int(state["decided_at"].timestamp()) if state.get("decided_at") else None
+    cutoff_label = state["decided_at"].astimezone(MARKET_TZ).strftime("%H:%M") if cutoff else "15:30"
     try:
-        report = ingest_news(state["symbol"], state["as_of"])  # pull from Alpaca/Polygon/Finnhub into Postgres/pgvector
-        heads = search_news(state["symbol"], state["as_of"])  # semantic search for the most relevant items
+        report = ingest_news(state["symbol"], state["as_of"], cutoff=cutoff)  # pull from Alpaca/Polygon/Finnhub into Postgres/pgvector
+        heads = search_news(state["symbol"], state["as_of"], cutoff=cutoff)  # semantic search for the most relevant items
     except Exception as e:  # news failure must not break the signal
         return {"headlines": [], "sentiment": "unavailable", "steps": state["steps"] + [f"News RAG failed: {e}"]}
     if not heads:
@@ -91,7 +96,8 @@ def news_rag(state: State) -> State:
     return {
         "headlines": heads,
         "sentiment": label,
-        "steps": state["steps"] + [f"Sources ingested: {report}", f"News ({len(heads)} retrieved): {label} - {out.rationale}"],
+        "steps": state["steps"] + [f"Sources ingested (news up to {cutoff_label} New York): {report}",
+                                   f"News ({len(heads)} retrieved): {label} - {out.rationale}"],
     }
 
 

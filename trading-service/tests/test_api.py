@@ -109,7 +109,7 @@ def test_param_changes_are_audited(client):
 
 
 def test_run_now_while_closed_is_a_preview(client, monkeypatch):
-    monkeypatch.setattr(main, "evaluate", _evaluate_with(lambda bot, d: {"action": "BUY", "confidence": 0.9}))
+    monkeypatch.setattr(main, "evaluate", _evaluate_with(lambda bot, d, at=None: {"action": "BUY", "confidence": 0.9}))
     bot = _create(client)
     d = client.post(f"/bots/{bot['id']}/run").json()
     assert d["kind"] == "preview" and d["action"] == "BUY"
@@ -117,7 +117,7 @@ def test_run_now_while_closed_is_a_preview(client, monkeypatch):
 
 
 def test_run_now_while_open_trades_and_shows_in_history(client, clock, broker, monkeypatch):
-    monkeypatch.setattr(main, "evaluate", _evaluate_with(lambda bot, d: {"action": "BUY", "confidence": 0.9}))
+    monkeypatch.setattr(main, "evaluate", _evaluate_with(lambda bot, d, at=None: {"action": "BUY", "confidence": 0.9}))
     bot = _create(client, slippage_pct=0)  # no sizing buffer, so $5000 at $100 is exactly 50 shares
     clock["t"] = broker.now = OPEN
     d = client.post(f"/bots/{bot['id']}/run").json()
@@ -138,7 +138,7 @@ def test_run_now_while_open_trades_and_shows_in_history(client, clock, broker, m
 
 
 def test_broker_held_stop_shows_in_the_api_and_close_cancels_it_first(client, clock, broker, monkeypatch):
-    monkeypatch.setattr(main, "evaluate", _evaluate_with(lambda bot, d: {"action": "BUY", "confidence": 0.9}))
+    monkeypatch.setattr(main, "evaluate", _evaluate_with(lambda bot, d, at=None: {"action": "BUY", "confidence": 0.9}))
     broker.supports_stop_orders, broker.held = True, 0  # behave like Alpaca
     bot = _create(client, slippage_pct=0)
     clock["t"] = broker.now = OPEN
@@ -159,6 +159,18 @@ def test_broker_held_stop_shows_in_the_api_and_close_cancels_it_first(client, cl
     assert client.post(f"/bots/{bot['id']}/close").json()["status"] == "filled"
     assert client.get(f"/bots/{bot['id']}").json()["stop_at_broker"] is False
     assert client.post(f"/bots/{bot['id']}/archive").json()["status"] == "archived"
+
+
+def test_decide_at_is_saved_audited_and_drives_the_next_decision_time(client, clock):
+    clock["t"] = at(12, 0)  # Monday 08:00 New York
+    bot = _create(client, decide_at="both", rebalance_days=1)
+    assert bot["decide_at"] == "both" and bot["next_decision_at"] == "2025-06-02T14:00:00Z"  # 10:00 New York
+    assert client.get("/status").json()["next_decision_at"] == "2025-06-02T14:00:00Z"
+
+    client.patch(f"/bots/{bot['id']}", json={"decide_at": "close"})
+    assert client.get(f"/bots/{bot['id']}").json()["next_decision_at"] == "2025-06-02T19:30:00Z"  # 15:30
+    assert "decide_at both → close" in client.get(f"/bots/{bot['id']}/events").json()[0]["message"]
+    assert client.post("/bots", json={"symbol": "AAPL", "decide_at": "noon"}).status_code == 422
 
 
 def test_close_position_refused_when_market_closed(client):

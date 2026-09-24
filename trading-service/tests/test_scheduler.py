@@ -10,6 +10,7 @@ from app import scheduler
 from app.db import SessionLocal
 from app.decision_client import SignalError
 from app.models import Bot, Order
+from app.trader import evaluate
 
 
 @pytest.fixture(autouse=True)
@@ -67,7 +68,7 @@ def test_failed_signal_is_retried_after_a_pause_not_every_tick(session):
     broker = FakeBroker(now=at(19, 30))
     calls = []
 
-    def flaky(bot, as_of):
+    def flaky(bot, as_of, at=None):
         calls.append(as_of)
         if len(calls) == 1:
             raise SignalError("timeout")
@@ -136,3 +137,73 @@ def test_rebalance_days_spaces_out_decisions(session):
         scheduler.process_bot(bot.id, t, sig, lambda b: FakeBroker(now=t))
     assert sig.calls == [date(2025, 6, 2), date(2025, 6, 4), date(2025, 6, 6)]
 
+
+
+# --- Decision slots: after the open and/or before the close -----------------------------------------
+# June 2025 = New York summer time (UTC-4): 10:00 New York = 14:00 UTC, 15:30 New York = 19:30 UTC.
+
+def _ticks(bot_id, times, sig, broker=None):
+    for t in times:
+        scheduler.process_bot(bot_id, t, sig, lambda b: broker or FakeBroker(now=t))
+
+
+def test_a_both_bot_decides_after_the_open_and_again_before_the_close(session):
+    bot = make_bot(session, decide_at="both")
+    sig = signal("HOLD")
+    _ticks(bot.id, [at(13, 45), at(14, 0), at(14, 5), at(14, 40), at(19, 0), at(19, 30), at(19, 45)], sig)
+    assert sig.times == [at(14, 0), at(19, 30)]  # 10:00 and 15:30 New York, once each
+
+
+def test_an_open_bot_decides_only_in_the_morning(session):
+    bot = make_bot(session, decide_at="open")
+    sig = signal("HOLD")
+    _ticks(bot.id, [at(14, 0), at(19, 30), at(14, 0, day=3)], sig)
+    assert sig.times == [at(14, 0), at(14, 0, day=3)]
+
+
+def test_the_morning_slot_is_skipped_if_missed_but_the_close_still_happens(session):
+    bot = make_bot(session, decide_at="both")
+    sig = signal("HOLD")
+    _ticks(bot.id, [at(14, 30), at(19, 30)], sig)  # service was down 10:00-10:30 New York
+    assert sig.times == [at(19, 30)]
+
+
+def test_rebalance_days_picks_the_days_and_decide_at_the_times(session):
+    bot = make_bot(session, decide_at="both", rebalance_days=2)
+    sig = signal("HOLD")
+    for day in (2, 3, 4):  # Mon, Tue, Wed
+        _ticks(bot.id, [at(14, 0, day=day), at(19, 30, day=day)], sig)
+    assert sig.times == [at(14, 0), at(19, 30), at(14, 0, day=4), at(19, 30, day=4)]  # Tuesday skipped
+
+
+def test_restart_between_slots_neither_repeats_the_morning_nor_skips_the_close(session):
+    bot = make_bot(session, decide_at="both")
+    sig = signal("HOLD")
+    _ticks(bot.id, [at(14, 0)], sig)
+    scheduler._last_watch.clear()
+    scheduler._retry_after.clear()  # simulate a restart
+    _ticks(bot.id, [at(14, 10), at(19, 30)], sig)
+    assert sig.times == [at(14, 0), at(19, 30)]
+
+
+def test_run_now_counts_as_the_next_decision_of_the_day(session):
+    """A manual decision at 11:00 is today's close decision made early (as before slots existed)."""
+    bot = make_bot(session)  # decide_at="close"
+    evaluate(session, bot, FakeBroker(now=at(15, 0)), at(15, 0), "manual", signal("HOLD"))
+    sig = signal("HOLD")
+    _ticks(bot.id, [at(19, 30)], sig)
+    assert sig.times == []
+
+
+def test_next_decision_at_follows_the_bots_slots_and_rebalance_days(session):
+    both = make_bot(session, decide_at="both")
+    assert scheduler.next_decision_at(both, at(12, 0)) == at(14, 0)  # 08:00 New York -> 10:00
+    _ticks(both.id, [at(14, 0)], signal("HOLD"))
+    both = _reload(both.id)
+    assert scheduler.next_decision_at(both, at(14, 10)) == at(19, 30)  # morning done -> 15:30
+
+    weekly = make_bot(session, rebalance_days=5, last_decision_date=date(2025, 6, 2), last_decision_at=at(19, 30))
+    assert scheduler.next_decision_at(weekly, at(20, 0)) == at(19, 30, day=9)  # 5 trading days later
+
+    paused = make_bot(session, status="paused")
+    assert scheduler.next_decision_at(paused, at(12, 0)) is None
