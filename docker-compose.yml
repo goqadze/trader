@@ -8,8 +8,29 @@ services:
       - ./decision-service/.env        # API keys (OpenAI, Alpaca, ...) + monitoring config
     volumes:
       - ./decision-service/app:/code/app   # live code reload in dev
-      - chroma-data:/data                  # persisted news vector store
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload   # --reload restarts on code changes
+    depends_on:
+      news-db:
+        condition: service_healthy     # the news store must accept connections before the first signal
+
+  # News vector store for the RAG layer: Postgres with the pgvector extension, owned by decision-service.
+  # Separate from trading-db, so news ingestion can never lock or fill up the trading history.
+  news-db:
+    image: pgvector/pgvector:pg16      # official postgres:16 image + the pgvector extension
+    environment:
+      POSTGRES_USER: news
+      POSTGRES_PASSWORD: news            # local-only dev credentials; the port is bound to localhost
+      POSTGRES_DB: news
+    ports:
+      - "127.0.0.1:5434:5432"          # inspect with any SQL client: localhost:5434 news/news
+    volumes:
+      - news-db:/var/lib/postgresql/data  # a cache: safe to delete, news is re-fetched on the next decision
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U news -d news"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
 
   # The backtest engine API (FastAPI + WebSocket)
   backtest-service:
@@ -158,7 +179,7 @@ services:
 
 # Named volumes managed by Docker (persist data between runs)
 volumes:
-  chroma-data:
+  news-db:
   trading-db:
   langfuse-db:
   glitchtip-db:

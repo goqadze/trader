@@ -10,7 +10,9 @@ langchain-openai<0.4
 yfinance
 pandas
 httpx
-chromadb
+openai>=1                     # embeddings for the news vector store
+psycopg[binary,pool]>=3.1     # Postgres driver + connection pool (news-db)
+pgvector                      # vector type adapter for psycopg
 tzdata  # IANA timezones for zoneinfo (market close in New York time), independent of the OS image
 sentry-sdk[fastapi]
 langfuse>=2,<3

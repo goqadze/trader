@@ -82,6 +82,14 @@ Safety built in:
 | Back up | `make backup-trading-db` → `backups/trading-<timestamp>.sql` (git-ignored) |
 | Restore | `docker compose exec -T trading-db psql -U trading trading < backups/<file>.sql` |
 
+### News store (RAG)
+
+decision-service keeps fetched headlines and their OpenAI embeddings in `news-db` (Postgres + pgvector,
+`localhost:5434`, `news`/`news`). Each search filters to one symbol and the 7 days before the decision
+cutoff, then ranks by exact cosine similarity × recency. Articles are embedded once; re-fetching a
+window costs no extra OpenAI calls. It's a cache: deleting the `news-db` volume only means news is
+re-downloaded on the next decision, so it needs no backups.
+
 `docker compose down` keeps the data; `docker compose down -v` **deletes it** (volumes included).
 Tests use a separate `trading_test` database and refuse to run against any database not named `*_test`.
 
@@ -116,7 +124,7 @@ Browser ──► frontend :8080 (React + antd, nginx)
                 │  POST /runs  +  WebSocket /ws/{id}   (proxied by nginx)
                 ▼
         backtest-service :8001 ──(loops over dates)──► decision-service :8000
-                │                                        prices (yfinance) + news RAG (Chroma) + LLM
+                │                                        prices (yfinance) + news RAG (pgvector) + LLM
                 │                                        returns { action, confidence, reasoning, steps }
                 ▼
         simulate portfolio ──► stream equity / trades / metrics back to the browser live

@@ -70,7 +70,7 @@ def news_rag(state: State) -> State:
     from .news import ingest_news, search_news
 
     try:
-        report = ingest_news(state["symbol"], state["as_of"])  # pull from Alpaca/Polygon/Finnhub into Chroma
+        report = ingest_news(state["symbol"], state["as_of"])  # pull from Alpaca/Polygon/Finnhub into Postgres/pgvector
         heads = search_news(state["symbol"], state["as_of"])  # semantic search for the most relevant items
     except Exception as e:  # news failure must not break the signal
         return {"headlines": [], "sentiment": "unavailable", "steps": state["steps"] + [f"News RAG failed: {e}"]}

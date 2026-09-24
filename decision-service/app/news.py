@@ -1,16 +1,19 @@
 import math
 import os
 import re
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 
-import chromadb
 import httpx
-from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
 
-# Local vector database; /data is a Docker volume so news survives restarts.
-# Opened lazily so importing this module (e.g. in tests) doesn't touch the disk.
-_client = None
+from .news_store import NewsStore
+
+# News vector store: Postgres + pgvector in the news-db container (see news_store.py).
+# Created lazily so importing this module (e.g. in tests) never opens a database connection.
+NEWS_DATABASE_URL = os.getenv("NEWS_DATABASE_URL", "postgresql://news:news@news-db:5432/news")
+EMBEDDING_MODEL = "text-embedding-3-small"
+_store: NewsStore | None = None
 
 # Every source is converted to the same shape:
 # {"id", "headline", "summary", "ts": unix seconds (UTC), "source"}
@@ -46,13 +49,25 @@ def _age_label(hours: float) -> str:
     return f"{max(0, round(hours))}h ago" if hours < 24 else f"{round(hours / 24)}d ago"
 
 
-def _collection():
-    """Open (or create) the 'news' collection; OpenAI turns text into embedding vectors for search."""
-    global _client
-    if _client is None:
-        _client = chromadb.PersistentClient(path="/data/chroma")
-    ef = OpenAIEmbeddingFunction(api_key=os.environ["OPENAI_API_KEY"], model_name="text-embedding-3-small")
-    return _client.get_or_create_collection("news", embedding_function=ef)
+def _get_store() -> NewsStore:
+    global _store
+    if _store is None:
+        _store = NewsStore(NEWS_DATABASE_URL)
+    return _store
+
+
+def _embed(texts: list[str]) -> list[list[float]]:
+    """OpenAI turns each text into a 1536-number vector; texts with similar meaning get similar vectors."""
+    from openai import OpenAI
+
+    resp = OpenAI().embeddings.create(model=EMBEDDING_MODEL, input=texts)
+    return [d.embedding for d in resp.data]
+
+
+@lru_cache(maxsize=256)
+def _query_vector(symbol: str) -> tuple[float, ...]:
+    """The search question for a symbol never changes, so embed it once per symbol, not once per decision."""
+    return tuple(_embed([f"{symbol} stock outlook, earnings, risks"])[0])
 
 
 def _get(url: str, **kw):
@@ -148,55 +163,60 @@ def enabled_sources() -> list[str]:
 
 
 def ingest_news(symbol: str, as_of: date, days: int = LOOKBACK_DAYS) -> dict[str, str]:
-    """Pull every enabled source for the window ending at as_of. One source failing doesn't stop the rest."""
+    """Pull every enabled source for the window ending at as_of and store it. One source failing doesn't
+    stop the rest. Only articles never seen before are embedded, so re-running a window costs nothing."""
     start = as_of - timedelta(days=days)
     cutoff = decision_cutoff(as_of)
-    report, docs, ids, metas = {}, [], [], []  # report = per-source count or error, shown in the steps trail
+    report: dict[str, str] = {}  # per-source count or error, shown in the decision's steps trail
+    articles: dict[str, dict] = {}  # by id: the same article can't be stored twice in one batch
     for name in enabled_sources():
         try:
-            articles = [a for a in SOURCES[name][1](symbol, start, as_of) if a["ts"] <= cutoff]  # no look-ahead
+            found = [a for a in SOURCES[name][1](symbol, start, as_of) if a["ts"] <= cutoff]  # no look-ahead
         except Exception as e:
             report[name] = f"failed ({_safe_error(e)})"
             continue
-        report[name] = str(len(articles))
-        for a in articles:
-            docs.append(f"{a['headline']}. {a['summary']}".strip())  # the text that gets embedded
-            ids.append(a["id"])
-            metas.append({"symbol": symbol, "ts": a["ts"], "source": a["source"]})  # used for filtering (Chroma compares numbers)
-    if docs:
-        # upsert = insert or update by id, so re-running the same request doesn't create duplicates
-        _collection().upsert(documents=docs, ids=ids, metadatas=metas)
+        report[name] = str(len(found))
+        for a in found:
+            articles[a["id"]] = a
+    if not articles:
+        return report
+
+    store = _get_store()
+    known = store.existing_embeddings(list(articles))  # stored earlier, possibly for another symbol
+    docs = {aid: f"{a['headline']}. {a['summary']}".strip() for aid, a in articles.items()}  # the text that gets embedded
+    new_ids = [aid for aid in articles if aid not in known]
+    if new_ids:
+        known.update(zip(new_ids, _embed([docs[aid] for aid in new_ids])))
+    report["newly embedded"] = str(len(new_ids))
+
+    store.upsert([
+        {
+            "id": aid, "symbol": symbol, "source": a["source"],
+            "published_at": datetime.fromtimestamp(a["ts"], tz=timezone.utc),
+            "headline": a["headline"], "summary": a["summary"], "document": docs[aid], "embedding": known[aid],
+        }
+        for aid, a in articles.items()
+    ])
     return report
 
 
-def _rank(docs: list[str], metas: list[dict], distances: list[float], cutoff: int, k: int) -> list[str]:
+def _rank(candidates: list[dict], cutoff: int, k: int) -> list[str]:
     """Re-rank semantic matches so fresh news wins: score = similarity * 0.5 ** (age / half-life).
-    Returns the top k as '[source, age] text', newest-weighted."""
+    Each candidate is {"source", "document", "ts", "similarity"}. Returns the top k as '[source, age] text'."""
     scored = []
-    for d, m, dist in zip(docs, metas, distances):
-        # Chroma's default distance is squared L2; OpenAI vectors are unit length, so cosine = 1 - dist/2
-        similarity = max(0.0, 1 - dist / 2)
-        age_h = (cutoff - m["ts"]) / 3600
-        score = similarity * math.pow(0.5, age_h / _half_life_hours(d))
-        scored.append((score, f"[{m['source']}, {_age_label(age_h)}] {d}"))
+    for c in candidates:
+        age_h = (cutoff - c["ts"]) / 3600
+        score = max(0.0, c["similarity"]) * math.pow(0.5, age_h / _half_life_hours(c["document"]))
+        scored.append((score, f"[{c['source']}, {_age_label(age_h)}] {c['document']}"))
     scored.sort(key=lambda x: x[0], reverse=True)
     return [text for _, text in scored[:k]]
 
 
 def search_news(symbol: str, as_of: date, k: int = 8) -> list[str]:
-    """Top-k items for the symbol from the LOOKBACK_DAYS before the decision cutoff, relevance x recency."""
+    """Top-k items for the symbol from the LOOKBACK_DAYS before the decision cutoff, relevance x recency.
+    The database returns EVERY article in the window (exact similarity, no approximate index), so an
+    older-but-relevant or newer-but-less-similar item is never lost before the recency re-ranking."""
     cutoff = decision_cutoff(as_of)
-    res = _collection().query(
-        query_texts=[f"{symbol} stock outlook, earnings, risks"],  # semantic query: what matters for the outlook
-        n_results=k * 3,  # over-fetch, then _rank re-orders by recency and keeps k
-        # Only this symbol, only the lookback window, nothing after the cutoff (no look-ahead).
-        # Rows ingested before timestamps existed have no "ts" and are skipped automatically.
-        where={"$and": [
-            {"symbol": symbol},
-            {"ts": {"$gte": cutoff - LOOKBACK_DAYS * 86400}},
-            {"ts": {"$lte": cutoff}},
-        ]},
-    )
-    if not res["documents"] or not res["documents"][0]:
-        return []
-    return _rank(res["documents"][0], res["metadatas"][0], res["distances"][0], cutoff, k)
+    end = datetime.fromtimestamp(cutoff, tz=timezone.utc)
+    found = _get_store().candidates(symbol, end - timedelta(days=LOOKBACK_DAYS), end, list(_query_vector(symbol)))
+    return _rank(found, cutoff, k)
