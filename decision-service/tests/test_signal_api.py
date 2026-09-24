@@ -39,3 +39,23 @@ def test_decided_at_on_another_day_is_refused(seen):
     ok = client.post("/signal", params={"symbol": "AAPL", "as_of": "2025-06-02", "decided_at": "2025-06-03T00:30:00Z"})
     bad = client.post("/signal", params={"symbol": "AAPL", "as_of": "2025-06-02", "decided_at": "2025-06-03T14:00:00Z"})
     assert ok.status_code == 200 and bad.status_code == 422
+
+
+def test_the_strategy_reaches_the_agent_and_defaults_to_sma_rsi(seen):
+    client = TestClient(main.app)
+    client.post("/signal", params={"symbol": "AAPL", "as_of": "2025-06-02", "strategy": "breakout"})
+    client.post("/signal", params={"symbol": "AAPL", "as_of": "2025-06-02"})
+    assert [s["strategy"] for s in seen] == ["breakout", "sma_rsi"]
+
+
+def test_unknown_strategy_is_refused(seen):
+    r = TestClient(main.app).post("/signal", params={"symbol": "AAPL", "as_of": "2025-06-02", "strategy": "llm"})
+    assert r.status_code == 422 and "unknown strategy" in r.text
+    assert seen == []
+
+
+def test_strategies_catalog_lists_every_strategy_with_its_rules():
+    body = TestClient(main.app).get("/strategies").json()
+    assert body[0]["id"] == "sma_rsi"  # the original simple strategy stays first (the default)
+    assert len(body) == 11
+    assert all(s["buy"] and s["sell"] and s["summary"] and s["suggested"]["rebalance_days"] >= 1 for s in body)

@@ -13,6 +13,7 @@ import BotForm from "./BotForm";
 import {
   ACTION_COLOR, ORDER_STATUS_COLOR, SENTIMENT_COLOR, STATUS_COLOR, checkTimes, frac, localTime, pct, pnlColor, slotTimes, usd,
 } from "./format";
+import { strategyInfo, strategyName } from "../strategies";
 import { MarketStatus } from "./TradingPage";
 import type { Bot, BotUpdate, Decision, Order, Snapshot, TradingEvent } from "./types";
 import { usePolling } from "./usePolling";
@@ -327,7 +328,9 @@ export default function BotPage() {
         <Col xs={24} lg={12}>
           <Card title="Parameters" size="small" style={{ height: "100%" }} extra={<Button size="small" type="link" onClick={() => setEditOpen(true)}>Edit</Button>}>
             <Descriptions column={3} size="small">
-              <Descriptions.Item label="Mode">{bot.mode}</Descriptions.Item>
+              <Descriptions.Item label="Strategy" span={3}>
+                <Tooltip title={strategyInfo(bot.strategy)?.summary}>{strategyName(bot.strategy)}</Tooltip>
+              </Descriptions.Item>
               <Descriptions.Item label="Min conf.">{bot.min_confidence}</Descriptions.Item>
               <Descriptions.Item label="Every">{bot.rebalance_days} trading day{bot.rebalance_days === 1 ? "" : "s"}</Descriptions.Item>
               <Descriptions.Item label="Check at">{checkTimes(bot.decide_at, slotTimes(status.data))}</Descriptions.Item>

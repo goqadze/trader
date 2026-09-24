@@ -174,7 +174,7 @@ def make_bot(session, **kw) -> Bot:
     params = dict(name="test", symbol="AAPL", broker="paper", status="active", allocated_cash=10_000.0,
                   cash=10_000.0, peak_equity=10_000.0, benchmark_price=100.0, last_price=100.0,
                   min_confidence=0.6, rebalance_days=1, position_pct=1.0, stop_pct=0.04, target_pct=0.08,
-                  fee_pct=0.0, slippage_pct=0.0, max_drawdown_pct=0.2, mode="rules")
+                  fee_pct=0.0, slippage_pct=0.0, max_drawdown_pct=0.2, strategy="sma_rsi")
     params.update(kw)
     bot = Bot(**params)
     session.add(bot)

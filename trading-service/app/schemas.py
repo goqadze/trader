@@ -6,14 +6,17 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-Mode = Literal["rules", "llm"]
+# decision-service's strategies (its GET /strategies describes each). Keep in sync with
+# decision-service/app/strategies.py STRATEGIES.
+Strategy = Literal["sma_rsi", "trend_following", "momentum", "breakout", "mean_reversion", "range_trading",
+                   "ma_pullback", "reversal", "gap_and_go", "news_catalyst", "fibonacci"]
 DecideAt = Literal["close", "open", "both"]  # which of the day's decision slots a bot uses (see market.slot_window)
 
 
 class StrategyParams(BaseModel):
     """The tunable knobs. Same names and meaning as the backtest's RunConfig."""
 
-    mode: Mode = "rules"
+    strategy: Strategy = "sma_rsi"
     min_confidence: float = Field(0.6, ge=0, le=1)
     rebalance_days: int = Field(5, ge=1, le=60)
     decide_at: DecideAt = "close"  # live bots only: the backtest always decides at the close
@@ -39,7 +42,7 @@ class BotUpdate(BaseModel):
     for a bot's life (create a new bot instead) so its history always describes one consistent setup."""
 
     name: str | None = Field(None, max_length=80)
-    mode: Mode | None = None
+    strategy: Strategy | None = None
     min_confidence: float | None = Field(None, ge=0, le=1)
     rebalance_days: int | None = Field(None, ge=1, le=60)
     decide_at: DecideAt | None = None

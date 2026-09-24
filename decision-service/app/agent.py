@@ -8,7 +8,8 @@ from pydantic import BaseModel
 
 from .observability import trace_config
 from .risk import position_size
-from .tools import get_prices, indicators
+from .strategies import DEFAULT_STRATEGY, STRATEGIES, NewsView, format_facts
+from .tools import get_prices, project_partial_volume
 
 
 class State(TypedDict, total=False):
@@ -17,14 +18,15 @@ class State(TypedDict, total=False):
     symbol: str
     as_of: date
     decided_at: datetime  # optional: the exact decision moment (live bots); news after it is ignored
-    mode: str  # "rules" (SMA/RSI logic) or "llm" (the model decides)
+    strategy: str  # which decision strategy runs (a key of strategies.STRATEGIES)
     account_balance: float  # used to size a BUY (risk a fixed % of this)
     stop_pct: float  # optional per-request stop-loss distance (else STOP_PCT env)
     target_pct: float  # optional per-request target distance (else TARGET_PCT env)
-    indicators: dict  # SMA20, SMA50, RSI14, last close
+    indicators: dict  # the strategy's facts: indicator values and patterns, always incl. last_close
     action: str  # BUY | SELL | HOLD
     confidence: float
     headlines: list[str]  # news retrieved from the vector store
+    catalysts: list[str]  # the fresh (<48h) company-specific events among them (earnings, upgrades, deals, ...)
     sentiment: str  # bullish | bearish | neutral | unavailable
     position: dict  # sizing for a BUY: shares, entry, stop, target, risk/reward
     steps: list[str]  # "show your work" trail
@@ -32,27 +34,25 @@ class State(TypedDict, total=False):
 
 
 def fetch_data(state: State) -> State:
-    """Node 1: download prices up to as_of and compute technical indicators."""
+    """Node 1: download prices up to as_of and compute what the chosen strategy looks at."""
+    strat = STRATEGIES[state.get("strategy", DEFAULT_STRATEGY)]
     df = get_prices(state["symbol"], state["as_of"])
-    # SMA50 needs at least 50 bars; otherwise the signal would be meaningless
-    if len(df) < 50:
-        raise ValueError(f"Not enough price history for {state['symbol']} as of {state['as_of']}")
-    ind = indicators(df)
-    return {"indicators": ind, "steps": [f"Fetched {len(df)} daily bars up to {state['as_of']}", f"Indicators: {ind}"]}
+    # Every indicator needs a warm-up (SMA200 needs 200 bars); fewer bars would make the signal meaningless
+    if len(df) < strat.min_bars:
+        raise ValueError(f"Not enough price history for {state['symbol']} as of {state['as_of']}: "
+                         f"{strat.name} needs {strat.min_bars} daily bars, got {len(df)}")
+    steps = [f"Strategy: {strat.name}", f"Fetched {len(df)} daily bars up to {state['as_of']}"]
+    df, note = project_partial_volume(df, state.get("decided_at"))
+    if note:
+        steps.append(note)
+    facts = strat.analyze(df)
+    return {"indicators": facts, "steps": steps + [f"Indicators: {format_facts(facts)}"]}
 
 
 class Sentiment(BaseModel):
     """Structured output the LLM must return when classifying news."""
 
     label: str  # bullish | bearish | neutral
-    rationale: str
-
-
-class Decision(BaseModel):
-    """Structured output the LLM must return when it makes the trade decision (llm mode)."""
-
-    action: str  # BUY | SELL | HOLD
-    confidence: float  # 0..1
     rationale: str
 
 
@@ -64,11 +64,12 @@ def _news_enabled() -> bool:
 
 
 def news_rag(state: State) -> State:
-    """Node 2 (RAG): fetch news -> store in vector DB -> retrieve relevant items -> LLM classifies sentiment."""
+    """Node 2 (RAG): fetch news -> store in vector DB -> retrieve relevant items -> LLM classifies sentiment,
+    and flag fresh catalysts (earnings, upgrades, deals, ...) for the event strategies."""
     # No keys configured: skip gracefully so the service still works with technicals only
     if not _news_enabled():
         return {"headlines": [], "sentiment": "unavailable", "steps": state["steps"] + ["News RAG skipped (need OPENAI_API_KEY and at least one news source key)"]}
-    from .news import MARKET_TZ, ingest_news, search_news
+    from .news import MARKET_TZ, catalysts, ingest_news, search_news
 
     # A live bot passes its decision moment (e.g. 10:00): only news published before then counts, and
     # headline ages are measured from then. Without it (backtests): 15:30 New York on as_of.
@@ -76,11 +77,13 @@ def news_rag(state: State) -> State:
     cutoff_label = state["decided_at"].astimezone(MARKET_TZ).strftime("%H:%M") if cutoff else "15:30"
     try:
         report = ingest_news(state["symbol"], state["as_of"], cutoff=cutoff)  # pull from Alpaca/Polygon/Finnhub into Postgres/pgvector
-        heads = search_news(state["symbol"], state["as_of"], cutoff=cutoff)  # semantic search for the most relevant items
+        items = search_news(state["symbol"], state["as_of"], cutoff=cutoff)  # semantic search for the most relevant items
     except Exception as e:  # news failure must not break the signal
         return {"headlines": [], "sentiment": "unavailable", "steps": state["steps"] + [f"News RAG failed: {e}"]}
-    if not heads:
+    if not items:
         return {"headlines": [], "sentiment": "neutral", "steps": state["steps"] + [f"Ingested {report}, none relevant"]}
+    heads = [i["text"] for i in items]
+    events = catalysts(items)
     from langchain_openai import ChatOpenAI
 
     # with_structured_output forces the LLM to answer in the Sentiment schema (label + rationale).
@@ -93,75 +96,26 @@ def news_rag(state: State) -> State:
         config=trace_config(),
     )
     label = out.label.lower()
-    return {
-        "headlines": heads,
-        "sentiment": label,
-        "steps": state["steps"] + [f"Sources ingested (news up to {cutoff_label} New York): {report}",
-                                   f"News ({len(heads)} retrieved): {label} - {out.rationale}"],
-    }
+    steps = [f"Sources ingested (news up to {cutoff_label} New York): {report}",
+             f"News ({len(heads)} retrieved): {label} - {out.rationale}"]
+    if events:
+        steps.append(f"Fresh catalysts (< 48h): {len(events)} - " + " | ".join(e if len(e) <= 160 else e[:157] + "..." for e in events[:3]))
+    return {"headlines": heads, "catalysts": events, "sentiment": label, "steps": state["steps"] + steps}
 
 
 def decide(state: State) -> State:
-    """Node 3: pick BUY/SELL/HOLD. Dispatches to rules or the LLM depending on mode."""
-    if state.get("mode") == "llm":
-        return _decide_llm(state)
-    return _decide_rules(state)
-
-
-def _decide_rules(state: State) -> State:
-    """Deterministic placeholder strategy: SMA trend + RSI, nudged by news sentiment."""
-    i = state["indicators"]
-    trend_up = i["sma20"] > i["sma50"]  # short-term average above long-term = uptrend
-    if trend_up and i["rsi14"] < 70:  # uptrend and not overbought
-        action, conf = "BUY", 0.6
-    elif not trend_up and i["rsi14"] > 30:  # downtrend and not oversold
-        action, conf = "SELL", 0.6
-    else:  # mixed signals
-        action, conf = "HOLD", 0.4
-    # Compare the technical action with news sentiment: agreement raises confidence, conflict lowers it
+    """Node 3: the chosen strategy picks BUY/SELL/HOLD from its facts; news that agrees raises the
+    confidence, news that conflicts lowers it (unless the strategy already uses news in its own rule)."""
+    strat = STRATEGIES[state.get("strategy", DEFAULT_STRATEGY)]
     sent = state.get("sentiment", "unavailable")
-    agrees = (action, sent) in {("BUY", "bullish"), ("SELL", "bearish")}
-    conflicts = (action, sent) in {("BUY", "bearish"), ("SELL", "bullish")}
-    conf += 0.15 if agrees else -0.15 if conflicts else 0
-    rule = f"SMA20 {'>' if trend_up else '<='} SMA50, RSI14={i['rsi14']:.0f} -> {action}; news {sent} -> confidence {conf:.2f}"
-    return {"action": action, "confidence": conf, "steps": state["steps"] + [rule]}
-
-
-def _decide_llm(state: State) -> State:
-    """The LLM weighs indicators + news together and returns the decision itself, with a rationale.
-    Falls back to the rules if no OpenAI key is configured."""
-    if not os.getenv("OPENAI_API_KEY"):
-        out = _decide_rules(state)
-        out["steps"] = out["steps"] + ["LLM mode requested but no OPENAI_API_KEY; used rules instead"]
-        return out
-
-    from langchain_openai import ChatOpenAI
-
-    i = state["indicators"]
-    heads = state.get("headlines", [])
-    sent = state.get("sentiment", "unavailable")
-    news_block = "\n".join(f"- {h}" for h in heads) if heads else "(no news retrieved)"
-    # temperature=0 for repeatable backtests
-    llm = ChatOpenAI(model=os.getenv("LLM_MODEL", "gpt-4.1-nano"), temperature=0).with_structured_output(Decision)
-    out = llm.invoke(
-        f"You are a disciplined trading analyst. Decide BUY, SELL or HOLD for {state['symbol']} as of {state['as_of']}. "
-        "Give a confidence between 0 and 1 and a one-sentence rationale. This is not financial advice.\n"
-        f"Technical indicators: last_close={i['last_close']:.2f}, SMA20={i['sma20']:.2f}, "
-        f"SMA50={i['sma50']:.2f}, RSI14={i['rsi14']:.1f}.\n"
-        f"Overall news sentiment: {sent}.\nHeadlines:\n{news_block}",
-        config=trace_config(),
-    )
-    # Guard against the model returning something unexpected
-    action = out.action.upper().strip()
-    if action not in ("BUY", "SELL", "HOLD"):
-        action = "HOLD"
-    conf = max(0.0, min(1.0, float(out.confidence)))
-    return {
-        "action": action,
-        "confidence": conf,
-        "reasoning": out.rationale,  # llm mode writes its own reasoning, so explain() will skip
-        "steps": state["steps"] + [f"LLM decision: {action} (confidence {conf:.2f}) - {out.rationale}"],
-    }
+    v = strat.decide(state["indicators"], NewsView(sent, tuple(state.get("catalysts", []))))
+    conf, rule = v.confidence, v.rule
+    if strat.news_tilt:
+        agrees = (v.action, sent) in {("BUY", "bullish"), ("SELL", "bearish")}
+        conflicts = (v.action, sent) in {("BUY", "bearish"), ("SELL", "bullish")}
+        conf += 0.15 if agrees else -0.15 if conflicts else 0
+        rule = f"{rule}; news {sent} -> confidence {conf:.2f}"
+    return {"action": v.action, "confidence": round(max(0.0, min(1.0, conf)), 2), "steps": state["steps"] + [rule]}
 
 
 def size_position(state: State) -> State:
@@ -200,17 +154,15 @@ def size_position(state: State) -> State:
 
 
 def explain(state: State) -> State:
-    """Node 5: write a short human-readable explanation (rules mode only; llm mode already wrote one)."""
-    if state.get("reasoning"):  # llm decision already produced a rationale — don't spend another call
-        return {}
+    """Node 5: write a short human-readable explanation of the decision."""
     facts = "; ".join(state["steps"])
     if os.getenv("OPENAI_API_KEY"):
         from langchain_openai import ChatOpenAI
 
         llm = ChatOpenAI(model=os.getenv("LLM_MODEL", "gpt-4.1-nano"))
         msg = llm.invoke(
-            f"In 2 sentences, explain this trading signal for a human trader. "
-            f"Signal: {state['action']} {state['symbol']}. Facts: {facts}. Not financial advice.",
+            f"In 2 sentences, explain this trading signal for a human trader: name the rule that fired and the "
+            f"deciding numbers. Signal: {state['action']} {state['symbol']}. Facts: {facts}. Not financial advice.",
             config=trace_config(),
         )
         return {"reasoning": msg.content}

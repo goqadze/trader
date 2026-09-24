@@ -1,5 +1,7 @@
 """HTTP API: validation, lifecycle controls, guard rails, and history endpoints."""
 
+from datetime import date
+
 import pytest
 from conftest import FakeBroker, at
 from fastapi.testclient import TestClient
@@ -41,7 +43,7 @@ def _create(client, **kw):
 
 def test_create_bot_uses_the_quote_as_buy_and_hold_baseline(client):
     bot = _create(client)
-    assert bot["symbol"] == "AAPL" and bot["name"] == "AAPL rules"
+    assert bot["symbol"] == "AAPL" and bot["name"] == "AAPL sma_rsi"  # the original simple strategy is the default
     assert bot["status"] == "active" and bot["broker"] == "paper" and bot["live"] is False
     assert bot["cash"] == 5000 and bot["equity"] == 5000 and bot["return_pct"] == 0
     assert bot["benchmark_price"] == 100.0
@@ -55,6 +57,8 @@ def test_create_bot_uses_the_quote_as_buy_and_hold_baseline(client):
     {"min_confidence": 1.5},
     {"symbol": "not a symbol"},
     {"allocated_cash": 10},
+    {"strategy": "llm"},  # removed: the LLM no longer decides trades
+    {"strategy": "martingale"},
 ])
 def test_invalid_parameters_are_rejected(client, bad):
     r = client.post("/bots", json={"symbol": "AAPL", **bad})
@@ -106,6 +110,27 @@ def test_param_changes_are_audited(client):
     assert r.json()["min_confidence"] == 0.75
     msg = client.get(f"/bots/{bot['id']}/events").json()[0]["message"]
     assert "min_confidence 0.65 → 0.75" in msg and "stop_pct 0.04 → 0.05" in msg
+
+
+def test_switching_strategy_is_audited_and_reaches_decision_service(client, monkeypatch):
+    bot = _create(client, strategy="breakout")
+    assert bot["strategy"] == "breakout"
+    r = client.patch(f"/bots/{bot['id']}", json={"strategy": "mean_reversion"})
+    assert r.json()["strategy"] == "mean_reversion"
+    assert "strategy breakout → mean_reversion" in client.get(f"/bots/{bot['id']}/events").json()[0]["message"]
+
+    from app import decision_client
+    from app.db import SessionLocal
+    sent = {}
+
+    def fake_post(url, params, timeout):
+        sent.update(params)
+        return type("R", (), {"status_code": 200, "json": lambda self: {"action": "HOLD"}})()
+
+    monkeypatch.setattr(decision_client.httpx, "post", fake_post)
+    with SessionLocal() as s:
+        decision_client.get_signal(s.get(main.Bot, bot["id"]), date(2025, 6, 2))
+    assert sent["strategy"] == "mean_reversion" and "mode" not in sent
 
 
 def test_run_now_while_closed_is_a_preview(client, monkeypatch):

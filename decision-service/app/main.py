@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
 from .agent import agent  # the compiled LangGraph workflow
+from .strategies import DEFAULT_STRATEGY, STRATEGIES, catalog
 
 logger = logging.getLogger("decision-service")
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +30,7 @@ class Signal(BaseModel):
 
     symbol: str
     as_of: date  # the date the analysis was done "as of"
+    strategy: str  # which strategy decided (see GET /strategies)
     action: str  # BUY | SELL | HOLD
     confidence: float  # 0..1
     sentiment: str = "unavailable"  # bullish | bearish | neutral | unavailable (from the news layer)
@@ -43,27 +45,33 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/strategies")
+def strategies():
+    """Every decision strategy: its rules in words, what it suits, and suggested starting parameters."""
+    return catalog()
+
+
 @app.post("/signal", response_model=Signal)
 def signal(
     symbol: str,
     as_of: date | None = None,
-    mode: str = "rules",
+    strategy: str = DEFAULT_STRATEGY,
     account_balance: float = 500.0,
     stop_pct: float | None = Query(None, gt=0, le=0.5),
     target_pct: float | None = Query(None, gt=0, le=2),
     decided_at: datetime | None = None,
 ):
     """as_of lets the backtester replay history without look-ahead.
-    mode = 'rules' (SMA/RSI logic) or 'llm' (the model decides).
+    strategy = which decision strategy runs (GET /strategies lists them; default: the simple SMA/RSI one).
     account_balance sizes a BUY (risk a fixed % of it).
     stop_pct / target_pct override the STOP_PCT / TARGET_PCT env defaults, so each trading bot or
     backtest can run its own risk levels.
     decided_at (live bots) = the exact decision moment, e.g. 10:00 New York: news published after it is
     ignored. Without it the news cutoff is 15:30 New York on as_of."""
     as_of = as_of or date.today()  # default to today for live use
-    if mode not in ("rules", "llm"):
-        raise HTTPException(422, "mode must be 'rules' or 'llm'")
-    state = {"symbol": symbol.upper(), "as_of": as_of, "mode": mode, "account_balance": account_balance}
+    if strategy not in STRATEGIES:
+        raise HTTPException(422, f"unknown strategy '{strategy}'; one of {list(STRATEGIES)}")
+    state = {"symbol": symbol.upper(), "as_of": as_of, "strategy": strategy, "account_balance": account_balance}
     if decided_at is not None:
         decided_at = decided_at if decided_at.tzinfo else decided_at.replace(tzinfo=timezone.utc)
         # Must fall on as_of's New York date, or a backtest could let tomorrow's news into today's decision
@@ -82,6 +90,6 @@ def signal(
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         # Anything else: log the full traceback and return the real error text (not an opaque 500)
-        logger.exception("signal failed for %s as_of=%s mode=%s", symbol, as_of, mode)
+        logger.exception("signal failed for %s as_of=%s strategy=%s", symbol, as_of, strategy)
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
     return Signal(**out)

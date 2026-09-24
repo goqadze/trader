@@ -1,10 +1,10 @@
-"""Tests for the deterministic trading rules in app/agent.py (_decide_rules).
+"""Tests for the original simple strategy (sma_rsi) as the agent's decide node runs it.
 
-This is the SMA/RSI + news-sentiment confidence logic. It is pure (no network, no LLM),
-so we can pin every branch exactly.
+This is the SMA/RSI + news-sentiment confidence logic, unchanged since it was the only rule set.
+It is pure (no network, no LLM), so we can pin every branch exactly.
 """
 
-from app.agent import _decide_rules
+from app.agent import decide as _decide_rules  # no "strategy" in the state -> the default, sma_rsi
 
 
 def _state(sma20, sma50, rsi, sentiment=None):
@@ -59,3 +59,7 @@ def test_a_step_is_recorded():
     out = _decide_rules(_state(52, 50, 55))
     assert len(out["steps"]) == 1
     assert "BUY" in out["steps"][0]
+
+
+def test_sma_rsi_is_the_default_strategy():
+    assert _decide_rules({**_state(52, 50, 55), "strategy": "sma_rsi"}) == _decide_rules(_state(52, 50, 55))

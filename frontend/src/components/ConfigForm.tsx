@@ -1,6 +1,8 @@
 import { Form, Input, InputNumber, DatePicker, Select, Button, Card } from "antd";
 import dayjs, { Dayjs } from "dayjs";
-import type { RunConfig, Engine, Mode } from "../types";
+import { DEFAULT_STRATEGY, STRATEGY_OPTIONS, type StrategyId } from "../strategies";
+import type { RunConfig, Engine } from "../types";
+import StrategyHelp from "./StrategyHelp";
 
 // antd form values (dates are dayjs objects; we format them on submit).
 interface FormValues {
@@ -13,7 +15,7 @@ interface FormValues {
   stop_pct: number; // percent in the form; sent as a fraction
   target_pct: number;
   engine: Engine;
-  mode: Mode;
+  strategy: StrategyId;
 }
 
 interface Props {
@@ -25,6 +27,7 @@ interface Props {
 // RunConfig shape backtest-service expects and calls onRun.
 export default function ConfigForm({ onRun, running }: Props) {
   const [form] = Form.useForm<FormValues>();
+  const strategy = Form.useWatch("strategy", form);
 
   const submit = (v: FormValues) => {
     onRun({
@@ -38,7 +41,7 @@ export default function ConfigForm({ onRun, running }: Props) {
       stop_pct: v.stop_pct / 100,
       target_pct: v.target_pct / 100,
       engine: v.engine,
-      mode: v.mode,
+      strategy: v.strategy,
     });
   };
 
@@ -58,9 +61,16 @@ export default function ConfigForm({ onRun, running }: Props) {
           stop_pct: 4, // same defaults as decision-service (STOP_PCT / TARGET_PCT)
           target_pct: 8,
           engine: "simple",
-          mode: "rules",
+          strategy: DEFAULT_STRATEGY,
         }}
       >
+        <Form.Item name="strategy" label="Strategy">
+          <Select options={STRATEGY_OPTIONS} popupMatchSelectWidth={false} listHeight={420} />
+        </Form.Item>
+        <StrategyHelp
+          id={strategy}
+          onApply={(g) => form.setFieldsValue({ rebalance_days: g.rebalance_days, stop_pct: g.stop_pct * 100, target_pct: g.target_pct * 100 })}
+        />
         <Form.Item name="symbol" label="Symbol" rules={[{ required: true }]}>
           <Input />
         </Form.Item>
@@ -90,14 +100,6 @@ export default function ConfigForm({ onRun, running }: Props) {
             options={[
               { value: "simple", label: "simple" },
               { value: "nautilus", label: "nautilus (scaffold)" },
-            ]}
-          />
-        </Form.Item>
-        <Form.Item name="mode" label="Decision mode">
-          <Select
-            options={[
-              { value: "rules", label: "rules (SMA/RSI)" },
-              { value: "llm", label: "llm (model decides)" },
             ]}
           />
         </Form.Item>

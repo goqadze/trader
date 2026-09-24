@@ -288,10 +288,10 @@
             <h3>3 · The bot asks: buy, sell or hold?</h3>
             <p>A decision is due only when <b>all</b> of these are true: it's a trading day · it's inside one of the bot's <b>Check at</b> windows (<b>after the open</b> 10:00–10:30, <b>before the close</b> 15:30–16:00, or <b>both</b>) · the bot is <span class="tag buy">active</span> · it hasn't already decided for that window · at least <code>N</code> trading days have passed since its last decision day (a bot on <b>both</b> decides twice on the same day).</p>
             <ol class="steps">
-              <li>trading-service calls <code>decision-service /signal</code> with the symbol, today's date, the mode, and the bot's stop / target %.</li>
-              <li><b>Prices:</b> ~120 days of daily prices → SMA20, SMA50, RSI14.</li>
+              <li>trading-service calls <code>decision-service /signal</code> with the symbol, today's date, the bot's strategy, and its stop / target %.</li>
+              <li><b>Prices:</b> ~14 months of daily bars (open, high, low, close, volume) → the indicators the bot's strategy reads (e.g. SMA20, SMA50, RSI14 for the simple one). During the session today's bar is still forming, so its volume is scaled up to a full-day estimate.</li>
               <li><b>News:</b> last 7 days of headlines, published before the decision moment (10:00 or 15:30). Recent ones count most. An AI labels the mood bullish / bearish / neutral.</li>
-              <li><b>Decide</b> (rules mode): trend + RSI give BUY / SELL / HOLD at 0.60 confidence. News that agrees adds <code>+0.15</code>; news that disagrees subtracts <code>0.15</code>.</li>
+              <li><b>Decide:</b> the strategy's rule gives BUY / SELL / HOLD; a textbook setup scores 0.60, each extra confirmation (volume, candle pattern, trend) adds 0.05–0.10. News that agrees adds <code>+0.15</code>; news that disagrees subtracts <code>0.15</code> (the news-catalyst strategy uses news in its rule instead).</li>
               <li><b>Explain:</b> the AI writes 2 sentences of reasoning.</li>
               <li>trading-service saves a <b>Decision</b> row (signal, confidence, news mood, reasoning, every step) and marks today as decided.</li>
               <li>It applies the trading rule (see <a href="#rules">Rules</a>) and writes what it did in <b>“What the bot did”</b>.</li>
@@ -413,7 +413,7 @@
       </table>
     </div>
 
-    <h3 style="margin-top:8px">Where confidence comes from (rules mode)</h3>
+    <h3 style="margin-top:8px">Where confidence comes from (the simple SMA/RSI strategy)</h3>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Trend</th><th>RSI14</th><th>Signal</th><th>Base</th><th>News agrees</th><th>News disagrees</th><th>No / neutral news</th></tr></thead>
@@ -425,6 +425,7 @@
       </table>
     </div>
     <p class="note">Why a bot sits still: with minimum confidence 0.65, only a signal <b>backed by agreeing news</b> (0.75) trades. With no news, 0.60 never clears the bar. That's working as designed.</p>
+    <p class="note">Every other strategy uses the same scale: a textbook setup is 0.60, extra confirmations add up to +0.25, news moves it ±0.15, HOLD is 0.40. Each strategy's exact rules are shown under the Strategy picker when you create or edit a bot.</p>
   </section>
 
   <!-- ================= STATES ================= -->
@@ -536,7 +537,7 @@
       <div class="gloss-group">
         <h3>Bot settings</h3>
         <dl class="terms">
-          <div class="term"><dt>Mode</dt><dd><b>rules</b> = SMA/RSI formula plus a news nudge. <b>llm</b> = the AI makes the call itself.</dd></div>
+          <div class="term"><dt>Strategy</dt><dd>The rule that decides BUY / SELL / HOLD: the simple SMA/RSI trend rule, or one of ten classics (trend following, momentum, breakout, mean reversion, range, pullback, reversal, gap and go, news catalyst, Fibonacci). News sentiment nudges every one of them.</dd></div>
           <div class="term"><dt>Min confidence</dt><dd>Signals weaker than this are ignored. Higher = fewer, pickier trades.</dd></div>
           <div class="term"><dt>Every N trading days</dt><dd>How often the bot decides. 1 = daily, 5 ≈ weekly. Weekends and holidays don't count.</dd></div>
           <div class="term"><dt>Position size</dt><dd>Share of the bot's cash spent on each BUY. 100% = all in.</dd></div>

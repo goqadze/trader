@@ -35,6 +35,18 @@ _EVENT_RE = re.compile(
 )
 
 
+# Fresh company-specific events that move a stock for days: results and guidance, deals, analyst rating
+# changes, regulators and courts. Lets the event strategies tell a real catalyst from background chatter.
+CATALYST_MAX_AGE_HOURS = 48
+_CATALYST_RE = re.compile(
+    r"\b(earnings|eps|quarterly results|guidance|"
+    r"(beat|beats|missed|misses)\s+(\w+\s+){0,3}(estimates|expectations|consensus)|"  # not "AMD beat Nvidia by 160 points"
+    r"acquir\w*|acquisition|merger|buyout|takeover|upgrade[sd]?|downgrade[sd]?|price target|fda|approv(al|es|ed)|"
+    r"recall(s|ed)?|lawsuit|sued|probe|investigation|buyback|repurchase|bankrupt\w*|layoffs?)\b",
+    re.IGNORECASE,
+)
+
+
 def decision_cutoff(as_of: date) -> int:
     """Unix timestamp of 15:30 New York time on as_of: the latest moment news can influence that day's trade."""
     return int(datetime.combine(as_of, DECISION_TIME, tzinfo=MARKET_TZ).timestamp())
@@ -202,20 +214,26 @@ def ingest_news(symbol: str, as_of: date, days: int = LOOKBACK_DAYS, cutoff: int
     return report
 
 
-def _rank(candidates: list[dict], cutoff: int, k: int) -> list[str]:
+def _rank(candidates: list[dict], cutoff: int, k: int) -> list[dict]:
     """Re-rank semantic matches so fresh news wins: score = similarity * 0.5 ** (age / half-life).
-    Each candidate is {"source", "document", "ts", "similarity"}. Returns the top k as '[source, age] text'."""
+    Each candidate is {"source", "document", "ts", "similarity"}. Returns the top k as
+    {"text": "[source, age] document" (what the LLM reads), "document", "age_hours"}."""
     scored = []
     for c in candidates:
         age_h = (cutoff - c["ts"]) / 3600
         score = max(0.0, c["similarity"]) * math.pow(0.5, age_h / _half_life_hours(c["document"]))
-        scored.append((score, f"[{c['source']}, {_age_label(age_h)}] {c['document']}"))
+        scored.append((score, {"text": f"[{c['source']}, {_age_label(age_h)}] {c['document']}", "document": c["document"], "age_hours": age_h}))
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [text for _, text in scored[:k]]
+    return [item for _, item in scored[:k]]
 
 
-def search_news(symbol: str, as_of: date, k: int = 8, cutoff: int | None = None) -> list[str]:
-    """Top-k items for the symbol from the LOOKBACK_DAYS before the decision cutoff, relevance x recency.
+def catalysts(items: list[dict]) -> list[str]:
+    """The retrieved items that report a company-specific event from the last CATALYST_MAX_AGE_HOURS."""
+    return [i["text"] for i in items if i["age_hours"] <= CATALYST_MAX_AGE_HOURS and _CATALYST_RE.search(i["document"])]
+
+
+def search_news(symbol: str, as_of: date, k: int = 8, cutoff: int | None = None) -> list[dict]:
+    """Top-k items (see _rank) for the symbol from the LOOKBACK_DAYS before the decision cutoff, relevance x recency.
     The database returns EVERY article in the window (exact similarity, no approximate index), so an
     older-but-relevant or newer-but-less-similar item is never lost before the recency re-ranking.
     cutoff: as in ingest_news; headline ages ("2h ago") are measured from it."""

@@ -129,4 +129,4 @@ def test_end_to_end_ingest_then_search_with_recency_ranking(store, monkeypatch):
 
     out = news.search_news("AAPL", AS_OF, k=5)
     # Fresh (similarity 0.71, 2h old) beats stale (similarity 1.0, 5 days old) after the recency decay
-    assert out == ["[x, 2h ago] Apple ships new iPhone.", "[x, 5d ago] Apple opens a store."]
+    assert [i["text"] for i in out] == ["[x, 2h ago] Apple ships new iPhone.", "[x, 5d ago] Apple opens a store."]

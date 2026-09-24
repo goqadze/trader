@@ -162,7 +162,7 @@ def create_bot(body: BotCreate, session: Session = Depends(get_session)):
                                      "per real account, or their positions would mix")
 
     params = body.model_dump(exclude={"name", "symbol", "broker", "allocated_cash", "confirm_live"})
-    bot = Bot(name=body.name or f"{symbol} {body.mode}", symbol=symbol, broker=body.broker, status="active",
+    bot = Bot(name=body.name or f"{symbol} {body.strategy}", symbol=symbol, broker=body.broker, status="active",
               allocated_cash=body.allocated_cash, cash=body.allocated_cash, peak_equity=body.allocated_cash, **params)
 
     # Validate the symbol with a real quote and remember the price as the buy & hold baseline
@@ -175,7 +175,7 @@ def create_bot(body: BotCreate, session: Session = Depends(get_session)):
     session.add(bot)
     session.flush()
     log_event(session, bot.id, "created",
-              f"Created {bot.name}: {symbol} on {bot.broker} with ${bot.allocated_cash:,.2f}, {bot.mode} mode, "
+              f"Created {bot.name}: {symbol} on {bot.broker} with ${bot.allocated_cash:,.2f}, strategy {bot.strategy}, "
               f"min conf {bot.min_confidence}, every {bot.rebalance_days} trading days {DECIDE_AT_LABEL[bot.decide_at]}, "
               f"stop {bot.stop_pct:.1%} / target {bot.target_pct:.1%}", "warning" if info["live"] else "info")
     session.commit()

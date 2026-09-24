@@ -17,7 +17,7 @@ def get_signal(bot, as_of: date, at: datetime | None = None) -> dict:
     params = {
         "symbol": bot.symbol,
         "as_of": as_of.isoformat(),
-        "mode": bot.mode,
+        "strategy": bot.strategy,
         "account_balance": round(bot.cash + bot.shares * (bot.last_price or 0), 2),
         # Per-bot stop/target so the agent's explanation quotes the same levels the bot will enforce
         "stop_pct": bot.stop_pct,
@@ -26,7 +26,7 @@ def get_signal(bot, as_of: date, at: datetime | None = None) -> dict:
     if at is not None:
         params["decided_at"] = at.isoformat()
     try:
-        r = httpx.post(f"{settings.decision_service_url}/signal", params=params, timeout=120)  # LLM mode can be slow
+        r = httpx.post(f"{settings.decision_service_url}/signal", params=params, timeout=120)  # news RAG + LLM explanation can be slow
     except httpx.HTTPError as e:
         raise SignalError(f"decision-service unreachable: {e}") from e
     if r.status_code != 200:

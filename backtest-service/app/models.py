@@ -1,6 +1,12 @@
 from datetime import date
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+# decision-service's strategies (GET /strategies there describes each one). Keep in sync with
+# decision-service/app/strategies.py STRATEGIES; validating here fails fast instead of a whole run of HOLDs.
+Strategy = Literal["sma_rsi", "trend_following", "momentum", "breakout", "mean_reversion", "range_trading",
+                   "ma_pullback", "reversal", "gap_and_go", "news_catalyst", "fibonacci"]
 
 
 class RunConfig(BaseModel):
@@ -20,7 +26,7 @@ class RunConfig(BaseModel):
     stop_pct: float | None = Field(None, gt=0, le=0.5)  # stop-loss this far below the entry (0.04 = 4%)
     target_pct: float | None = Field(None, gt=0, le=2)  # take profit this far above the entry
     engine: str = "simple"  # "simple" (built-in simulator) or "nautilus"
-    mode: str = "rules"  # how decision-service decides: "rules" or "llm"
+    strategy: Strategy = "sma_rsi"  # which decision-service strategy decides (sma_rsi = the original simple one)
 
 
 class RunSummary(BaseModel):

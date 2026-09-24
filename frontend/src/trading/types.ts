@@ -1,13 +1,14 @@
 // Types mirroring trading-service's API (trading-service/app/schemas.py).
 
-export type Mode = "rules" | "llm";
+import type { StrategyId } from "../strategies";
+
 /** When a bot checks on a decision day: 30 min before the close, 30 min after the open, or both. */
 export type DecideAt = "close" | "open" | "both";
 export type BotStatus = "active" | "paused" | "archived";
 
 /** The tunable knobs; same names as the backtest RunConfig so a tested setup deploys 1:1. */
 export interface StrategyParams {
-  mode: Mode;
+  strategy: StrategyId;
   min_confidence: number;
   rebalance_days: number;
   decide_at: DecideAt; // live bots only: the backtest always decides before the close

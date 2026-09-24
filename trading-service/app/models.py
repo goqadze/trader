@@ -58,7 +58,9 @@ class Bot(Base):
     status: Mapped[str] = mapped_column(String(16), default="active")
 
     # --- Strategy parameters: the same knobs as the backtest RunConfig, so a tested setup deploys 1:1 ---
-    mode: Mapped[str] = mapped_column(String(8), default="rules")  # rules | llm (passed to decision-service)
+    # Which decision-service strategy decides (see schemas.Strategy). server_default: existing bots, which
+    # used the original rules, get the same rules under their new name. (Replaces the old `mode` column.)
+    strategy: Mapped[str] = mapped_column(String(32), default="sma_rsi", server_default="sma_rsi")
     min_confidence: Mapped[float] = mapped_column(Float, default=0.6)  # ignore weaker signals
     rebalance_days: Mapped[int] = mapped_column(Integer, default=5)  # decide every N trading days
     # When, on a decision day: close (30 min before the close, like the backtest) | open (30 min after the

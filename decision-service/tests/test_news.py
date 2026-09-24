@@ -43,7 +43,8 @@ def test_rank_prefers_fresh_news_over_slightly_more_similar_old_news():
         _cand("Apple opens store", "alpaca", CUTOFF - 5 * 24 * HOUR, 0.8),  # 5 days old, a bit more similar
         _cand("Apple launches product", "finnhub", CUTOFF - 2 * HOUR, 0.7),  # 2 hours old
     ], CUTOFF, k=2)
-    assert out == ["[finnhub, 2h ago] Apple launches product", "[alpaca, 5d ago] Apple opens store"]
+    assert [i["text"] for i in out] == ["[finnhub, 2h ago] Apple launches product", "[alpaca, 5d ago] Apple opens store"]
+    assert [round(i["age_hours"]) for i in out] == [2, 120]
 
 
 def test_rank_keeps_week_old_earnings_above_week_old_gossip_and_truncates_to_k():
@@ -53,7 +54,7 @@ def test_rank_keeps_week_old_earnings_above_week_old_gossip_and_truncates_to_k()
         _cand("Apple beats earnings", "b", week, 0.75),
         _cand("Apple CEO interview", "c", week, 0.75),
     ], CUTOFF, k=1)
-    assert out == ["[b, 7d ago] Apple beats earnings"]
+    assert [i["text"] for i in out] == ["[b, 7d ago] Apple beats earnings"]
 
 
 class FakeStore:
@@ -96,7 +97,7 @@ def test_search_asks_the_store_for_the_lookback_window_and_reranks(monkeypatch, 
 
     out = news.search_news("AAPL", AS_OF, k=2)
 
-    assert out == ["[b, 1h ago] new", "[a, 3d ago] old"]
+    assert [i["text"] for i in out] == ["[b, 1h ago] new", "[a, 3d ago] old"]
     cutoff_dt = datetime.fromtimestamp(CUTOFF, tz=timezone.utc)
     assert fake.candidates_args == ("AAPL", cutoff_dt - timedelta(days=news.LOOKBACK_DAYS), cutoff_dt)
 
@@ -200,5 +201,27 @@ def test_a_morning_decision_uses_news_up_to_its_own_time(monkeypatch, embed_call
 
     assert news.ingest_news("AAPL", AS_OF, cutoff=ten_am) == {"x": "1", "newly embedded": "1"}
     assert [r["id"] for r in fake.upserted] == ["x-1"]  # 12:00 news didn't exist yet at 10:00
-    assert news.search_news("AAPL", AS_OF, cutoff=ten_am) == ["[x, 1h ago] Pre-market upgrade."]  # not "4h ago"
+    assert [i["text"] for i in news.search_news("AAPL", AS_OF, cutoff=ten_am)] == ["[x, 1h ago] Pre-market upgrade."]  # not "4h ago"
     assert fake.candidates_args[2] == datetime.fromtimestamp(ten_am, tz=timezone.utc)
+
+
+def _item(document, age_hours):
+    return {"text": f"[x, {age_hours}h ago] {document}", "document": document, "age_hours": age_hours}
+
+
+@pytest.mark.parametrize("document", [
+    "Apple beats Q3 earnings estimates", "Nike beats Wall Street expectations", "Morgan Stanley upgrades Nvidia to overweight", "Pfizer wins FDA approval",
+    "Microsoft to acquire gaming studio", "Tesla recalls 100,000 vehicles", "Meta raises full-year guidance",
+])
+def test_fresh_company_events_are_catalysts(document):
+    assert news.catalysts([_item(document, 5)]) == [f"[x, 5h ago] {document}"]
+
+
+def test_old_events_and_background_chatter_are_not_catalysts():
+    items = [
+        _item("Apple beats Q3 earnings estimates", 60),  # a real event, but older than 48h
+        _item("3 reasons to like Apple stock", 2),  # fresh, but just an opinion piece
+        _item("Apple stock outlook for 2026", 2),  # "outlook" articles are everywhere; not an event
+        _item("AMD stock beat Nvidia by 160 points in 2026", 2),  # "beat" as in outperformed, not beat estimates
+    ]
+    assert news.catalysts(items) == []

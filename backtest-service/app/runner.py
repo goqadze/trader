@@ -73,7 +73,7 @@ async def _execute(run: Run) -> None:
         # 2) One shared HTTP client for all decision-service calls during this run
         async with httpx.AsyncClient() as client:
             async def decide(symbol: str, as_of: date) -> dict:
-                return await get_signal(client, symbol, as_of, cfg.mode, cfg.stop_pct, cfg.target_pct)
+                return await get_signal(client, symbol, as_of, cfg.strategy, cfg.stop_pct, cfg.target_pct)
 
             engine = engine_cls()
             run.result = await engine.run(cfg, prices, decide, run.emit)

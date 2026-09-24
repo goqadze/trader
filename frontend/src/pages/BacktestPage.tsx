@@ -7,6 +7,7 @@ import EquityChart from "../components/EquityChart";
 import StatTiles from "../components/StatTiles";
 import { useBacktest } from "../hooks/useBacktest";
 import type { BotFormInitial } from "../trading/BotForm";
+import { strategyName } from "../strategies";
 import type { RunConfig, RunStatus } from "../types";
 
 const STATUS_COLOR: Record<RunStatus, string> = {
@@ -21,9 +22,9 @@ const STATUS_COLOR: Record<RunStatus, string> = {
 function toBotParams(cfg: RunConfig): BotFormInitial {
   return {
     symbol: cfg.symbol,
-    name: `${cfg.symbol} ${cfg.mode} (from backtest ${cfg.start}..${cfg.end})`.slice(0, 80),
+    name: `${cfg.symbol} ${strategyName(cfg.strategy)} (backtest ${cfg.start}..${cfg.end})`.slice(0, 80),
     allocated_cash: cfg.initial_cash,
-    mode: cfg.mode,
+    strategy: cfg.strategy,
     min_confidence: cfg.min_confidence,
     rebalance_days: cfg.rebalance_days,
     position_pct: cfg.position_pct,

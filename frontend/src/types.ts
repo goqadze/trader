@@ -1,8 +1,9 @@
 // Shared domain types for the backtest dashboard.
 // These mirror the JSON shapes produced by backtest-service.
 
+import type { StrategyId } from "./strategies";
+
 export type Action = "BUY" | "SELL" | "HOLD" | "hold"; // "hold" = carry day (non-decision)
-export type Mode = "rules" | "llm";
 export type Engine = "simple" | "nautilus";
 export type RunStatus = "idle" | "starting" | "running" | "done" | "error";
 
@@ -18,7 +19,7 @@ export interface RunConfig {
   stop_pct?: number; // stop-loss distance below entry as a fraction (0.04 = 4%); omitted = server default
   target_pct?: number; // take-profit distance above entry as a fraction
   engine: Engine;
-  mode: Mode;
+  strategy: StrategyId;
 }
 
 export interface Trade {

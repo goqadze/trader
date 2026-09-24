@@ -1,7 +1,9 @@
 import { Alert, Checkbox, Col, Divider, Form, Input, InputNumber, Modal, Radio, Row, Select, Tooltip } from "antd";
 import { useEffect, useRef, useState } from "react";
+import StrategyHelp from "../components/StrategyHelp";
+import { DEFAULT_STRATEGY, STRATEGY_OPTIONS, type StrategyId } from "../strategies";
 import { slotTimes } from "./format";
-import type { BotCreate, BotUpdate, BrokerInfo, DecideAt, Mode, StrategyParams } from "./types";
+import type { BotCreate, BotUpdate, BrokerInfo, DecideAt, StrategyParams } from "./types";
 
 // The form works in human units (percent, dollars); the API wants fractions. These fields are
 // percentages on screen and fractions on the wire.
@@ -12,7 +14,7 @@ interface FormValues {
   name?: string;
   broker: string;
   allocated_cash: number;
-  mode: Mode;
+  strategy: StrategyId;
   rebalance_days: number;
   decide_at: DecideAt;
   // all in percent here
@@ -28,7 +30,7 @@ interface FormValues {
 
 /** Defaults match the backtest's defaults, so an untouched form = the untouched backtest. */
 export const DEFAULT_PARAMS: StrategyParams = {
-  mode: "rules",
+  strategy: DEFAULT_STRATEGY,
   min_confidence: 0.6,
   rebalance_days: 5,
   decide_at: "close", // what the backtest tests
@@ -69,6 +71,7 @@ export default function BotForm({ open, editing, initial, brokers, times = slotT
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const broker = Form.useWatch("broker", form);
+  const strategy = Form.useWatch("strategy", form);
   const isLive = brokers.find((b) => b.name === broker)?.live ?? false;
 
   // Load values only when the modal OPENS. `initial` is often the live bot object, which the page
@@ -156,18 +159,25 @@ export default function BotForm({ open, editing, initial, brokers, times = slotT
         {editing && <Form.Item name="name" label="Name"><Input maxLength={80} /></Form.Item>}
 
         <Divider orientation="left" plain>Strategy</Divider>
+        <Form.Item name="strategy" label="Strategy">
+          <Select options={STRATEGY_OPTIONS} popupMatchSelectWidth={false} listHeight={420} />
+        </Form.Item>
+        <StrategyHelp
+          id={strategy}
+          onApply={(g) =>
+            form.setFieldsValue({
+              rebalance_days: g.rebalance_days, stop_pct: g.stop_pct * 100, target_pct: g.target_pct * 100,
+              ...(g.decide_at && { decide_at: g.decide_at }),
+            })
+          }
+        />
         <Row gutter={12}>
-          <Col span={8}>
-            <Form.Item name="mode" label="Decision mode">
-              <Select options={[{ value: "rules", label: "rules (SMA/RSI)" }, { value: "llm", label: "llm (model decides)" }]} />
-            </Form.Item>
-          </Col>
-          <Col span={8}>
+          <Col span={12}>
             <Form.Item name="min_confidence" label="Min confidence" tooltip="Signals weaker than this are ignored">
               {pctInput(0, 100, 5)}
             </Form.Item>
           </Col>
-          <Col span={8}>
+          <Col span={12}>
             <Form.Item name="rebalance_days" label="Every N trading days" tooltip="How often the bot decides: 1 = every trading day, 5 ≈ weekly. On those days it checks at the time(s) set in “Check at”.">
               <InputNumber min={1} max={60} style={{ width: "100%" }} />
             </Form.Item>

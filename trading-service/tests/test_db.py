@@ -91,3 +91,22 @@ def test_new_columns_are_added_to_a_database_that_already_has_history(session):
     init_db()
     with engine.connect() as conn:
         assert tuple(conn.execute(text("SELECT order_type, stop_price FROM orders")).one()) == ("market", None)
+
+
+@pytest.mark.skipif(not IS_POSTGRES, reason="SQLite can't change a column's nullability")
+def test_a_column_removed_from_the_model_is_kept_but_no_longer_blocks_inserts(session):
+    """bots.mode (rules | llm) was replaced by bots.strategy. A database from before still has `mode`
+    NOT NULL without a default: init_db must keep it (history) but let new bots be created without it."""
+    make_bot(session)
+    with engine.begin() as conn:  # the table as it was: a NOT NULL mode column, and no strategy column yet
+        conn.execute(text("ALTER TABLE bots ADD COLUMN mode VARCHAR(8)"))
+        conn.execute(text("UPDATE bots SET mode = 'rules'"))
+        conn.execute(text("ALTER TABLE bots ALTER COLUMN mode SET NOT NULL"))
+        conn.execute(text("ALTER TABLE bots DROP COLUMN strategy"))
+
+    init_db()
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT mode, strategy FROM bots")).one() == ("rules", "sma_rsi")  # old bots keep their rules
+    make_bot(session, name="new", strategy="breakout")  # would fail with "null value in column mode"
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE bots DROP COLUMN mode"))  # leave the schema as the other tests expect

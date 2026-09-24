@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { tradingApi } from "./api";
 import BotForm, { type BotFormInitial } from "./BotForm";
+import { strategyName } from "../strategies";
 import { STATUS_COLOR, checkTimes, localTime, nyTime, pct, pnlColor, relative, slotTimes, usd } from "./format";
 import type { Bot, BotCreate, TradingEvent, TradingStatus } from "./types";
 import { usePolling } from "./usePolling";
@@ -97,7 +98,7 @@ const columns: ColumnsType<Bot> = [
     key: "params",
     render: (_, b) => (
       <span style={{ fontSize: 12, color: "#8b98b5" }}>
-        {b.mode} · conf ≥ {b.min_confidence} · every {b.rebalance_days}d at {checkTimes(b.decide_at, slotTimes())} · stop {+(b.stop_pct * 100).toFixed(1)}% / tgt {+(b.target_pct * 100).toFixed(1)}%
+        {strategyName(b.strategy)} · conf ≥ {b.min_confidence} · every {b.rebalance_days}d at {checkTimes(b.decide_at, slotTimes())} · stop {+(b.stop_pct * 100).toFixed(1)}% / tgt {+(b.target_pct * 100).toFixed(1)}%
       </span>
     ),
   },

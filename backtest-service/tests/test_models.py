@@ -21,7 +21,14 @@ def test_sensible_defaults():
     assert c.fee_pct == 0.0
     assert c.slippage_pct == 0.0005
     assert c.engine == "simple"
-    assert c.mode == "rules"
+    assert c.strategy == "sma_rsi"
+
+
+def test_unknown_strategy_rejected():
+    """A typo must fail at once, not run a whole backtest of decision-service 422s (= all HOLD)."""
+    with pytest.raises(ValidationError):
+        _cfg(strategy="llm")
+    assert _cfg(strategy="breakout").strategy == "breakout"
 
 
 def test_negative_fee_rejected():

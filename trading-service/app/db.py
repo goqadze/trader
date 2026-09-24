@@ -61,6 +61,7 @@ def init_db() -> None:
 
     Base.metadata.create_all(engine)
     _add_missing_columns()
+    _relax_removed_columns()
 
 
 def _add_missing_columns() -> None:
@@ -83,6 +84,23 @@ def _add_missing_columns() -> None:
                         ddl += " NOT NULL"
                 conn.execute(text(ddl))
                 logger.info("database: added column %s.%s", table.name, col.name)
+
+
+def _relax_removed_columns() -> None:
+    """A column dropped from a model stays in the database (history is never deleted), but if it was
+    NOT NULL without a default, every new insert would now fail. Make such columns nullable.
+    Example: bots.mode, replaced by bots.strategy."""
+    if engine.dialect.name != "postgresql":
+        return  # SQLite can't alter a column's nullability; a fresh SQLite file never has old columns
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if not insp.has_table(table.name):
+                continue
+            for col in insp.get_columns(table.name):
+                if col["name"] not in table.columns and not col["nullable"] and col.get("default") is None:
+                    conn.execute(text(f'ALTER TABLE {table.name} ALTER COLUMN "{col["name"]}" DROP NOT NULL'))
+                    logger.info("database: %s.%s is no longer used; made it nullable", table.name, col["name"])
 
 
 def _sql_literal(arg) -> str:

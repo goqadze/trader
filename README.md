@@ -6,7 +6,7 @@ An AI decision-support tool plus a backtesting app that measures it.
 
 | Service | Port | What it does |
 |---|---|---|
-| `decision-service/` | 8000 | FastAPI + LangGraph agent. Turns prices + news (RAG) into a BUY/SELL/HOLD signal with reasoning. |
+| `decision-service/` | 8000 | FastAPI + LangGraph agent. Runs one of 11 strategies on daily prices, tilts it with news (RAG), returns BUY/SELL/HOLD with reasoning. |
 | `backtest-service/` | 8001 | FastAPI + WebSocket API. Replays history, calls decision-service each step, streams progress. |
 | `trading-service/` | 8002 | Live/paper trading bots: scheduler, broker adapters, trading history database. |
 | `frontend/` | 8080 | React + TypeScript + Ant Design dashboard (Vite build, served by nginx). Backtests + live trading pages. |
@@ -28,6 +28,41 @@ An AI decision-support tool plus a backtesting app that measures it.
 
 The backtest service has a pluggable engine: `simple` (built-in portfolio simulator, works now) and
 `nautilus` (scaffold for NautilusTrader — see `backtest-service/app/engines/nautilus.py`).
+
+## Strategies
+
+Each backtest and each bot picks one strategy (`decision-service/app/strategies.py`, listed at
+`GET http://localhost:8000/strategies`). The LLM never decides a trade: it reads the news and explains the result.
+
+| Strategy | Style | BUY | SELL (exit) |
+|---|---|---|---|
+| `sma_rsi` (default) | trend | SMA20 > SMA50 and RSI14 < 70 | SMA20 ≤ SMA50 and RSI14 > 30 |
+| `trend_following` | trend | golden cross (SMA50 > SMA200), price > SMA50, ADX ≥ 20 | death cross, or price < SMA200 with sellers in control |
+| `momentum` | momentum | 3-month return > 0, MACD rising above signal, RSI 50–70 | MACD < signal with RSI < 50 |
+| `breakout` | breakout | close > 20-day high on ≥ 1.5× volume | close < 10-day low (Turtle exit) |
+| `mean_reversion` | mean reversion | dip below the lower Bollinger Band with RSI < 30, then an up close back inside | back at the middle band |
+| `range_trading` | mean reversion | ADX < 20, bounce off a twice-tested support | near resistance, or support breaks |
+| `ma_pullback` | trend (swing) | uptrend, pullback to EMA20 rejected upward | EMA20 < EMA50 or close < EMA50 |
+| `reversal` | mean reversion | bullish RSI divergence + up candle | bearish RSI divergence + down candle |
+| `gap_and_go` | event | gap up ≥ 2% that holds, ≥ 1.5× volume | gap down that never recovers |
+| `news_catalyst` | event | bullish news and the price agrees (fresh catalyst / volume raise confidence) | bearish news and the price agrees |
+| `fibonacci` | trend | bounce in the 50–61.8% golden zone after an 8%+ move | close below the 78.6% level |
+
+Chosen from four strategy round-ups ([Evest](https://www.evest.com/en/trading-blog/trading-strategies/),
+[DataDrivenInvestor](https://datadriveninvestor.com/articles/top-10-trading-strategies-that-everyone-should-know/),
+[XBTFX](https://xbtfx.com/blog/top-15-most-popular-trading-strategies/),
+[DBS](https://www.dbs.bank.in/in/treasures/articles/learning-centre/trading-strategies)) for what this app can run:
+daily bars, one symbol, long-only. Intraday methods (scalping, ICT/SMC, sessions), two-symbol or short-selling ones
+(pairs, arbitrage) and hand-drawn trendlines were left out.
+
+**Confidence** is on one scale for all: a textbook setup is 0.60 (the default minimum, so it trades), extra
+confirmations add up to +0.25, news that agrees/disagrees adds/subtracts 0.15, HOLD is 0.40. **News RAG** tilts every
+strategy and also flags *fresh catalysts* (earnings, guidance, up/downgrades, deals, FDA, recalls, lawsuits in the
+last 48h), which `gap_and_go` and `news_catalyst` use directly.
+
+Each strategy suggests a starting cadence and stop/target (the **Apply** link under the picker). Setup strategies
+(breakout, mean reversion, gaps, news...) fire on a specific day, so they suggest checking **every trading day**; a
+weekly check would miss most setups.
 
 ## Live trading (paper first)
 
