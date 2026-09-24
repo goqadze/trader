@@ -1,7 +1,8 @@
 """Database engine + session factory. Every table lives in models.py.
 
-SQLite is the default: one file on a Docker volume, zero setup, survives restarts. Point DATABASE_URL at
-Postgres when you outgrow it -- the ORM code doesn't change.
+Production runs on Postgres (the trading-db container): real concurrent writers, strict column types,
+and standard backup tools (pg_dump). SQLite is still accepted -- handy for a quick throwaway run or
+`pytest` without Docker -- because the ORM code is identical for both.
 """
 
 from collections.abc import Iterator
@@ -35,7 +36,15 @@ def make_engine(url: str):
             cur.close()
 
         return engine
-    return create_engine(url, pool_pre_ping=True)
+    return create_engine(
+        url,
+        pool_pre_ping=True,  # test each pooled connection first, so a Postgres restart doesn't break the next request
+        # Up to 4 scheduler threads + concurrent API requests each hold a connection; the default
+        # (5 + 10 overflow) could make a busy moment wait. Postgres allows 100 connections by default.
+        pool_size=10,
+        max_overflow=10,
+        pool_timeout=30,
+    )
 
 
 engine = make_engine(settings.database_url)

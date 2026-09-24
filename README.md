@@ -69,9 +69,21 @@ Safety built in:
 - **Reconciliation** (real brokers): if the account's shares don't match the bot's records (e.g. you traded by
   hand), the bot pauses. Only one bot per symbol per real account, so positions can't mix.
 - **Restart-safe**: "already decided today" is stored in the database, so a restart never decides twice.
-- **History is never deleted**: bots are archived, not removed. Data lives in the `trading-data` Docker volume
-  (SQLite; set `DATABASE_URL` for Postgres).
+- **History is never deleted**: bots are archived, not removed. Data lives in its own Postgres container
+  (`trading-db`, Docker volume `trading-db`), separate from Langfuse's database.
 - The dashboard and trading API listen on **localhost only**, because they can place orders.
+
+### Trading database
+
+| What | How |
+|---|---|
+| Connect with any SQL client | `localhost:5433`, database `trading`, user/password `trading` (localhost only) |
+| Quick look from the terminal | `docker compose exec trading-db psql -U trading trading` |
+| Back up | `make backup-trading-db` → `backups/trading-<timestamp>.sql` (git-ignored) |
+| Restore | `docker compose exec -T trading-db psql -U trading trading < backups/<file>.sql` |
+
+`docker compose down` keeps the data; `docker compose down -v` **deletes it** (volumes included).
+Tests use a separate `trading_test` database and refuse to run against any database not named `*_test`.
 
 ## Run
 
@@ -115,5 +127,5 @@ Browser ──► /api/trading/*  (proxied by nginx)
                 │                     │
                 │                     └──► broker: paper simulator | Alpaca paper | Alpaca live
                 ▼
-        SQLite (trading-data volume): bots, decisions, orders, equity, audit log
+        Postgres (trading-db): bots, decisions, orders, equity, audit log
 ```

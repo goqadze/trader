@@ -24,21 +24,42 @@ services:
     depends_on:
       - decision-service               # start decision-service first
 
-  # Live/paper trading bots: scheduler + broker adapters + trading history database
+  # Trading history database (bots, decisions, orders, equity, audit log).
+  # Its own Postgres, separate from Langfuse's, so monitoring can't touch trading data.
+  trading-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: trading
+      POSTGRES_PASSWORD: trading           # local-only dev credentials; the port is bound to localhost
+      POSTGRES_DB: trading
+    ports:
+      - "127.0.0.1:5433:5432"            # inspect with any SQL client: localhost:5433 trading/trading (5433 avoids a local Postgres)
+    volumes:
+      - trading-db:/var/lib/postgresql/data  # survives restarts, rebuilds and `docker compose down` (not `down -v`)
+    healthcheck:                          # trading-service waits until Postgres actually accepts connections
+      test: ["CMD-SHELL", "pg_isready -U trading -d trading"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # Live/paper trading bots: scheduler + broker adapters; history lives in trading-db
   trading-service:
     build: ./trading-service
     ports:
       - "127.0.0.1:8002:8000"          # API/docs at http://localhost:8002/docs (localhost only: it can place orders)
     env_file:
-      - ./trading-service/.env         # broker keys, ALLOW_LIVE_TRADING, scheduler timing
+      - ./trading-service/.env         # DATABASE_URL, broker keys, ALLOW_LIVE_TRADING, scheduler timing
     volumes:
       - ./trading-service/app:/code/app    # live code reload in dev
-      - trading-data:/data                 # trading history (SQLite) survives restarts and rebuilds
     # --reload for dev; still ONE process, so the scheduler never runs twice
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     restart: unless-stopped            # bots keep running after a crash or a Docker restart
     depends_on:
-      - decision-service
+      decision-service:
+        condition: service_started
+      trading-db:
+        condition: service_healthy     # don't start the scheduler before the database is ready
 
   # React + Ant Design dashboard, served by nginx which proxies the backtest and trading APIs
   frontend:
@@ -138,6 +159,6 @@ services:
 # Named volumes managed by Docker (persist data between runs)
 volumes:
   chroma-data:
-  trading-data:
+  trading-db:
   langfuse-db:
   glitchtip-db:

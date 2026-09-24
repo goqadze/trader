@@ -2,7 +2,8 @@ fastapi
 uvicorn[standard]
 pydantic
 httpx                  # calls decision-service and the Alpaca REST API
-sqlalchemy>=2          # trading history database (SQLite by default, Postgres via DATABASE_URL)
+sqlalchemy>=2          # ORM for the trading history database
+psycopg[binary]>=3.1   # Postgres driver (DATABASE_URL=postgresql+psycopg://...)
 exchange_calendars     # NYSE trading days, holidays and early closes
 yfinance               # live quotes for the built-in paper broker
 pandas

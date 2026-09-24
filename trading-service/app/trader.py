@@ -260,9 +260,11 @@ def evaluate(session: Session, bot: Bot, broker: Broker, now: datetime, kind: st
         session.commit()
         return decision
 
-    decision.action = str(sig.get("action", "HOLD")).upper()
-    decision.confidence = float(sig.get("confidence") or 0.0)
-    decision.sentiment = sig.get("sentiment") or ""
+    # Normalize what came back: Postgres enforces column lengths, and anything unexpected must mean "do nothing"
+    action = str(sig.get("action", "HOLD")).upper().strip()
+    decision.action = action if action in ("BUY", "SELL", "HOLD") else "HOLD"
+    decision.confidence = max(0.0, min(1.0, float(sig.get("confidence") or 0.0)))
+    decision.sentiment = str(sig.get("sentiment") or "")[:32]
     decision.reasoning = sig.get("reasoning") or ""
     decision.steps = sig.get("steps") or []
     session.flush()  # gives the decision an id so orders can point at it

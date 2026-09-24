@@ -19,21 +19,26 @@ from .db import Base, utcnow
 
 
 class UTCDateTime(TypeDecorator):
-    """SQLite drops timezone info, so a stored UTC time comes back 'naive'. This column type always
-    stores UTC and always returns timezone-aware UTC datetimes, so comparisons never mix the two."""
+    """Timestamps that are always timezone-aware UTC in Python.
 
-    impl = DateTime
+    On Postgres this is TIMESTAMPTZ, a real point in time. SQLite has no timezone type and hands values
+    back 'naive', so there we re-attach UTC on the way out. Either way, code comparing `now` with a
+    stored time never mixes aware and naive datetimes (which would raise)."""
+
+    impl = DateTime(timezone=True)
     cache_ok = True
 
     def process_bind_param(self, value, dialect):
         if value is not None:
             if value.tzinfo is None:
                 raise ValueError("naive datetime; use timezone-aware UTC (db.utcnow())")
-            value = value.astimezone(timezone.utc).replace(tzinfo=None)
+            value = value.astimezone(timezone.utc)
         return value
 
     def process_result_value(self, value, dialect):
-        return value.replace(tzinfo=timezone.utc) if value is not None else None
+        if value is None:
+            return None
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
 # Bot lifecycle:
@@ -95,7 +100,7 @@ class Decision(Base):
     kind: Mapped[str] = mapped_column(String(16))  # scheduled | manual (Run now, market open) | preview (market closed: no trading)
     action: Mapped[str] = mapped_column(String(8))  # BUY | SELL | HOLD (HOLD also when the signal call failed)
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
-    sentiment: Mapped[str] = mapped_column(String(16), default="")
+    sentiment: Mapped[str] = mapped_column(String(32), default="")  # clipped in trader.evaluate (LLM output)
     reasoning: Mapped[str] = mapped_column(Text, default="")
     steps: Mapped[list] = mapped_column(JSON, default=list)  # the agent's full "show your work" trail
     price: Mapped[float | None] = mapped_column(Float, nullable=True)  # quote when the decision was made

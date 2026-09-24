@@ -11,7 +11,7 @@ def _bool(name: str, default: bool) -> bool:
 @dataclass(frozen=True)
 class Settings:
     decision_service_url: str = os.getenv("DECISION_SERVICE_URL", "http://decision-service:8000")
-    database_url: str = os.getenv("DATABASE_URL", "sqlite:////data/trading.db")
+    database_url: str = os.getenv("DATABASE_URL", "postgresql+psycopg://trading:trading@trading-db:5432/trading")
 
     # Scheduler timing
     scheduler_enabled: bool = _bool("SCHEDULER_ENABLED", True)

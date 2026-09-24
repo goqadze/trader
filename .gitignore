@@ -16,6 +16,9 @@ node_modules/
 dist/
 *.local
 
+# --- Database backups (make backup-trading-db): real trading history, keep out of git ---
+backups/
+
 # --- OS / editor ---
 .DS_Store
 Thumbs.db
