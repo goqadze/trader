@@ -5,13 +5,16 @@ and standard backup tools (pg_dump). SQLite is still accepted -- handy for a qui
 `pytest` without Docker -- because the ORM code is identical for both.
 """
 
+import logging
 from collections.abc import Iterator
 from datetime import datetime, timezone
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import settings
+
+logger = logging.getLogger("trading-service")
 
 
 class Base(DeclarativeBase):
@@ -52,11 +55,39 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
 def init_db() -> None:
-    """Create any missing tables. Fine while the schema only grows; adopt Alembic migrations once
-    you need to rename or change existing columns on a database that already holds history."""
+    """Create any missing tables and columns. Fine while the schema only grows; adopt Alembic migrations
+    once you need to rename or change existing columns on a database that already holds history."""
     from . import models  # noqa: F401  (registers the tables on Base.metadata)
 
     Base.metadata.create_all(engine)
+    _add_missing_columns()
+
+
+def _add_missing_columns() -> None:
+    """create_all() creates missing TABLES but never changes existing ones, so a column added to a model
+    later would be missing from a database that already has history. Add those columns here.
+    Additive only: a new column must be nullable or have a server_default (existing rows need a value)."""
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if not insp.has_table(table.name):
+                continue
+            existing = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name in existing:
+                    continue
+                ddl = f"ALTER TABLE {table.name} ADD COLUMN {col.name} {col.type.compile(engine.dialect)}"
+                if col.server_default is not None:
+                    ddl += " DEFAULT " + _sql_literal(col.server_default.arg)
+                    if not col.nullable:
+                        ddl += " NOT NULL"
+                conn.execute(text(ddl))
+                logger.info("database: added column %s.%s", table.name, col.name)
+
+
+def _sql_literal(arg) -> str:
+    """A server_default as SQL: plain strings are quoted, text("now()") etc. are used as written."""
+    return "'" + arg.replace("'", "''") + "'" if isinstance(arg, str) else str(arg.text)
 
 
 def get_session() -> Iterator[Session]:

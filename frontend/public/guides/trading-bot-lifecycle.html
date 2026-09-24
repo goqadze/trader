@@ -268,7 +268,8 @@
             <p>For each bot that isn't archived, up to 4 at a time:</p>
             <ol class="steps">
               <li><b>Lock the bot</b> so a button click and the scheduler can't act at the same moment. Busy? Skip it until the next tick.</li>
-              <li><b>Finish pending orders:</b> any order still waiting at the broker gets looked up and booked.</li>
+              <li><b>Finish pending orders:</b> any order still waiting at the broker gets looked up and booked. That includes a stop order the broker has just filled.</li>
+              <li><b>Protect</b> (Alpaca): is a stop-loss order resting at the broker for the open position? If not, place one.</li>
               <li><b>Market closed?</b> Stop here. Nothing trades outside 9:30–16:00 ET, on weekends, or on holidays.</li>
               <li><b>Reconcile</b> (real brokers only): does the account really hold the shares the bot thinks it holds? If not → <span class="tag warn">paused</span>.</li>
               <li><b>Every 5 min: watch.</b> Get a fresh price, update today's equity point, check the drawdown breaker, check stop-loss / take-profit (see step 5).</li>
@@ -315,6 +316,7 @@
               <li>The broker fills it. On paper: at price + slippage, instantly. On Alpaca: usually within seconds.</li>
               <li><b>Book the fill:</b> cash goes down, shares go up, entry price and cost basis are set.</li>
               <li><b>Stop-loss</b> = fill × (1 − stop %). <b>Take-profit</b> = fill × (1 + target %). They're based on the <em>actual</em> fill price.</li>
+              <li><b>Alpaca:</b> a real <b>stop order</b> for all the shares goes to the broker at the stop-loss price, good till canceled. The bot page shows <span class="tag buy">held at broker</span>.</li>
               <li>Equity point updated; audit event “BUY 29 AAPL @ $337.74”.</li>
             </ol>
             <p class="note safe">Saving before sending means an order can't be lost or sent twice. If the network drops mid-order, the scheduler asks the broker “did you get order X?” instead of guessing.</p>
@@ -331,14 +333,15 @@
             <h3>5 · Holding, then selling <span class="tag sell">SELL</span></h3>
             <p>The position is closed, always <em>all</em> shares, by whichever comes first:</p>
             <ul class="plain">
-              <li><b>Stop-loss hit:</b> price ≤ stop → sell, reason <span class="tag sell">stop-loss</span>. Works even when the bot is paused.</li>
+              <li><b>Stop-loss hit:</b> price ≤ stop → sell, reason <span class="tag sell">stop-loss</span>. Works even when the bot is paused. On <b>Alpaca</b> the broker's stop order fires by itself, <b>even while this app or your computer is off</b>, and the next check books the sale. On <b>paper</b> the 5-minute check sells.</li>
               <li><b>Take-profit hit:</b> price ≥ target → sell, reason <span class="tag buy">target</span>. Also works when paused.</li>
               <li><b>SELL signal</b> at a decision time with confidence ≥ minimum → reason <span class="tag">signal</span>.</li>
               <li><b>You</b> press Close position → reason <span class="tag blue">manual</span>.</li>
             </ul>
+            <p class="note safe">Every other sell (target, signal, Close position) <b>cancels the stop order first</b> and only sells once the broker confirms it. Two sells could otherwise both fill and leave a short position.</p>
             <p>On the fill: <b>P&amp;L</b> = sale money − fee − cost basis. It's added to realized P&amp;L, and the bot is flat again, waiting for the next BUY.</p>
             <p class="note">Drawdown breaker: if equity falls more than 20% (your setting) below its best level, the bot <b>pauses itself</b>. It does not panic-sell; the stop-loss still protects the position.</p>
-            <div class="where">code: <span>trader.py → watch() · mark_to_market() · close_position()</span></div>
+            <div class="where">code: <span>trader.py → watch() · protect() · release_stop() · close_position()</span></div>
           </div>
         </div>
       </div>
@@ -577,10 +580,11 @@
           <div class="term"><dt>paper</dt><dd>Built-in simulator: real live prices, pretend money, instant fills. No account needed.</dd></div>
           <div class="term"><dt>alpaca-paper</dt><dd>Alpaca's practice account: real order handling, pretend money. Needs paper keys.</dd></div>
           <div class="term"><dt>alpaca-live</dt><dd>Real money. Locked until you set <code>ALLOW_LIVE_TRADING=true</code>, add live keys, and tick the confirmation.</dd></div>
-          <div class="term"><dt>Market order</dt><dd>“Buy/sell now at whatever the price is.” The only order type the bots use.</dd></div>
+          <div class="term"><dt>Market order</dt><dd>“Buy/sell now at whatever the price is.” Every buy and sell the bot decides on.</dd></div>
+          <div class="term"><dt>Stop order</dt><dd>Waits at the broker and becomes a market sell once the price trades at or below its level. Alpaca bots keep one resting for the stop-loss, so it works while this app is off.</dd></div>
           <div class="term"><dt>Fill</dt><dd>The moment an order actually happens, and the price it happened at.</dd></div>
           <div class="term"><dt>Partial fill</dt><dd>Only some of the shares got bought or sold.</dd></div>
-          <div class="term"><dt>Pending order</dt><dd>Sent but not filled yet. While one is pending, the bot places no other orders.</dd></div>
+          <div class="term"><dt>Pending order</dt><dd>Sent but not filled yet. While one is pending, the bot places no other orders. A resting stop order doesn't count.</dd></div>
           <div class="term"><dt>Client order id</dt><dd>Our own unique label for each order, e.g. <code>bot1-cf01dd…</code>. Lets us ask the broker about it and prevents duplicates.</dd></div>
           <div class="term"><dt>Buying power</dt><dd>How much a real account can spend right now. A bot's budget never exceeds it.</dd></div>
         </dl>
@@ -591,7 +595,7 @@
         <dl class="terms">
           <div class="term"><dt>Scheduler</dt><dd>The background loop in trading-service that runs every bot.</dd></div>
           <div class="term"><dt>Tick</dt><dd>One pass of the scheduler, every 30 s. “Scheduler running” = ticks are arriving.</dd></div>
-          <div class="term"><dt>Watch</dt><dd>The 5-minute check: new price, equity point, breaker, stop / target.</dd></div>
+          <div class="term"><dt>Watch</dt><dd>The 5-minute check: new price, equity point, breaker, take-profit, and the stop-loss when the broker isn't holding it.</dd></div>
           <div class="term"><dt>Lock</dt><dd>Makes sure only one thing works on a bot at a time. A click during a decision gets “bot is busy”.</dd></div>
           <div class="term"><dt>Write-ahead order</dt><dd>Saving an order before sending it, so a crash can't lose or duplicate it.</dd></div>
           <div class="term"><dt>Reconcile</dt><dd>Comparing the real account's shares with the bot's records. A mismatch pauses the bot.</dd></div>

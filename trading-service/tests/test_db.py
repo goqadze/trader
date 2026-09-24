@@ -8,8 +8,8 @@ import pytest
 from conftest import IS_POSTGRES, FakeBroker, at, make_bot, signal
 from sqlalchemy import select, text
 
-from app.db import SessionLocal, engine
-from app.models import Decision, Event
+from app.db import SessionLocal, engine, init_db
+from app.models import Decision, Event, Order
 from app.trader import evaluate
 
 
@@ -76,3 +76,18 @@ def test_history_survives_a_new_connection_pool(session):
         rows = list(fresh.scalars(select(Decision).where(Decision.bot_id == bot.id)))
     assert len(rows) == 1 and rows[0].action == "BUY"
     assert rows[0].created_at > t - timedelta(seconds=1)
+
+
+def test_new_columns_are_added_to_a_database_that_already_has_history(session):
+    """create_all() never alters an existing table; init_db must add columns introduced later
+    (here: the order type and stop price), giving old rows the default."""
+    bot = make_bot(session)
+    session.add(Order(bot_id=bot.id, side="BUY", qty=1, reason="signal", client_order_id="old-1"))
+    session.commit()
+    with engine.begin() as conn:  # make the table look like it did before those columns existed
+        conn.execute(text("ALTER TABLE orders DROP COLUMN order_type"))
+        conn.execute(text("ALTER TABLE orders DROP COLUMN stop_price"))
+
+    init_db()
+    with engine.connect() as conn:
+        assert tuple(conn.execute(text("SELECT order_type, stop_price FROM orders")).one()) == ("market", None)

@@ -46,6 +46,10 @@ How a bot runs (`trading-service/app/scheduler.py`):
   of the bot's cash; SELL the whole position on a SELL signal, the stop-loss, or the take-profit.
 - **Stricter than the backtest where money is at stake**: stops/targets are checked every 5 minutes
   during market hours (not only at the close), and it never trades on a quote older than 20 minutes.
+- **Alpaca bots keep their stop-loss at the broker**: right after a buy fills, a good-till-canceled stop
+  order for all the shares rests at Alpaca. It fires even while this app, or the machine it runs on, is
+  off. Every other sell cancels it first and waits for the broker to confirm, so a position can never be
+  sold twice. Paper-simulator bots rely on the 5-minute check. The take-profit is always checked by the app.
 
 Brokers (choose per bot):
 
@@ -71,7 +75,10 @@ Safety built in:
 - **Restart-safe**: "already decided today" is stored in the database, so a restart never decides twice.
 - **History is never deleted**: bots are archived, not removed. Data lives in its own Postgres container
   (`trading-db`, Docker volume `trading-db`), separate from Langfuse's database.
-- The dashboard and trading API listen on **localhost only**, because they can place orders.
+- **Every port listens on localhost only**: nothing here has a login, and the dashboard can place orders.
+  To reach a server, see [DEPLOY.md](DEPLOY.md) (SSH tunnel or Tailscale).
+- **Comes back by itself**: every container is `restart: unless-stopped`, so a crash, a Docker restart or a
+  reboot doesn't leave bots without their decision-service.
 
 ### Trading database
 
@@ -79,8 +86,9 @@ Safety built in:
 |---|---|
 | Connect with any SQL client | `localhost:5433`, database `trading`, user/password `trading` (localhost only) |
 | Quick look from the terminal | `docker compose exec trading-db psql -U trading trading` |
-| Back up | `make backup-trading-db` → `backups/trading-<timestamp>.sql` (git-ignored) |
-| Restore | `docker compose exec -T trading-db psql -U trading trading < backups/<file>.sql` |
+| Back up | `make backup-trading-db` → `backups/trading-<timestamp>.sql.gz` (git-ignored; keeps 30 days) |
+| Restore | `gunzip -c backups/<file>.sql.gz \| docker compose exec -T trading-db psql -U trading trading` |
+| Daily on a server | a cron line runs `scripts/backup-trading-db.sh` (see [DEPLOY.md](DEPLOY.md#8-daily-backups)) |
 
 ### News store (RAG)
 
@@ -98,6 +106,10 @@ Tests use a separate `trading_test` database and refuse to run against any datab
 ```bash
 docker compose up --build
 ```
+
+**Laptop or server?** Either one works. Bots only decide while the stack is running, so for real money use an
+always-on server. [DEPLOY.md](DEPLOY.md) covers both: keeping a Mac awake during market hours, and a
+step-by-step server setup (Docker, private access over SSH or Tailscale, daily backups).
 
 - Dashboard: http://localhost:8080 (Backtest and Live trading pages)
 - Backtest API docs: http://localhost:8001/docs
@@ -134,6 +146,7 @@ Browser ──► /api/trading/*  (proxied by nginx)
         trading-service :8002 ── scheduler (every 30s) ──► decision-service  (15:30 ET decision)
                 │                     │
                 │                     └──► broker: paper simulator | Alpaca paper | Alpaca live
+                │                                  (Alpaca also holds each position's stop-loss order)
                 ▼
         Postgres (trading-db): bots, decisions, orders, equity, audit log
 ```

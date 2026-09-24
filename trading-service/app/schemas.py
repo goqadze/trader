@@ -76,7 +76,8 @@ class BotOut(StrategyParams):
     return_pct: float
     unrealized_pnl: float
     buy_hold_return_pct: float | None
-    pending_order: bool
+    pending_order: bool  # a market order is still working at the broker
+    stop_at_broker: bool  # the stop-loss rests at the broker as a real order (Alpaca), not only in this service
 
 
 class DecisionOut(BaseModel):
@@ -103,6 +104,8 @@ class OrderOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     side: str
+    order_type: str  # market | stop
+    stop_price: float | None
     qty: int
     reason: str
     status: str

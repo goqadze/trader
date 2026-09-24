@@ -28,9 +28,7 @@ test-trading:
 		-e TEST_DATABASE_URL=postgresql+psycopg://trading:trading@trading-db:5432/trading_test \
 		trading-service sh -c "pip install -q -r requirements-dev.txt && pytest"
 
-# Snapshot the trading history (bots, decisions, orders, equity, audit log) to backups/.
-# Restore: docker compose exec -T trading-db psql -U trading trading < backups/<file>.sql
+# Snapshot the trading history (bots, decisions, orders, equity, audit log) to backups/*.sql.gz,
+# keeping the last 30 days. Restore: gunzip -c backups/<file>.sql.gz | docker compose exec -T trading-db psql -U trading trading
 backup-trading-db:
-	mkdir -p backups
-	docker compose exec -T trading-db pg_dump -U trading --clean --if-exists trading > backups/trading-$$(date +%Y%m%d-%H%M%S).sql
-	@ls -lh backups | tail -1
+	./scripts/backup-trading-db.sh

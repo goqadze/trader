@@ -20,6 +20,8 @@ _TERMINAL = {"filled", "canceled", "expired", "rejected", "done_for_day", "stopp
 
 
 class AlpacaBroker(Broker):
+    supports_stop_orders = True  # the stop-loss rests at Alpaca, so it works while this service is down
+
     def __init__(self, key_id: str, secret_key: str, live: bool = False,
                  transport: httpx.BaseTransport | None = None, fill_wait_seconds: float = 10.0):
         self.live = live
@@ -45,14 +47,47 @@ class AlpacaBroker(Broker):
         return Quote(price=float(t["p"]), at=to_utc(t["t"]))
 
     def submit(self, symbol: str, side: str, qty: int, client_order_id: str) -> BrokerOrder:
-        body = {
+        order = self._post_order({
             "symbol": symbol,
             "qty": str(qty),
             "side": side.lower(),
             "type": "market",
             "time_in_force": "day",  # an unfilled order expires at the close instead of lingering overnight
             "client_order_id": client_order_id,
-        }
+        })
+        # Market orders usually fill within a second or two; wait briefly so the UI shows the fill at once.
+        # Anything still open after that is picked up by the scheduler's pending-order sync.
+        return self._wait(client_order_id, order)
+
+    def submit_stop(self, symbol: str, qty: int, stop_price: float, client_order_id: str) -> BrokerOrder:
+        # A stop (market) order: once a trade prints at or below stop_price it becomes a market sell.
+        # gtc = stays until filled or canceled (Alpaca cancels GTC orders after 90 days; trader.protect
+        # then simply places a new one). Only triggers in regular hours, like the service's own check.
+        return self._post_order({
+            "symbol": symbol,
+            "qty": str(qty),
+            "side": "sell",
+            "type": "stop",
+            "stop_price": f"{stop_price:.2f}" if stop_price >= 1 else f"{stop_price:.4f}",  # Alpaca's price increments
+            "time_in_force": "gtc",
+            "client_order_id": client_order_id,
+        })
+
+    def cancel(self, client_order_id: str) -> BrokerOrder | None:
+        order = self.lookup(client_order_id)
+        if order is None or order.status != "submitted":
+            return order  # never got it, or already finished (filled / canceled): nothing to cancel
+        try:
+            r = self._api.delete(f"/v2/orders/{order.broker_order_id}")
+        except httpx.HTTPError as e:
+            raise BrokerError(f"Alpaca unreachable while canceling: {e}") from e
+        # 204 = cancel accepted (it completes asynchronously). 422 = no longer cancelable, typically because it
+        # is filling right now. Either way the order's real state is read back below.
+        if r.status_code not in (200, 204, 422):
+            raise BrokerError(f"Alpaca cancel {r.status_code}: {r.text[:200]}")
+        return self._wait(client_order_id, self.lookup(client_order_id) or order)
+
+    def _post_order(self, body: dict) -> BrokerOrder:
         try:
             r = self._api.post("/v2/orders", json=body)
         except httpx.HTTPError as e:
@@ -63,10 +98,10 @@ class AlpacaBroker(Broker):
             return BrokerOrder(status="rejected", error=f"Alpaca {r.status_code}: {r.text[:300]}")
         if r.status_code >= 300:
             raise BrokerError(f"Alpaca submit {r.status_code}: {r.text[:300]}")
+        return self._parse(r.json())
 
-        order = self._parse(r.json())
-        # Market orders usually fill within a second or two; wait briefly so the UI shows the fill at once.
-        # Anything still open after that is picked up by the scheduler's pending-order sync.
+    def _wait(self, client_order_id: str, order: BrokerOrder) -> BrokerOrder:
+        """Poll for up to fill_wait_seconds while the order is still working; return the latest state."""
         deadline = time.monotonic() + self.fill_wait_seconds
         while order.status == "submitted" and time.monotonic() < deadline:
             time.sleep(1)

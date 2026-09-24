@@ -1,6 +1,7 @@
 """The broker interface. The trader only talks to this, so the built-in paper simulator, Alpaca and
 (later) Interactive Brokers are interchangeable per bot. To add a broker: subclass Broker, implement
-the five methods, register it in brokers/__init__.py."""
+the abstract methods, register it in brokers/__init__.py. A broker that can hold a stop-loss order for
+us sets supports_stop_orders and implements submit_stop() and cancel() too."""
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -32,6 +33,9 @@ class BrokerError(Exception):
 class Broker(ABC):
     name: str = "base"
     live: bool = False  # True = real money
+    # True = the stop-loss rests AT THE BROKER as a real stop order, so it fires even while this service
+    # is down (see trader.protect). False = the service checks the stop itself every few minutes.
+    supports_stop_orders: bool = False
 
     @abstractmethod
     def quote(self, symbol: str) -> Quote:
@@ -52,3 +56,14 @@ class Broker(ABC):
     def position_qty(self, symbol: str) -> int | None:
         """Shares the real account holds. None = nothing to reconcile against (simulator)."""
         return None
+
+    def submit_stop(self, symbol: str, qty: int, stop_price: float, client_order_id: str) -> BrokerOrder:
+        """Rest a good-till-canceled SELL stop order: it becomes a market sell once the price trades at or
+        below stop_price. Normally returns 'submitted' (resting). Only for brokers with supports_stop_orders."""
+        raise NotImplementedError(f"{self.name} can't hold stop orders")
+
+    def cancel(self, client_order_id: str) -> BrokerOrder | None:
+        """Cancel a working order and return its final state: 'canceled', 'filled'/'partially_filled' if it
+        executed first (that fill is real and must be booked), or still 'submitted' if the broker hasn't
+        confirmed yet. None = the broker never had it."""
+        raise NotImplementedError(f"{self.name} can't cancel orders")

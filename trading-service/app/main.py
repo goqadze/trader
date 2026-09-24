@@ -20,7 +20,7 @@ from .db import get_session, init_db, utcnow
 from .market import is_open, next_decision_time, ny_date, session_bounds
 from .models import OPEN_ORDER_STATUSES, Bot, Decision, EquitySnapshot, Event, Order
 from .schemas import BotCreate, BotOut, BotUpdate, DecisionOut, EventOut, OrderOut, SnapshotOut, StatusOut
-from .trader import bot_lock, close_position, evaluate, log_event, open_orders
+from .trader import bot_lock, close_position, evaluate, log_event, open_orders, resting_stop
 
 logger = logging.getLogger("trading-service")
 logging.basicConfig(level=logging.INFO)
@@ -69,6 +69,7 @@ def _bot_out(session: Session, bot: Bot) -> BotOut:
         "unrealized_pnl": round(bot.shares * price - bot.cost_basis, 2) if bot.shares else 0.0,
         "buy_hold_return_pct": round((price / bot.benchmark_price - 1) * 100, 2) if bot.benchmark_price and price else None,
         "pending_order": bool(open_orders(session, bot)),
+        "stop_at_broker": resting_stop(session, bot) is not None,
     })
 
 
@@ -229,7 +230,7 @@ def archive_bot(bot_id: int, session: Session = Depends(get_session)):
     """Retire a bot. History is kept; there is deliberately no hard delete (audit trail)."""
     with _Locked(bot_id):  # locked: the "is it flat?" check must not race with a buy
         bot = _get_bot(session, bot_id)
-        if bot.shares or open_orders(session, bot):
+        if bot.shares or open_orders(session, bot) or resting_stop(session, bot):
             raise HTTPException(409, "close the position (and let pending orders finish) before archiving")
         return _set_status(session, bot, ("active", "paused"), "archived", "Archived by user")
 
@@ -262,7 +263,11 @@ def close_now(bot_id: int, session: Session = Depends(get_session)):
             raise HTTPException(409, "an order is already pending")
         broker = _broker_or_400(bot)
         log_event(session, bot.id, "order", "Close position requested by user", now=now)
-        return close_position(session, bot, broker, "manual", now)
+        order = close_position(session, bot, broker, "manual", now)
+        if order is None:  # see close_position: the broker-held stop decided it
+            raise HTTPException(409, "the stop-loss order at the broker already sold the position" if bot.shares == 0 else
+                                "the broker hasn't confirmed canceling the stop-loss order yet; try again in a moment")
+        return order
 
 
 @app.post("/halt")
@@ -321,5 +326,6 @@ def list_events(limit: int = Query(100, le=1000), session: Session = Depends(get
 def summary(session: Session = Depends(get_session)):
     """Counts for the overview header."""
     by_status = dict(session.execute(select(Bot.status, func.count()).group_by(Bot.status)).all())
-    pending = session.scalar(select(func.count()).select_from(Order).where(Order.status.in_(OPEN_ORDER_STATUSES)))
+    pending = session.scalar(select(func.count()).select_from(Order)
+                             .where(Order.order_type == "market", Order.status.in_(OPEN_ORDER_STATUSES)))
     return {"bots_by_status": by_status, "pending_orders": pending}

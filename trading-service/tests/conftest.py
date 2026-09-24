@@ -6,7 +6,7 @@ Which database:
   not set                -> a throwaway SQLite file (quick runs without Docker)
 
 Environment is set BEFORE the app is imported, so no test ever touches the real trading database,
-starts the scheduler, or calls a real broker or decision-service.
+starts the scheduler, sees your broker keys, or calls a real broker or decision-service.
 """
 
 import os
@@ -31,6 +31,11 @@ if _test_url:
 else:
     os.environ["DATABASE_URL"] = f"sqlite:///{tempfile.mkdtemp()}/test.db"
 os.environ["SCHEDULER_ENABLED"] = "false"
+# `make test-trading` runs inside the service container, which loads trading-service/.env. Blank out the
+# broker keys so no test can ever reach a real account, and results don't depend on what's in your .env.
+for _key in ("ALPACA_PAPER_KEY_ID", "ALPACA_PAPER_SECRET_KEY", "ALPACA_LIVE_KEY_ID", "ALPACA_LIVE_SECRET_KEY"):
+    os.environ[_key] = ""
+os.environ["ALLOW_LIVE_TRADING"] = "false"
 
 import pytest  # noqa: E402
 
@@ -50,12 +55,18 @@ def at(hour: int, minute: int = 0, day: int = 2) -> datetime:
 
 
 class FakeBroker(Broker):
-    """Fills instantly at `price` (with optional slippage/fee), unless told to misbehave."""
+    """Fills instantly at `price` (with optional slippage/fee), unless told to misbehave.
+    With stops=True it also holds stop orders, like Alpaca: they rest until the test calls trigger_stop()."""
 
     name = "fake"
 
     def __init__(self, price: float = 100.0, now: datetime | None = None, quote_at: datetime | None = None,
-                 slippage_pct: float = 0.0, fee_pct: float = 0.0):
+                 slippage_pct: float = 0.0, fee_pct: float = 0.0, stops: bool = False):
+        self.supports_stop_orders = stops
+        self.stop_mode = "rest"  # rest | reject | raise
+        self.cancel_mode = "cancel"  # cancel | filled (the stop executed first) | pending (not confirmed) | raise
+        self.stops: list[tuple[int, float]] = []  # (qty, stop_price) of every stop order received
+        self.canceled: list[str] = []
         self.price = price
         self.now = now  # the test's "current time"; quotes are stamped with it (i.e. fresh) ...
         self.quote_at = quote_at  # ... unless a fixed quote time is given (to simulate stale data)
@@ -84,10 +95,45 @@ class FakeBroker(Broker):
         o = BrokerOrder(status="filled", filled_qty=qty, avg_price=fill, fee=round(qty * fill * self.fee_pct, 2),
                         broker_order_id="b-" + client_order_id)
         self.orders[client_order_id] = o
+        if self.held is not None:  # tracking a real account's position
+            self.held += qty if side == "BUY" else -qty
         return o
 
     def lookup(self, client_order_id):
         return self.orders.get(client_order_id)
+
+    def submit_stop(self, symbol, qty, stop_price, client_order_id):
+        self.stops.append((qty, stop_price))
+        if self.stop_mode == "raise":
+            raise BrokerError("network down")
+        if self.stop_mode == "reject":
+            return BrokerOrder(status="rejected", error="stop price above market")
+        o = BrokerOrder(status="submitted", broker_order_id="b-" + client_order_id)
+        self.orders[client_order_id] = o
+        return o
+
+    def cancel(self, client_order_id):
+        if self.cancel_mode == "raise":
+            raise BrokerError("network down")
+        o = self.orders.get(client_order_id)
+        if o is None or o.status != "submitted":
+            return o
+        if self.cancel_mode == "filled":
+            qty = next(q for q, _ in self.stops[::-1])
+            return self.trigger_stop(client_order_id, qty, self.price)
+        if self.cancel_mode == "pending":
+            return o
+        self.canceled.append(client_order_id)
+        self.orders[client_order_id] = BrokerOrder(status="canceled", broker_order_id=o.broker_order_id)
+        return self.orders[client_order_id]
+
+    def trigger_stop(self, client_order_id, qty, price):
+        """The price fell to the stop at the broker: the stop order fills there, whatever this service is doing."""
+        self.orders[client_order_id] = BrokerOrder(status="filled", filled_qty=qty, avg_price=price,
+                                                   broker_order_id="b-" + client_order_id)
+        if self.held is not None:
+            self.held -= qty
+        return self.orders[client_order_id]
 
     def buying_power(self):
         return self.bp

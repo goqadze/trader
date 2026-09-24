@@ -45,6 +45,12 @@ const decisionColumns: ColumnsType<Decision> = [
 const orderColumns: ColumnsType<Order> = [
   { title: "When", dataIndex: "created_at", width: 150, render: (v: string) => localTime(v) },
   { title: "Side", dataIndex: "side", width: 70, render: (s: string) => <Tag color={s === "BUY" ? "green" : "red"}>{s}</Tag> },
+  {
+    title: "Type", dataIndex: "order_type", width: 120,
+    render: (t: string, o) => (t === "stop"
+      ? <Tooltip title="Stop order held at the broker: becomes a market sell if the price trades at or below this level">stop @ {usd(o.stop_price)}</Tooltip>
+      : "market"),
+  },
   { title: "Reason", dataIndex: "reason", width: 95, render: (r: string) => <Tag color={r === "stop-loss" ? "red" : r === "target" ? "green" : r === "manual" ? "purple" : "default"}>{r}</Tag> },
   { title: "Qty", key: "qty", width: 80, align: "right", render: (_, o) => (o.filled_qty && o.filled_qty !== o.qty ? `${o.filled_qty}/${o.qty}` : o.qty) },
   { title: "Fill price", dataIndex: "avg_price", width: 100, align: "right", render: (p: number | null) => usd(p) },
@@ -52,7 +58,10 @@ const orderColumns: ColumnsType<Order> = [
   { title: "P&L", dataIndex: "pnl", width: 100, align: "right", render: (p: number | null) => <span style={{ color: pnlColor(p) }}>{p == null ? "" : usd(p)}</span> },
   {
     title: "Status", dataIndex: "status", width: 120,
-    render: (s: string, o) => <Tooltip title={o.error}><Tag color={ORDER_STATUS_COLOR[s]}>{s.replace("_", " ")}</Tag></Tooltip>,
+    render: (s: string, o) => (o.order_type === "stop" && (s === "new" || s === "submitted")
+      // A stop order stays open for as long as the position is held: "resting", not stuck
+      ? <Tooltip title="Waiting at the broker; fills by itself if the price falls to the stop"><Tag color="blue">resting</Tag></Tooltip>
+      : <Tooltip title={o.error}><Tag color={ORDER_STATUS_COLOR[s]}>{s.replace("_", " ")}</Tag></Tooltip>),
   },
   { title: "Order id", dataIndex: "client_order_id", ellipsis: true, render: (v: string) => <Typography.Text copyable={{ text: v }} style={{ color: MUTED, fontSize: 12 }}>{v}</Typography.Text> },
 ];
@@ -289,7 +298,22 @@ export default function BotPage() {
                 <Descriptions.Item label="Entry">{usd(bot.entry_price)}</Descriptions.Item>
                 <Descriptions.Item label="Last price">{usd(bot.last_price)}</Descriptions.Item>
                 <Descriptions.Item label="Cost basis">{usd(bot.cost_basis)}</Descriptions.Item>
-                <Descriptions.Item label="Stop-loss"><span style={{ color: "#ef5b6b" }}>{usd(bot.stop_price)}</span>&nbsp;<span style={{ color: MUTED }}>({distance(bot.stop_price)})</span></Descriptions.Item>
+                <Descriptions.Item label="Stop-loss">
+                  <Space size={6} wrap>
+                    <span style={{ whiteSpace: "nowrap" }}>
+                      <span style={{ color: "#ef5b6b" }}>{usd(bot.stop_price)}</span>&nbsp;<span style={{ color: MUTED }}>({distance(bot.stop_price)})</span>
+                    </span>
+                    {bot.stop_at_broker ? (
+                      <Tooltip title="A real stop order waits at the broker, so it fires even while this app or your computer is off">
+                        <Tag color="green" style={{ marginInlineEnd: 0 }}>held at broker</Tag>
+                      </Tooltip>
+                    ) : (
+                      <Tooltip title={`Checked by this app every ${status.data?.risk_check_minutes ?? 5} min during market hours, so only while it is running`}>
+                        <Tag style={{ marginInlineEnd: 0 }}>checked by app</Tag>
+                      </Tooltip>
+                    )}
+                  </Space>
+                </Descriptions.Item>
                 <Descriptions.Item label="Take-profit"><span style={{ color: "#33c088" }}>{usd(bot.target_price)}</span>&nbsp;<span style={{ color: MUTED }}>({distance(bot.target_price)})</span></Descriptions.Item>
               </Descriptions>
             ) : (

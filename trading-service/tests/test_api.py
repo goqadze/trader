@@ -137,6 +137,30 @@ def test_run_now_while_open_trades_and_shows_in_history(client, clock, broker, m
     assert len(client.get("/bots?include_archived=true").json()) == 1  # ...but never deleted
 
 
+def test_broker_held_stop_shows_in_the_api_and_close_cancels_it_first(client, clock, broker, monkeypatch):
+    monkeypatch.setattr(main, "evaluate", _evaluate_with(lambda bot, d: {"action": "BUY", "confidence": 0.9}))
+    broker.supports_stop_orders, broker.held = True, 0  # behave like Alpaca
+    bot = _create(client, slippage_pct=0)
+    clock["t"] = broker.now = OPEN
+    client.post(f"/bots/{bot['id']}/run")
+
+    detail = client.get(f"/bots/{bot['id']}").json()
+    assert detail["stop_at_broker"] is True and detail["pending_order"] is False
+    stop = client.get(f"/bots/{bot['id']}/orders").json()[0]  # newest first
+    assert (stop["order_type"], stop["stop_price"], stop["status"]) == ("stop", 96.0, "submitted")
+    assert client.get("/summary").json()["pending_orders"] == 0  # a resting stop isn't "pending"
+
+    broker.cancel_mode = "pending"  # cancel not confirmed: refuse, don't risk selling twice
+    r = client.post(f"/bots/{bot['id']}/close")
+    assert r.status_code == 409 and "stop-loss" in r.json()["detail"]
+    assert broker.submitted == [("BUY", 50)]
+
+    broker.cancel_mode = "cancel"
+    assert client.post(f"/bots/{bot['id']}/close").json()["status"] == "filled"
+    assert client.get(f"/bots/{bot['id']}").json()["stop_at_broker"] is False
+    assert client.post(f"/bots/{bot['id']}/archive").json()["status"] == "archived"
+
+
 def test_close_position_refused_when_market_closed(client):
     bot = _create(client)
     r = client.post(f"/bots/{bot['id']}/close")

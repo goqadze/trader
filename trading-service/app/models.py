@@ -111,6 +111,13 @@ class Decision(Base):
 #                     new -> failed (broker never received it)
 OPEN_ORDER_STATUSES = ("new", "submitted")
 
+# Order types:
+#   market  buy/sell now; the position is "in flux" until it finishes (a few seconds)
+#   stop    a protective SELL resting at the broker (Alpaca) at the stop-loss price, good-till-canceled.
+#           It stays "submitted" for as long as the position is held, and fills by itself if the price
+#           falls to it -- even while this service is down. See trader.protect().
+ORDER_TYPES = ("market", "stop")
+
 
 class Order(Base):
     __tablename__ = "orders"
@@ -121,6 +128,9 @@ class Order(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
     side: Mapped[str] = mapped_column(String(4))  # BUY | SELL
+    # server_default: lets db.init_db add these columns to an existing orders table (old rows = market)
+    order_type: Mapped[str] = mapped_column(String(8), default="market", server_default="market")
+    stop_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # stop orders only: the trigger price
     qty: Mapped[int] = mapped_column(Integer)  # requested shares
     reason: Mapped[str] = mapped_column(String(16))  # signal | stop-loss | target | manual
     status: Mapped[str] = mapped_column(String(20), default="new", index=True)

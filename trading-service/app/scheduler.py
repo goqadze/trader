@@ -1,6 +1,7 @@
 """The background loop that runs every bot. It wakes every TICK_SECONDS and, for each bot:
 
   1. resolves orders still pending at the broker          (any time)
+     and keeps the stop-loss resting at the broker         (brokers that can hold one: Alpaca)
   2. checks the real account matches the bot's records   (market hours, real brokers only)
   3. refreshes the price, records equity, enforces stops  (market hours, every RISK_CHECK_MINUTES)
   4. makes the daily decision when it is due              (active bots, DECISION_MINUTES_BEFORE_CLOSE before the close,
@@ -24,7 +25,7 @@ from .db import SessionLocal, utcnow
 from .decision_client import get_signal
 from .market import decision_time, is_open, ny_date, session_bounds, sessions_since
 from .models import Bot
-from .trader import bot_lock, evaluate, log_event, reconcile, sync_pending, watch
+from .trader import bot_lock, evaluate, log_event, protect, reconcile, sync_pending, watch
 
 logger = logging.getLogger("trading-service")
 
@@ -65,6 +66,7 @@ def process_bot(bot_id: int, now: datetime, signal_fn=get_signal, broker_factory
             try:
                 broker = broker_factory(bot)
                 sync_pending(session, bot, broker, now)
+                protect(session, bot, broker, now)
                 if not is_open(now):
                     return
                 if not reconcile(session, bot, broker, now):

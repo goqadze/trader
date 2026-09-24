@@ -80,3 +80,60 @@ def test_position_qty_404_means_flat():
 def test_quote_parses_latest_trade():
     q = _broker(lambda req: httpx.Response(200, json={"trade": {"p": 201.25, "t": "2025-06-02T19:30:00Z"}})).quote("AAPL")
     assert q.price == 201.25 and q.at.isoformat() == "2025-06-02T19:30:00+00:00"
+
+
+# --- Stop orders held at the broker ----------------------------------------------------------------
+
+def test_submit_stop_rests_a_good_till_canceled_sell_stop():
+    import json
+
+    sent = {}
+
+    def handler(req):
+        sent.update(json.loads(req.content))
+        return httpx.Response(200, json=_order("accepted"))
+
+    o = _broker(handler).submit_stop("AAPL", 10, 95.2, "bot1-stop")
+    assert sent == {"symbol": "AAPL", "qty": "10", "side": "sell", "type": "stop", "stop_price": "95.20",
+                    "time_in_force": "gtc", "client_order_id": "bot1-stop"}
+    assert o.status == "submitted"  # resting: no waiting for a fill
+
+
+def test_cancel_deletes_by_alpacas_id_then_reads_the_final_state_back():
+    calls, state = [], {"status": "accepted"}
+
+    def handler(req):
+        calls.append((req.method, req.url.path))
+        if req.method == "DELETE":
+            state["status"] = "canceled"
+            return httpx.Response(204)
+        return httpx.Response(200, json=_order(state["status"]))
+
+    o = _broker(handler).cancel("bot1-stop")
+    assert calls == [("GET", "/v2/orders:by_client_order_id"), ("DELETE", "/v2/orders/alp-1"),
+                     ("GET", "/v2/orders:by_client_order_id")]
+    assert o.status == "canceled"
+
+
+def test_cancel_of_an_order_that_already_filled_returns_the_fill():
+    calls = []
+
+    def handler(req):
+        calls.append(req.method)
+        return httpx.Response(200, json=_order("filled", "10", "95.1"))
+
+    o = _broker(handler).cancel("x")
+    assert calls == ["GET"]  # nothing to cancel
+    assert (o.status, o.filled_qty, o.avg_price) == ("filled", 10, 95.1)
+
+
+def test_cancel_refused_because_the_stop_is_filling_reports_the_fill():
+    reads = []
+
+    def handler(req):
+        if req.method == "DELETE":
+            return httpx.Response(422, json={"message": "order is not cancelable"})
+        reads.append(1)
+        return httpx.Response(200, json=_order("accepted") if len(reads) == 1 else _order("filled", "10", "95.1"))
+
+    assert _broker(handler).cancel("x").status == "filled"

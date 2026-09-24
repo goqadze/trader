@@ -51,7 +51,8 @@ export interface Bot extends StrategyParams {
   return_pct: number;
   unrealized_pnl: number;
   buy_hold_return_pct: number | null;
-  pending_order: boolean;
+  pending_order: boolean; // a market order is still working at the broker
+  stop_at_broker: boolean; // the stop-loss rests at the broker as a real order (Alpaca), so it works while this app is off
 }
 
 export interface Decision {
@@ -74,6 +75,8 @@ export interface Order {
   created_at: string;
   updated_at: string;
   side: "BUY" | "SELL";
+  order_type: "market" | "stop"; // stop = the stop-loss resting at the broker until the price falls to it
+  stop_price: number | null;
   qty: number;
   reason: "signal" | "stop-loss" | "target" | "manual";
   status: "new" | "submitted" | "filled" | "partially_filled" | "canceled" | "rejected" | "failed";

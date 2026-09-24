@@ -1,9 +1,15 @@
+# Every published port is bound to 127.0.0.1, so only this machine can reach it. That matters most on a
+# server: Docker's published ports bypass the Linux firewall (ufw), and nothing here has a login.
+# From another machine, use an SSH tunnel or Tailscale (see DEPLOY.md).
+# `restart: unless-stopped` everywhere: after a crash, a Docker restart or a reboot, the stack comes back
+# by itself (unless you stopped it with `docker compose stop/down`).
+
 services:
   # The decision-support API (FastAPI + LangGraph agent)
   decision-service:
     build: ./decision-service          # build the image from decision-service/Dockerfile
     ports:
-      - "8000:8000"                    # host:container, so localhost:8000 reaches the API
+      - "127.0.0.1:8000:8000"          # host:container; localhost only (it spends OpenAI credits)
     env_file:
       - ./decision-service/.env        # API keys (OpenAI, Alpaca, ...) + monitoring config
     volumes:
@@ -12,6 +18,7 @@ services:
     depends_on:
       news-db:
         condition: service_healthy     # the news store must accept connections before the first signal
+    restart: unless-stopped            # bots need it for every decision, so it must come back on its own
 
   # News vector store for the RAG layer: Postgres with the pgvector extension, owned by decision-service.
   # Separate from trading-db, so news ingestion can never lock or fill up the trading history.
@@ -36,7 +43,7 @@ services:
   backtest-service:
     build: ./backtest-service
     ports:
-      - "8001:8000"                    # API/docs at http://localhost:8001/docs
+      - "127.0.0.1:8001:8000"          # API/docs at http://localhost:8001/docs
     env_file:
       - ./backtest-service/.env        # DECISION_SERVICE_URL + optional SENTRY_DSN
     volumes:
@@ -44,6 +51,7 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     depends_on:
       - decision-service               # start decision-service first
+    restart: unless-stopped
 
   # Trading history database (bots, decisions, orders, equity, audit log).
   # Its own Postgres, separate from Langfuse's, so monitoring can't touch trading data.
@@ -90,6 +98,7 @@ services:
     depends_on:
       - backtest-service
       - trading-service                # nginx refuses to start if a proxied host doesn't exist yet
+    restart: unless-stopped
 
   # ------------------------------------------------------------------
   # Monitoring (all local, all free)
@@ -104,13 +113,14 @@ services:
       POSTGRES_DB: langfuse
     volumes:
       - langfuse-db:/var/lib/postgresql/data
+    restart: unless-stopped
 
   langfuse:
     image: langfuse/langfuse:2      # v2 is light: needs only Postgres
     depends_on:
       - langfuse-db
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       DATABASE_URL: postgresql://langfuse:langfuse@langfuse-db:5432/langfuse
       NEXTAUTH_URL: http://localhost:3000
@@ -129,6 +139,7 @@ services:
       LANGFUSE_INIT_USER_EMAIL: admin@local.dev
       LANGFUSE_INIT_USER_NAME: Admin
       LANGFUSE_INIT_USER_PASSWORD: langfuse123
+    restart: unless-stopped
 
   # GlitchTip: error tracking (Sentry-API compatible) at http://localhost:8082
   glitchtip-db:
@@ -139,9 +150,11 @@ services:
       POSTGRES_DB: glitchtip
     volumes:
       - glitchtip-db:/var/lib/postgresql/data
+    restart: unless-stopped
 
   glitchtip-redis:
     image: redis:7
+    restart: unless-stopped
 
   glitchtip-web:
     image: glitchtip/glitchtip
@@ -149,7 +162,7 @@ services:
       - glitchtip-db
       - glitchtip-redis
     ports:
-      - "8082:8080"
+      - "127.0.0.1:8082:8080"
     environment: &glitchtip-env
       DATABASE_URL: postgres://glitchtip:glitchtip@glitchtip-db:5432/glitchtip
       SECRET_KEY: local-dev-secret-change-me
@@ -160,6 +173,7 @@ services:
       DEFAULT_FROM_EMAIL: admin@local.dev
       ENABLE_OPEN_USER_REGISTRATION: "true"  # so you can sign up the first user in the UI
       CELERY_WORKER_AUTOSCALE: "1,3"
+    restart: unless-stopped
 
   glitchtip-worker:
     image: glitchtip/glitchtip
@@ -168,6 +182,7 @@ services:
       - glitchtip-redis
     command: ./bin/run-celery-with-beat.sh
     environment: *glitchtip-env
+    restart: unless-stopped
 
   glitchtip-migrate:
     image: glitchtip/glitchtip
