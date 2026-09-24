@@ -1,4 +1,4 @@
-import { AppstoreOutlined, DownOutlined, ExportOutlined, ReadOutlined } from "@ant-design/icons";
+import { AppstoreOutlined, DownOutlined, ExportOutlined, FundOutlined, ReadOutlined } from "@ant-design/icons";
 import { App as AntApp, Button, ConfigProvider, Dropdown, Layout, Menu, theme, type MenuProps } from "antd";
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import BacktestPage from "./pages/BacktestPage";
@@ -26,12 +26,15 @@ const external = (l: { label: string; href: string }) => ({
   ),
 });
 
-/** The "Resources" dropdown: the in-app guide first, then external tools (open in a new tab). */
+/** The "Resources" dropdown: the in-app guides first, then external tools (open in a new tab). */
 const RESOURCES: MenuProps["items"] = [
   {
     type: "group",
     label: "Guides",
-    children: [{ key: "guide", icon: <ReadOutlined />, label: <Link to="/guide">Trading Bot Lifecycle</Link> }],
+    children: [
+      { key: "/guide", icon: <ReadOutlined />, label: <Link to="/guide">Trading Bot Lifecycle</Link> },
+      { key: "/guide/strategies", icon: <FundOutlined />, label: <Link to="/guide/strategies">Trading Strategies</Link> },
+    ],
   },
   { type: "group", label: "Monitoring", children: MONITORING.map(external) },
   { type: "group", label: "API docs", children: API_DOCS.map(external) },
@@ -54,7 +57,7 @@ function Header() {
           { key: "trading", label: <Link to="/trading">Live trading</Link> },
         ]}
       />
-      <Dropdown menu={{ items: RESOURCES, selectedKeys: pathname === "/guide" ? ["guide"] : [] }} trigger={["click"]} placement="bottomRight">
+      <Dropdown menu={{ items: RESOURCES, selectedKeys: [pathname] }} trigger={["click"]} placement="bottomRight">
         <Button type="text" icon={<AppstoreOutlined />} style={{ color: "#8b98b5" }}>
           Resources <DownOutlined style={{ fontSize: 10 }} />
         </Button>
@@ -76,7 +79,8 @@ export default function App() {
                 <Route path="/" element={<BacktestPage />} />
                 <Route path="/trading" element={<TradingPage />} />
                 <Route path="/trading/:id" element={<BotPage />} />
-                <Route path="/guide" element={<GuidePage />} />
+                <Route path="/guide" element={<GuidePage guide="lifecycle" />} />
+                <Route path="/guide/strategies" element={<GuidePage guide="strategies" />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </Layout.Content>

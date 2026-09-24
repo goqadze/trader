@@ -194,7 +194,7 @@
   <header>
     <span class="eyebrow">trading-service · cheat sheet</span>
     <h1>What happens when you create a bot</h1>
-    <p class="lede">From the moment you click <b>Create bot</b> to the day it sells: every step the system takes, the rules it follows, and every term on the bot page. All times are New York time (ET), because the stock market runs on that clock.</p>
+    <p class="lede">From the moment you click <b>Create bot</b> to the day it sells: every step the system takes, the rules it follows, and every term on the bot page. All times are New York time (ET), because the stock market runs on that clock. What each of the 11 strategies looks for is in the <a href="trading-strategies.html">Trading Strategies</a> guide.</p>
     <nav class="jump" aria-label="Sections">
       <a href="#map">Who talks to whom</a>
       <a href="#flow">The flow</a>
@@ -221,7 +221,7 @@
         <div class="node hub"><b>trading-service</b><span class="mono">localhost:8002</span><span>The bots. A scheduler wakes every 30 s and checks each one.</span></div>
         <div class="arrow">→</div>
         <div class="stack">
-          <div class="node"><b>decision-service</b><span class="mono">POST /signal</span><span>“BUY, SELL or HOLD?” Prices + news + AI.</span></div>
+          <div class="node"><b>decision-service</b><span class="mono">POST /signal</span><span>“BUY, SELL or HOLD?” The bot's strategy reads the prices; the AI reads the news and explains.</span></div>
           <div class="node"><b>Broker</b><span class="mono">paper · alpaca-paper · alpaca-live</span><span>Gets prices, fills orders.</span></div>
           <div class="node"><b>Database</b><span class="mono">Postgres · trading-db</span><span>Bots, decisions, orders, equity, audit log.</span></div>
         </div>
@@ -247,7 +247,7 @@
             <ol class="steps">
               <li>The form turns your percentages into fractions: <code>4%</code> → <code>0.04</code>.</li>
               <li>The browser sends <code>POST /bots</code>; nginx forwards it to trading-service.</li>
-              <li><b>Validation:</b> symbol looks like a ticker, stop-loss ≤ 50%, position size ≤ 100%, capital ≥ $100, and so on. Anything wrong → a clear error in the form.</li>
+              <li><b>Validation:</b> symbol looks like a ticker, the strategy is one of the 11, stop-loss ≤ 50%, position size ≤ 100%, capital ≥ $100, and so on. Anything wrong → a clear error in the form.</li>
               <li><b>Broker check:</b> is that broker set up? A live broker also needs the “real money” tick. A real account allows only <em>one bot per symbol</em>.</li>
               <li><b>Price check:</b> the broker fetches a live quote. No price = unknown symbol = rejected. The price is saved as the <b>buy &amp; hold baseline</b>.</li>
               <li>The bot is saved: status <span class="tag buy">active</span>, cash = your capital, 0 shares, peak equity = your capital.</li>
@@ -290,14 +290,14 @@
             <ol class="steps">
               <li>trading-service calls <code>decision-service /signal</code> with the symbol, today's date, the bot's strategy, and its stop / target %.</li>
               <li><b>Prices:</b> ~14 months of daily bars (open, high, low, close, volume) → the indicators the bot's strategy reads (e.g. SMA20, SMA50, RSI14 for the simple one). During the session today's bar is still forming, so its volume is scaled up to a full-day estimate.</li>
-              <li><b>News:</b> last 7 days of headlines, published before the decision moment (10:00 or 15:30). Recent ones count most. An AI labels the mood bullish / bearish / neutral.</li>
-              <li><b>Decide:</b> the strategy's rule gives BUY / SELL / HOLD; a textbook setup scores 0.60, each extra confirmation (volume, candle pattern, trend) adds 0.05–0.10. News that agrees adds <code>+0.15</code>; news that disagrees subtracts <code>0.15</code> (the news-catalyst strategy uses news in its rule instead).</li>
-              <li><b>Explain:</b> the AI writes 2 sentences of reasoning.</li>
+              <li><b>News:</b> last 7 days of headlines, published before the decision moment (10:00 or 15:30). Recent ones count most. An AI labels the mood bullish / bearish / neutral, and headlines under 48 h old about a real event (earnings, upgrade, deal…) are flagged as <b>catalysts</b>.</li>
+              <li><b>Decide:</b> the bot's <a href="trading-strategies.html">strategy</a> gives BUY / SELL / HOLD; a textbook setup scores 0.60, each extra confirmation (volume, candle pattern, trend) adds 0.05–0.10. News that agrees adds <code>+0.15</code>; news that disagrees subtracts <code>0.15</code> (the news-catalyst strategy uses news in its rule instead).</li>
+              <li><b>Explain:</b> the AI writes 2 sentences of reasoning: which rule fired and the deciding numbers. It never changes the decision.</li>
               <li>trading-service saves a <b>Decision</b> row (signal, confidence, news mood, reasoning, every step) and marks today as decided.</li>
               <li>It applies the trading rule (see <a href="#rules">Rules</a>) and writes what it did in <b>“What the bot did”</b>.</li>
             </ol>
             <p class="note">If decision-service fails, the bot records a HOLD with the error, trades nothing, and <b>retries 5 min later</b>. Today isn't marked as decided until a call succeeds.</p>
-            <div class="where">code: <span>trader.py → evaluate() → _act()</span> · decision-service <span>agent.py</span></div>
+            <div class="where">code: <span>trader.py → evaluate() → _act()</span> · decision-service <span>agent.py · strategies.py</span></div>
           </div>
         </div>
       </div>
@@ -425,7 +425,7 @@
       </table>
     </div>
     <p class="note">Why a bot sits still: with minimum confidence 0.65, only a signal <b>backed by agreeing news</b> (0.75) trades. With no news, 0.60 never clears the bar. That's working as designed.</p>
-    <p class="note">Every other strategy uses the same scale: a textbook setup is 0.60, extra confirmations add up to +0.25, news moves it ±0.15, HOLD is 0.40. Each strategy's exact rules are shown under the Strategy picker when you create or edit a bot.</p>
+    <p class="note info">Every other strategy uses the same scale: a textbook setup is 0.60, extra confirmations add up to +0.25, news moves it ±0.15, HOLD is 0.40. Each one's exact rules, with a chart, are in the <a href="trading-strategies.html">Trading Strategies</a> guide and under the Strategy picker.</p>
   </section>
 
   <!-- ================= STATES ================= -->
@@ -482,10 +482,11 @@
           <tr><td class="nowrap"><b>Pause</b></td><td>Stops new decisions. The open position keeps its stop-loss and take-profit.</td><td>Always; never waits</td></tr>
           <tr><td class="nowrap"><b>Resume</b></td><td>Back to active. Resets the drawdown peak to today's equity, so the breaker doesn't trip again at once.</td><td>When paused</td></tr>
           <tr><td class="nowrap"><b>Close position</b></td><td>Sells all shares at market right now (reason: manual).</td><td>Market open, holding shares, no pending order</td></tr>
-          <tr><td class="nowrap"><b>Edit</b></td><td>Changes strategy settings from the next decision on. Symbol, broker and capital are fixed; make a new bot to change those. Every change is audited.</td><td>Not archived</td></tr>
+          <tr><td class="nowrap"><b>Edit</b></td><td>Changes the strategy and its settings from the next decision on. An open position keeps the stop-loss / take-profit it was opened with. Symbol, broker and capital are fixed; make a new bot to change those. Every change is audited.</td><td>Not archived</td></tr>
           <tr><td class="nowrap"><b>Archive</b></td><td>Retires the bot. History stays.</td><td>Flat, no pending order</td></tr>
           <tr><td class="nowrap"><b>Halt all</b></td><td>Kill switch: pauses every active bot at once. Positions stay protected.</td><td>Any time</td></tr>
-          <tr><td class="nowrap"><b>Trade this strategy</b></td><td>On a finished backtest: opens New bot with the same settings.</td><td>After a backtest</td></tr>
+          <tr><td class="nowrap"><b>Trade this strategy</b></td><td>On a finished backtest: opens New bot with the same strategy and settings.</td><td>After a backtest</td></tr>
+          <tr><td class="nowrap"><b>Apply</b> (suggested)</td><td>Under the Strategy picker: fills in that strategy's suggested check frequency, stop-loss, take-profit and check time. Nothing is saved until you press Save / Create.</td><td>In the bot and backtest forms</td></tr>
         </tbody>
       </table>
     </div>
@@ -537,9 +538,9 @@
       <div class="gloss-group">
         <h3>Bot settings</h3>
         <dl class="terms">
-          <div class="term"><dt>Strategy</dt><dd>The rule that decides BUY / SELL / HOLD: the simple SMA/RSI trend rule, or one of ten classics (trend following, momentum, breakout, mean reversion, range, pullback, reversal, gap and go, news catalyst, Fibonacci). News sentiment nudges every one of them.</dd></div>
+          <div class="term"><dt>Strategy</dt><dd>The rule that decides BUY / SELL / HOLD: the simple SMA/RSI trend rule (the default), or one of ten classics (trend following, momentum, breakout, mean reversion, range, pullback, reversal, gap and go, news catalyst, Fibonacci). News sentiment nudges every one of them.<span class="ex">Details: the <a href="trading-strategies.html">Trading Strategies</a> guide</span></dd></div>
           <div class="term"><dt>Min confidence</dt><dd>Signals weaker than this are ignored. Higher = fewer, pickier trades.</dd></div>
-          <div class="term"><dt>Every N trading days</dt><dd>How often the bot decides. 1 = daily, 5 ≈ weekly. Weekends and holidays don't count.</dd></div>
+          <div class="term"><dt>Every N trading days</dt><dd>How often the bot decides. 1 = daily, 5 ≈ weekly. Weekends and holidays don't count.<span class="ex">Setup strategies (breakout, dips, gaps, news) suggest 1: a weekly check misses most setups</span></dd></div>
           <div class="term"><dt>Position size</dt><dd>Share of the bot's cash spent on each BUY. 100% = all in.</dd></div>
           <div class="term"><dt>Drawdown breaker</dt><dd>Auto-pause when equity falls this % below its peak. 0 = off.</dd></div>
           <div class="term"><dt>Slippage</dt><dd>Paying a bit more when buying and getting a bit less when selling than the quoted price. Paper broker: simulated. Real brokers: a cash buffer kept aside when sizing.</dd></div>
@@ -555,8 +556,9 @@
           <div class="term"><dt>SMA20 / SMA50</dt><dd>Average closing price of the last 20 / 50 days. SMA20 above SMA50 = uptrend.</dd></div>
           <div class="term"><dt>RSI14</dt><dd>Momentum score from 0 to 100. Above 70 = overbought (rose too fast), below 30 = oversold.</dd></div>
           <div class="term"><dt>Sentiment (News)</dt><dd>The AI's read of recent headlines: bullish (good), bearish (bad), or neutral.</dd></div>
+          <div class="term"><dt>Catalyst</dt><dd>A headline under 48 h old about a real company event: earnings, guidance, analyst up/downgrade, deal, FDA decision, recall, lawsuit. Shown as “Fresh catalysts” in a decision's steps.</dd></div>
           <div class="term"><dt>RAG</dt><dd>“Retrieval-augmented generation”: find the most relevant stored news first, then let the AI read only that.</dd></div>
-          <div class="term"><dt>Reasoning / steps</dt><dd>The agent's explanation plus its step-by-step trail. Expand a decision row to see them.</dd></div>
+          <div class="term"><dt>Reasoning / steps</dt><dd>The agent's explanation plus its step-by-step trail: strategy, indicator values, news, the rule that fired. Expand a decision row to see them.</dd></div>
           <div class="term"><dt>What the bot did (outcome)</dt><dd>What happened after the signal: filled, skipped and why, or error.</dd></div>
         </dl>
       </div>
@@ -612,7 +614,7 @@
   </section>
 
   <footer>
-    Matches the code on branch <code>live-trading</code> (commit 7033923). Settings like 15:30, 5 min and 20 min come from <code>trading-service/.env</code>. Paper-trade for weeks before switching a strategy to real money.
+    Matches the code on branch <code>trading-strategies</code>. Settings like 15:30, 5 min and 20 min come from <code>trading-service/.env</code>. Paper-trade for weeks before switching a strategy to real money.
   </footer>
 </div>
 

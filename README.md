@@ -33,6 +33,9 @@ The backtest service has a pluggable engine: `simple` (built-in portfolio simula
 
 Each backtest and each bot picks one strategy (`decision-service/app/strategies.py`, listed at
 `GET http://localhost:8000/strategies`). The LLM never decides a trade: it reads the news and explains the result.
+The dashboard's **Resources → Trading Strategies** guide explains each one with a chart, its exact rules, and how it
+did on 2024–25 prices; **Resources → Trading Bot Lifecycle** covers what a bot does with the signal.
+After changing a strategy, `make guide-charts` redraws the guide's charts from the real code (then rebuild the frontend).
 
 | Strategy | Style | BUY | SELL (exit) |
 |---|---|---|---|

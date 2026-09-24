@@ -1,7 +1,7 @@
 # Convenience commands. Run `make test` to run every test suite.
 # Tests run inside the service containers, so no local Python setup is needed.
 
-.PHONY: test test-decision test-backtest test-trading backup-trading-db
+.PHONY: test test-decision test-backtest test-trading backup-trading-db guide-charts
 
 # Run all backend tests (both services).
 test: test-decision test-backtest test-trading
@@ -32,3 +32,9 @@ test-trading:
 # keeping the last 30 days. Restore: gunzip -c backups/<file>.sql.gz | docker compose exec -T trading-db psql -U trading trading
 backup-trading-db:
 	./scripts/backup-trading-db.sh
+
+# Redraw the charts of the Trading Strategies guide (frontend/public/guides/trading-strategies.html) from the
+# current strategy code. Run after changing a strategy, then rebuild the frontend.
+guide-charts:
+	docker compose run --rm --no-deps -v "$(CURDIR):/repo" -e PYTHONPATH=/code decision-service \
+		python /repo/scripts/strategy-guide-charts.py /repo/frontend/public/guides/trading-strategies.html

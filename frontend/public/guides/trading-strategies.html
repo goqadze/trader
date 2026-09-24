@@ -1,0 +1,742 @@
+<!doctype html>
+<!-- Served by the dashboard at /guides/trading-strategies.html and shown in-app at /guide/strategies.
+     Same look as trading-bot-lifecycle.html. The charts are static SVG drawn from synthetic prices run
+     through the real strategy code (decision-service/app/strategies.py), so every BUY/SELL marker is
+     where the actual rules fire. data-theme="dark" pins the dark palette to match the dashboard. -->
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trading Strategies</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+  /* Palette borrowed from the trading dashboard itself (#4f8cff blue, #8b98b5 muted, #33c088 / #ef5b6b P&L) */
+  :root {
+    --bg: #eef2f8;
+    --surface: #ffffff;
+    --surface-2: #f5f7fb;
+    --ink: #14203a;
+    --muted: #56627c;
+    --line: #d6ddea;
+    --accent: #2f6bff;
+    --accent-soft: #e3ecff;
+    --buy: #16875a;
+    --buy-soft: #e0f4ea;
+    --sell: #c63d3d;
+    --sell-soft: #fbe6e5;
+    --warn: #a86c0a;
+    --warn-soft: #fbf0d9;
+    --code-bg: #eaf0fa;
+    --display: "IBM Plex Sans Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+    --body: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #0d1220; --surface: #161d2e; --surface-2: #1b2438; --ink: #e6ebf5; --muted: #8b98b5;
+      --line: #2a3550; --accent: #4f8cff; --accent-soft: #1d2a4a; --buy: #33c088; --buy-soft: #12301f;
+      --sell: #ef5b6b; --sell-soft: #3a1a20; --warn: #e0a441; --warn-soft: #33270f; --code-bg: #1f2940;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0d1220; --surface: #161d2e; --surface-2: #1b2438; --ink: #e6ebf5; --muted: #8b98b5;
+    --line: #2a3550; --accent: #4f8cff; --accent-soft: #1d2a4a; --buy: #33c088; --buy-soft: #12301f;
+    --sell: #ef5b6b; --sell-soft: #3a1a20; --warn: #e0a441; --warn-soft: #33270f; --code-bg: #1f2940;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg); color: var(--ink); font: 15px/1.6 var(--body);
+    padding-inline: 16px; padding-block: 28px 64px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; display: grid; gap: 44px; }
+  h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; line-height: 1.15; }
+  h1 { font-size: clamp(30px, 5vw, 44px); font-weight: 700; letter-spacing: -0.01em; }
+  h2 { font-size: 26px; font-weight: 600; }
+  h3 { font-size: 20px; font-weight: 600; }
+  p { margin: 0; }
+  code, .mono { font-family: var(--mono); font-size: 0.88em; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; white-space: nowrap; }
+  .muted { color: var(--muted); }
+  .eyebrow { font: 600 12px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+  a { color: var(--accent); }
+  a:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  header { display: grid; gap: 14px; }
+  header .lede { max-width: 68ch; color: var(--muted); font-size: 16.5px; }
+  nav.jump { display: flex; flex-wrap: wrap; gap: 8px; }
+  nav.jump a {
+    font: 500 13px/1 var(--mono); text-decoration: none; color: var(--ink);
+    border: 1px solid var(--line); background: var(--surface); padding: 8px 12px; border-radius: 999px;
+  }
+  nav.jump a:hover { border-color: var(--accent); color: var(--accent); }
+  nav.jump.small a { font-size: 12px; padding: 6px 10px; }
+
+  section { display: grid; gap: 18px; }
+  .section-head { display: grid; gap: 6px; }
+  .section-head p { color: var(--muted); max-width: 72ch; }
+
+  /* ---------- pipeline ---------- */
+  .pipe { overflow-x: auto; }
+  .pipe-row { display: flex; align-items: stretch; min-width: 800px; }
+  .node {
+    flex: 1; background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    padding: 12px 14px; display: grid; gap: 4px; align-content: start;
+  }
+  .node b { font-family: var(--display); font-size: 16px; }
+  .node .mono { color: var(--muted); font-size: 12px; }
+  .node.hub { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .arrow { flex: 0 0 30px; display: grid; place-items: center; color: var(--muted); font: 18px var(--mono); }
+
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; display: grid; gap: 12px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  ul.plain { margin: 0; padding-left: 18px; display: grid; gap: 5px; }
+  .note {
+    font-size: 14px; border-radius: 8px; padding: 10px 12px; background: var(--warn-soft); color: var(--ink);
+    border-left: 3px solid var(--warn);
+  }
+  .note.safe { background: var(--buy-soft); border-left-color: var(--buy); }
+  .note.info { background: var(--accent-soft); border-left-color: var(--accent); }
+
+  .tag {
+    display: inline-block; font: 600 11.5px/1 var(--mono); padding: 4px 7px; border-radius: 5px;
+    background: var(--surface-2); color: var(--muted); border: 1px solid var(--line); white-space: nowrap;
+  }
+  .tag.buy { background: var(--buy-soft); color: var(--buy); border-color: transparent; }
+  .tag.sell { background: var(--sell-soft); color: var(--sell); border-color: transparent; }
+  .tag.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+  .tag.blue { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+  .pos { color: var(--buy); } .neg { color: var(--sell); }
+
+  /* ---------- tables ---------- */
+  .table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+  table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font: 600 12px/1.2 var(--mono); letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); background: var(--surface-2); }
+  tr:last-child td { border-bottom: none; }
+  td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.nowrap { white-space: nowrap; }
+  tr.baseline td { background: var(--surface-2); font-weight: 600; }
+
+  /* ---------- one card per strategy ---------- */
+  .strats { display: grid; gap: 20px; }
+  .strat {
+    display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 16px 26px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px;
+    scroll-margin-top: 16px;
+  }
+  .strat-text { display: grid; gap: 12px; align-content: start; }
+  .strat-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .strat-head h3 { margin-right: 4px; }
+  .strat-head .num { font: 600 13px var(--mono); color: var(--accent); }
+  .idea { font-size: 15.5px; }
+  .rules { display: grid; gap: 8px; }
+  .rule { display: grid; grid-template-columns: 50px 1fr; gap: 10px; align-items: baseline; font-size: 14.5px; }
+  dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; font-size: 14px; }
+  dl.kv dt { color: var(--muted); }
+  dl.kv dd { margin: 0; }
+  .strat figure { margin: 0; display: grid; gap: 8px; align-content: start; }
+  .strat figcaption { font-size: 12.5px; color: var(--muted); }
+  .chart-box { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 6px 4px; }
+  @media (max-width: 860px) { .strat { grid-template-columns: 1fr; } }
+
+  /* ---------- charts (inline SVG, themed by the palette above) ---------- */
+  .chart { width: 100%; height: auto; display: block; }
+  .chart polyline { fill: none; stroke-width: 1.4; stroke-linejoin: round; stroke-linecap: round; }
+  .chart .price { stroke: var(--ink); stroke-width: 1.3; }
+  .chart .l1 { stroke: var(--accent); }
+  .chart .l2 { stroke: var(--warn); }
+  .chart .l3 { stroke: var(--sell); }
+  .chart .band { fill: var(--accent-soft); stroke: none; }
+  .chart .lvl { stroke: var(--muted); stroke-width: 0.8; stroke-dasharray: 3 3; }
+  .chart .lvl-sell { stroke: var(--sell); stroke-width: 0.8; stroke-dasharray: 3 3; }
+  .chart .zone-buy { fill: var(--buy-soft); }
+  .chart .zone-sell { fill: var(--sell-soft); }
+  .chart .zone-gold { fill: var(--warn-soft); }
+  .chart .m-buy { fill: var(--buy); }
+  .chart .m-sell { fill: var(--sell); }
+  .chart text { font-family: var(--mono); font-size: 7.5px; font-weight: 600; }
+  .chart .lbl { fill: var(--muted); font-weight: 500; }
+  .chart .mk { font-size: 7px; }
+  .chart .buy-t { fill: var(--buy); }
+  .chart .sell-t { fill: var(--sell); }
+  .chart .l1-t { fill: var(--accent); }
+  .chart .l2-t { fill: var(--warn); }
+  .chart .l3-t { fill: var(--sell); }
+  .chart .sb.vol { fill: var(--line); }
+  .chart .sb.hl { fill: var(--accent); }
+  .chart .sb.pos { fill: var(--buy); opacity: 0.75; }
+  .chart .sb.neg { fill: var(--sell); opacity: 0.75; }
+  .chart .wick.up { stroke: var(--buy); }
+  .chart .wick.down { stroke: var(--sell); }
+  .chart .body.up { fill: var(--buy); }
+  .chart .body.down { fill: var(--sell); }
+  .chart .flagpole { stroke: var(--muted); stroke-dasharray: 2 3; }
+  .chart .div { stroke: var(--accent); stroke-width: 1.3; stroke-dasharray: 4 2; }
+  .chart .sep, .chart .guide { stroke: var(--line); stroke-width: 0.8; }
+  .chart .guide { stroke-dasharray: 2 3; }
+
+  /* ---------- glossary ---------- */
+  .gloss-tools { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .gloss-tools input {
+    flex: 1 1 260px; font: 15px var(--body); padding: 10px 14px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+  }
+  .gloss-tools .count { font: 13px var(--mono); color: var(--muted); }
+  .gloss-groups { display: grid; gap: 22px; }
+  .gloss-group { display: grid; gap: 10px; }
+  .gloss-group h3 { font-size: 15px; font-family: var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .terms { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; }
+  .term { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: grid; gap: 4px; align-content: start; }
+  .term dt { font: 600 14.5px var(--mono); }
+  .term dd { margin: 0; font-size: 14px; }
+  .term dd .ex { color: var(--muted); display: block; margin-top: 3px; font-size: 13px; }
+  .empty { color: var(--muted); font-style: italic; }
+
+  footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 16px; }
+  @media (prefers-reduced-motion: no-preference) {
+    nav.jump a { transition: border-color .15s, color .15s; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <span class="eyebrow">decision-service · strategy guide</span>
+    <h1>The 11 trading strategies</h1>
+    <p class="lede">Every backtest and every bot runs exactly one of these. Each reads the daily chart, answers BUY, SELL or HOLD, and lets the news nudge how sure it is. Here's what each one looks for, when it trades, how it exits, and how it did on past prices. Pick one under <b>Strategy</b> on the Backtest page or in a bot's settings.</p>
+    <nav class="jump" aria-label="Sections">
+      <a href="#how">How they decide</a>
+      <a href="#glance">At a glance</a>
+      <a href="#strategies">The strategies</a>
+      <a href="#which">Which one?</a>
+      <a href="#results">Past results</a>
+      <a href="#left-out">Left out</a>
+      <a href="#indicators">Indicators A–Z</a>
+    </nav>
+  </header>
+
+  <!-- ================= HOW ================= -->
+  <section id="how">
+    <div class="section-head">
+      <h2>How every strategy decides</h2>
+      <p>All eleven follow the same five steps. Only step 2 and 3 differ: what the strategy looks at, and its rule. The AI never makes the call; it reads the news and writes the explanation.</p>
+    </div>
+    <div class="pipe">
+      <div class="pipe-row">
+        <div class="node"><b>1 · Daily bars</b><span class="mono">~14 months</span><span>Open, high, low, close and volume of every trading day up to the decision.</span></div>
+        <div class="arrow">→</div>
+        <div class="node"><b>2 · Facts</b><span class="mono">analyze()</span><span>The indicators this strategy needs: averages, RSI, bands, levels, candle patterns.</span></div>
+        <div class="arrow">→</div>
+        <div class="node hub"><b>3 · The rule</b><span class="mono">decide()</span><span>BUY, SELL or HOLD, with a confidence: 0.60 for a textbook setup, more with confirmations.</span></div>
+        <div class="arrow">→</div>
+        <div class="node"><b>4 · News tilt</b><span class="mono">RAG</span><span>News that agrees adds 0.15, news that disagrees takes 0.15 away.</span></div>
+        <div class="arrow">→</div>
+        <div class="node"><b>5 · The bot acts</b><span class="mono">min confidence</span><span>Trades only if confidence ≥ its minimum. Long only, one position.</span></div>
+      </div>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <h3>One confidence scale for all</h3>
+        <div class="table-wrap">
+          <table style="min-width:0">
+            <thead><tr><th>What</th><th class="num">Confidence</th></tr></thead>
+            <tbody>
+              <tr><td>A textbook setup (the default minimum, so it trades)</td><td class="num">0.60</td></tr>
+              <tr><td>Each extra confirmation: volume, candle pattern, trend</td><td class="num pos">+0.05 / +0.10</td></tr>
+              <tr><td>Most a rule can give on its own</td><td class="num">0.85</td></tr>
+              <tr><td>News agrees / disagrees</td><td class="num">±0.15</td></tr>
+              <tr><td>HOLD</td><td class="num">0.40</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="muted" style="font-size:14px">So a bot's <b>min confidence</b> means the same whichever strategy it runs. Raise it to 0.65 and only setups with a confirmation or agreeing news trade.</p>
+      </div>
+      <div class="card">
+        <h3>What the news (RAG) adds</h3>
+        <ul class="plain">
+          <li><b>Mood:</b> the AI reads the 8 most relevant headlines from the last 7 days (before the decision moment) and labels them bullish, bearish or neutral. That tilts every strategy ±0.15.</li>
+          <li><b>Fresh catalysts:</b> headlines under 48 hours old about a real event: earnings, guidance, analyst up/downgrades, deals, FDA decisions, recalls, lawsuits, probes, buybacks. <b>Gap and go</b> and <b>News catalyst</b> use them directly.</li>
+          <li><b>News catalyst</b> is the one strategy where news <em>is</em> the rule, so it gets no extra tilt.</li>
+        </ul>
+        <p class="note">Every signal is about <b>your</b> long position. <span class="tag sell">SELL</span> means “get out”. The bot only acts on it while it holds shares; it never sells short.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= AT A GLANCE ================= -->
+  <section id="glance">
+    <div class="section-head">
+      <h2>At a glance</h2>
+      <p>“Trades” counts round trips per stock per year in the 2024–25 replay (see <a href="#results">Past results</a>). “Suggested” is what the <b>Apply</b> link under the Strategy picker fills in.</p>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Strategy</th><th>Style</th><th>Buys when…</th><th>Gets out when…</th><th class="num">Trades / yr</th><th>Suggested</th></tr></thead>
+        <tbody>
+          <tr><td><a href="#sma_rsi">SMA trend + RSI</a> <span class="tag">default</span></td><td>trend</td><td>SMA20 above SMA50, RSI &lt; 70</td><td>SMA20 back below SMA50</td><td class="num">≈ 8</td><td class="mono">5d · 4% / 8%</td></tr>
+          <tr><td><a href="#trend_following">Trend following</a></td><td>trend</td><td>golden cross + strong ADX</td><td>death cross</td><td class="num">≈ 1</td><td class="mono">5d · 8% / 100%</td></tr>
+          <tr><td><a href="#momentum">Momentum</a></td><td>momentum</td><td>MACD rising, RSI 50–70</td><td>momentum fades</td><td class="num">≈ 4</td><td class="mono">5d · 6% / 15%</td></tr>
+          <tr><td><a href="#breakout">Breakout</a></td><td>breakout</td><td>close above 20-day high on heavy volume</td><td>close below 10-day low</td><td class="num">≈ 2</td><td class="mono">1d · 5% / 15%</td></tr>
+          <tr><td><a href="#mean_reversion">Mean reversion</a></td><td>mean reversion</td><td>oversold dip bounces back inside the bands</td><td>back at the average</td><td class="num">&lt; 1</td><td class="mono">1d · 5% / 8%</td></tr>
+          <tr><td><a href="#range_trading">Range trading</a></td><td>mean reversion</td><td>bounce at support, sideways market</td><td>near resistance, or support breaks</td><td class="num">≈ 1</td><td class="mono">1d · 4% / 8%</td></tr>
+          <tr><td><a href="#ma_pullback">Pullback to the 20 EMA</a></td><td>trend (swing)</td><td>dip to EMA20 in an uptrend bounces</td><td>close below EMA50</td><td class="num">≈ 6</td><td class="mono">1d · 5% / 12%</td></tr>
+          <tr><td><a href="#reversal">Reversal</a></td><td>mean reversion</td><td>lower low with a higher RSI low</td><td>the mirror at the top</td><td class="num">&lt; 1</td><td class="mono">1d · 5% / 10%</td></tr>
+          <tr><td><a href="#gap_and_go">Gap and go</a></td><td>event</td><td>a gap up of 2%+ that holds</td><td>a gap down that doesn't recover</td><td class="num">≈ 1</td><td class="mono">1d · 3% / 6% · open</td></tr>
+          <tr><td><a href="#news_catalyst">News catalyst</a></td><td>event</td><td>bullish news, price up</td><td>bearish news, price down</td><td class="num">—</td><td class="mono">1d · 4% / 10% · both</td></tr>
+          <tr><td><a href="#fibonacci">Fibonacci</a></td><td>trend</td><td>bounce in the 50–61.8% zone</td><td>close below 78.6%</td><td class="num">≈ 2</td><td class="mono">1d · 5% / 12%</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="muted" style="font-size:14px">Suggested reads: check every <b>N</b> days · stop-loss / take-profit · check time if not “before the close”. Setups that happen on one specific day (breakouts, dips, gaps, news) suggest checking <b>every day</b>; a weekly check would miss most of them.</p>
+  </section>
+
+  <!-- ================= THE STRATEGIES ================= -->
+  <section id="strategies">
+    <div class="section-head">
+      <h2>The strategies</h2>
+      <p>Each chart is drawn from made-up prices run through the <em>real</em> strategy code, so every <span class="tag buy">BUY</span> and <span class="tag sell">SELL</span> marker sits exactly where the rules fire (stop-loss and take-profit left out, for clarity).</p>
+    </div>
+    <nav class="jump small" aria-label="Strategies">
+      <a href="#sma_rsi">SMA + RSI</a><a href="#trend_following">Trend</a><a href="#momentum">Momentum</a><a href="#breakout">Breakout</a>
+      <a href="#mean_reversion">Mean reversion</a><a href="#range_trading">Range</a><a href="#ma_pullback">Pullback</a><a href="#reversal">Reversal</a>
+      <a href="#gap_and_go">Gap</a><a href="#news_catalyst">News</a><a href="#fibonacci">Fibonacci</a>
+    </nav>
+
+    <div class="strats">
+
+      <article class="strat" id="sma_rsi">
+        <div class="strat-text">
+          <div class="strat-head"><span class="num">00</span><h3>SMA trend + RSI</h3><span class="tag blue">default</span><span class="tag">trend</span></div>
+          <p class="idea">The original, simple rule. Is the short-term average price above the long-term one? Then the stock is trending up, so be in. RSI stops it from buying right after a sprint.</p>
+          <div class="rules">
+            <div class="rule"><span class="tag buy">BUY</span><span>SMA20 above SMA50, and RSI14 below 70 (not overbought).</span></div>
+            <div class="rule"><span class="tag sell">SELL</span><span>SMA20 at or below SMA50, and RSI14 above 30 (not already oversold).</span></div>
+          </div>
+          <dl class="kv">
+            <dt>Confidence</dt><dd>Always 0.60 (no bonuses); news ±0.15. Extreme RSI → HOLD.</dd>
+            <dt>Suggested</dt><dd>every 5 days · stop 4% · target 8%</dd>
+            <dt>Best for</dt><dd>Steady trends. The baseline every other strategy has to beat.</dd>
+            <dt>Watch out</dt><dd>In sideways markets the averages cross back and forth: many small losses (“whipsaw”).</dd>
+            <dt>2024–25</dt><dd class="mono">+22.0% avg · 158 trades · 52% won · worst drop −19%</dd>
+          </dl>
+          <p class="muted" style="font-size:13px">Kept exactly as it was, including its simple RSI (a plain average of gains and losses). The new strategies use Wilder's RSI, the one charting apps show.</p>
+        </div>
+        <figure><div class="chart-box"><!--chart:sma_rsi--><svg class="chart" viewBox="0 0 300 150" role="img" aria-label="Price with SMA20 and SMA50: buy when SMA20 rises above SMA50, sell when it falls back below"><title>Price with SMA20 and SMA50: buy when SMA20 rises above SMA50, sell when it falls back below</title><polyline class="price" points="4.0,124.3 5.9,129.2 7.8,127.9 9.6,126.6 11.5,132.9 13.4,132.4 15.3,132.2 17.2,128.7 19.1,129.1 20.9,128.2 22.8,126.1 24.7,127.9 26.6,124.9 28.5,124.3 30.3,121.6 32.2,122.3 34.1,117.8 36.0,114.7 37.9,114.3 39.7,111.1 41.6,105.8 43.5,98.6 45.4,103.0 47.3,98.9 49.2,96.2 51.0,95.4 52.9,97.8 54.8,92.3 56.7,95.7 58.6,92.6 60.4,86.9 62.3,91.5 64.2,91.5 66.1,95.0 68.0,93.0 69.9,86.6 71.7,78.2 73.6,83.5 75.5,84.5 77.4,80.8 79.3,73.9 81.1,71.2 83.0,72.8 84.9,70.5 86.8,69.4 88.7,69.0 90.5,70.6 92.4,67.9 94.3,65.6 96.2,64.8 98.1,64.4 100.0,68.1 101.8,68.7 103.7,63.0 105.6,62.6 107.5,66.8 109.4,60.6 111.2,57.4 113.1,48.1 115.0,46.6 116.9,47.2 118.8,51.6 120.7,45.2 122.5,33.8 124.4,35.9 126.3,37.2 128.2,33.6 130.1,35.6 131.9,35.5 133.8,35.6 135.7,33.6 137.6,27.8 139.5,26.4 141.3,21.3 143.2,21.8 145.1,19.1 147.0,29.2 148.9,36.2 150.8,34.2 152.6,37.7 154.5,36.5 156.4,35.4 158.3,31.2 160.2,29.1 162.0,26.1 163.9,27.7 165.8,31.7 167.7,35.8 169.6,38.9 171.5,44.5 173.3,47.7 175.2,49.2 177.1,49.3 179.0,51.7 180.9,60.3 182.7,61.6 184.6,61.8 186.5,58.8 188.4,57.6 190.3,61.1 192.1,65.0 194.0,58.4 195.9,56.6 197.8,50.7 199.7,43.5 201.6,47.8 203.4,47.4 205.3,46.7 207.2,45.6 209.1,44.6 211.0,44.9 212.8,45.3 214.7,52.3 216.6,54.0 218.5,58.0 220.4,58.6 222.3,61.4 224.1,60.2 226.0,58.1 227.9,58.0 229.8,57.9 231.7,58.6 233.5,61.3 235.4,63.0 237.3,66.0 239.2,65.5 241.1,66.5 242.9,65.4 244.8,71.5 246.7,69.2 248.6,73.1 250.5,76.8 252.4,78.6 254.2,81.6 256.1,81.6 258.0,84.7"/><polyline class="l1" points="4.0,123.6 5.9,124.2 7.8,124.8 9.6,125.4 11.5,126.3 13.4,126.9 15.3,127.6 17.2,128.2 19.1,128.9 20.9,129.3 22.8,129.4 24.7,129.5 26.6,129.1 28.5,128.7 30.3,128.2 32.2,127.6 34.1,127.0 36.0,126.3 37.9,125.6 39.7,124.8 41.6,123.9 43.5,122.4 45.4,121.1 47.3,119.7 49.2,117.9 51.0,116.1 52.9,114.3 54.8,112.5 56.7,110.8 58.6,109.1 60.4,107.1 62.3,105.3 64.2,103.6 66.1,102.1 68.0,100.7 69.9,98.9 71.7,97.0 73.6,95.4 75.5,93.9 77.4,92.4 79.3,90.8 81.1,89.4 83.0,87.9 84.9,86.5 86.8,85.2 88.7,83.8 90.5,82.5 92.4,81.2 94.3,79.7 96.2,78.4 98.1,77.2 100.0,76.1 101.8,74.9 103.7,73.3 105.6,71.8 107.5,70.8 109.4,69.9 111.2,68.6 113.1,66.8 115.0,65.1 116.9,63.8 118.8,62.8 120.7,61.4 122.5,59.6 124.4,57.9 126.3,56.3 128.2,54.5 130.1,52.8 131.9,51.3 133.8,49.9 135.7,48.3 137.6,46.3 139.5,44.2 141.3,42.1 143.2,40.1 145.1,37.7 147.0,36.1 148.9,35.1 150.8,34.4 152.6,33.9 154.5,33.4 156.4,32.6 158.3,31.9 160.2,31.6 162.0,31.2 163.9,30.7 165.8,30.6 167.7,30.6 169.6,30.8 171.5,31.2 173.3,31.9 175.2,33.0 177.1,34.1 179.0,35.6 180.9,37.6 182.7,39.7 184.6,41.3 186.5,42.4 188.4,43.6 190.3,44.8 192.1,46.2 194.0,47.4 195.9,48.6 197.8,49.7 199.7,50.6 201.6,51.6 203.4,52.4 205.3,52.9 207.2,53.3 209.1,53.3 211.0,53.1 212.8,52.9 214.7,53.1 216.6,53.2 218.5,53.1 220.4,52.9 222.3,52.9 224.1,53.0 226.0,53.0 227.9,52.9 229.8,52.5 231.7,52.5 233.5,52.7 235.4,53.4 237.3,54.5 239.2,55.4 241.1,56.3 242.9,57.3 244.8,58.6 246.7,59.8 248.6,61.2 250.5,62.8 252.4,64.1 254.2,65.5 256.1,66.6 258.0,67.9"/><text class="lbl l1-t" x="261.0" y="70.9">SMA20</text><polyline class="l2" points="4.0,105.4 5.9,106.4 7.8,107.4 9.6,108.3 11.5,109.4 13.4,110.4 15.3,111.4 17.2,112.4 19.1,113.4 20.9,114.3 22.8,115.2 24.7,116.1 26.6,117.1 28.5,117.9 30.3,118.7 32.2,119.6 34.1,120.2 36.0,120.7 37.9,121.2 39.7,121.6 41.6,121.7 43.5,121.6 45.4,121.6 47.3,121.3 49.2,120.9 51.0,120.5 52.9,120.2 54.8,119.7 56.7,119.3 58.6,118.8 60.4,118.2 62.3,117.6 64.2,117.1 66.1,116.7 68.0,116.3 69.9,115.7 71.7,114.9 73.6,114.2 75.5,113.5 77.4,112.8 79.3,111.8 81.1,110.7 83.0,109.5 84.9,108.3 86.8,107.0 88.7,105.7 90.5,104.5 92.4,103.3 94.3,102.0 96.2,100.8 98.1,99.6 100.0,98.4 101.8,97.2 103.7,95.9 105.6,94.5 107.5,93.2 109.4,91.8 111.2,90.3 113.1,88.7 115.0,87.1 116.9,85.5 118.8,84.0 120.7,82.4 122.5,80.6 124.4,78.9 126.3,77.2 128.2,75.5 130.1,73.9 131.9,72.3 133.8,70.8 135.7,69.4 137.6,68.0 139.5,66.4 141.3,64.9 143.2,63.4 145.1,61.9 147.0,60.5 148.9,59.4 150.8,58.1 152.6,57.0 154.5,56.0 156.4,54.9 158.3,53.7 160.2,52.4 162.0,51.0 163.9,49.9 165.8,48.9 167.7,48.0 169.6,47.1 171.5,46.3 173.3,45.8 175.2,45.4 177.1,44.9 179.0,44.5 180.9,44.4 182.7,44.2 184.6,44.0 186.5,43.8 188.4,43.7 190.3,43.6 192.1,43.6 194.0,43.4 195.9,43.2 197.8,42.9 199.7,42.6 201.6,42.2 203.4,41.9 205.3,41.7 207.2,41.7 209.1,41.6 211.0,41.6 212.8,41.4 214.7,41.6 216.6,42.0 218.5,42.4 220.4,42.9 222.3,43.4 224.1,43.9 226.0,44.4 227.9,44.8 229.8,45.3 231.7,45.9 233.5,46.6 235.4,47.4 237.3,48.3 239.2,49.3 241.1,50.0 242.9,50.6 244.8,51.3 246.7,52.0 248.6,52.7 250.5,53.5 252.4,54.5 254.2,55.5 256.1,56.6 258.0,57.8"/><text class="lbl l2-t" x="261.0" y="60.8">SMA50</text><path class="m-buy" d="M66.1,100.0 l-5,9 h10 z"/><text class="mk buy-t" x="66.1" y="118.0" text-anchor="middle">BUY</text><path class="m-sell" d="M197.8,45.7 l-5,-9 h10 z"/><text class="mk sell-t" x="197.8" y="33.7" text-anchor="middle">SELL</text></svg><!--/chart--></div>
+          <figcaption>Buy when the blue SMA20 rises above the amber SMA50; sell when it falls back below.</figcaption></figure>
+      </article>
+
+      <article class="strat" id="trend_following">
+        <div class="strat-text">
+          <div class="strat-head"><span class="num">01</span><h3>Trend following</h3><span class="tag">trend</span><span class="tag">golden cross + ADX</span></div>
+          <p class="idea">Don't predict, follow. When the 50-day average crosses above the 200-day (the “golden cross”) and ADX says the trend is strong, ride it for months. Leave only when the trend itself breaks.</p>
+          <div class="rules">
+            <div class="rule"><span class="tag buy">BUY</span><span>SMA50 above SMA200 · price above SMA50 · ADX ≥ 20 with buyers in control (+DI above −DI).</span></div>
+            <div class="rule"><span class="tag sell">SELL</span><span>Death cross (SMA50 below SMA200), or price below SMA200 with sellers in control.</span></div>
+          </div>
+          <dl class="kv">
+            <dt>Confidence</dt><dd>0.60 · +0.10 if ADX ≥ 25 · +0.05 if SMA200 is rising</dd>
+            <dt>Suggested</dt><dd>every 5 days · stop 8% · target 100% (effectively none: the death cross is the exit)</dd>
+            <dt>Best for</dt><dd>Strong multi-month trends. Needs ~11 months of history before its first decision.</dd>
+            <dt>Watch out</dt><dd>Late in and late out: it gives back a chunk at the end of every trend. Few trades, low win rate, big winners.</dd>
+            <dt>2024–25</dt><dd class="mono">+26.1% avg · 25 trades · 36% won · worst drop −23%</dd>
+          </dl>
+        </div>
+        <figure><div class="chart-box"><!--chart:trend_following--><svg class="chart" viewBox="0 0 300 150" role="img" aria-label="Months-long chart: buy after the golden cross once ADX confirms, sell at the death cross"><title>Months-long chart: buy after the golden cross once ADX confirms, sell at the death cross</title><polyline class="price" points="4.0,117.7 4.8,115.1 5.6,120.8 6.4,120.9 7.2,119.0 8.0,125.2 8.8,128.3 9.6,126.0 10.5,126.9 11.3,129.8 12.1,130.9 12.9,132.5 13.7,131.0 14.5,130.2 15.3,131.1 16.1,132.9 16.9,132.4 17.7,128.7 18.5,127.2 19.3,125.1 20.1,124.8 20.9,127.3 21.7,128.4 22.5,126.2 23.4,125.4 24.2,126.9 25.0,130.2 25.8,129.3 26.6,129.5 27.4,129.8 28.2,129.9 29.0,128.6 29.8,127.3 30.6,124.4 31.4,121.5 32.2,117.5 33.0,114.9 33.8,115.1 34.6,114.5 35.4,112.6 36.3,112.8 37.1,110.7 37.9,107.1 38.7,108.5 39.5,112.4 40.3,108.7 41.1,108.0 41.9,105.5 42.7,108.3 43.5,103.1 44.3,100.5 45.1,100.1 45.9,100.4 46.7,99.4 47.5,99.1 48.3,99.2 49.2,101.5 50.0,97.4 50.8,96.8 51.6,95.9 52.4,95.0 53.2,100.7 54.0,98.6 54.8,98.8 55.6,98.9 56.4,98.0 57.2,100.0 58.0,97.0 58.8,98.2 59.6,99.9 60.4,101.6 61.3,100.5 62.1,97.8 62.9,98.7 63.7,102.1 64.5,98.5 65.3,100.7 66.1,96.8 66.9,96.3 67.7,97.5 68.5,98.5 69.3,96.6 70.1,93.5 70.9,93.3 71.7,90.0 72.5,83.4 73.3,83.3 74.2,85.8 75.0,88.1 75.8,91.3 76.6,92.3 77.4,93.6 78.2,96.6 79.0,94.4 79.8,100.9 80.6,103.7 81.4,97.7 82.2,94.2 83.0,92.1 83.8,90.1 84.6,84.4 85.4,82.2 86.2,81.2 87.1,84.0 87.9,83.5 88.7,84.8 89.5,86.1 90.3,87.4 91.1,86.8 91.9,87.0 92.7,83.8 93.5,86.9 94.3,86.6 95.1,80.6 95.9,79.8 96.7,75.6 97.5,71.5 98.3,66.8 99.1,63.8 100.0,67.2 100.8,67.3 101.6,67.6 102.4,71.5 103.2,72.1 104.0,75.1 104.8,79.2 105.6,77.9 106.4,77.2 107.2,78.5 108.0,80.5 108.8,81.3 109.6,81.7 110.4,82.1 111.2,81.6 112.1,82.1 112.9,80.2 113.7,78.0 114.5,76.2 115.3,77.4 116.1,78.4 116.9,76.4 117.7,76.2 118.5,75.6 119.3,82.2 120.1,89.2 120.9,87.5 121.7,85.8 122.5,81.2 123.3,78.4 124.1,77.0 125.0,76.2 125.8,79.6 126.6,76.3 127.4,77.3 128.2,75.1 129.0,73.7 129.8,72.2 130.6,68.8 131.4,69.5 132.2,69.8 133.0,71.6 133.8,72.0 134.6,66.3 135.4,66.6 136.2,62.2 137.0,58.9 137.9,55.9 138.7,52.5 139.5,54.9 140.3,52.9 141.1,47.1 141.9,48.5 142.7,47.8 143.5,49.2 144.3,47.4 145.1,50.0 145.9,44.1 146.7,44.5 147.5,48.6 148.3,42.1 149.1,38.1 149.9,35.5 150.8,32.9 151.6,33.2 152.4,33.1 153.2,29.8 154.0,27.4 154.8,25.0 155.6,25.0 156.4,27.4 157.2,28.8 158.0,25.8 158.8,21.6 159.6,23.6 160.4,26.0 161.2,22.5 162.0,20.8 162.9,19.1 163.7,24.4 164.5,26.5 165.3,29.0 166.1,29.0 166.9,35.5 167.7,32.0 168.5,31.7 169.3,31.0 170.1,35.8 170.9,36.6 171.7,32.9 172.5,38.9 173.3,38.6 174.1,37.0 174.9,40.1 175.8,38.1 176.6,39.9 177.4,36.6 178.2,35.6 179.0,35.6 179.8,29.7 180.6,27.6 181.4,23.9 182.2,28.8 183.0,31.7 183.8,29.7 184.6,27.3 185.4,28.3 186.2,26.4 187.0,30.8 187.8,30.8 188.7,35.4 189.5,35.0 190.3,37.3 191.1,40.2 191.9,40.7 192.7,35.5 193.5,39.6 194.3,42.3 195.1,39.6 195.9,41.7 196.7,36.6 197.5,36.6 198.3,37.1 199.1,36.6 199.9,31.6 200.7,30.1 201.6,29.1 202.4,29.0 203.2,35.1 204.0,38.8 204.8,34.6 205.6,32.6 206.4,31.7 207.2,30.3 208.0,32.8 208.8,32.4 209.6,36.2 210.4,35.6 211.2,38.7 212.0,40.2 212.8,39.4 213.7,41.2 214.5,39.8 215.3,39.1 216.1,38.6 216.9,35.0 217.7,40.6 218.5,46.6 219.3,45.3 220.1,43.0 220.9,37.2 221.7,35.4 222.5,33.4 223.3,37.1 224.1,35.3 224.9,33.8 225.7,38.1 226.6,41.8 227.4,42.8 228.2,42.6 229.0,52.9 229.8,53.4 230.6,53.4 231.4,54.6 232.2,54.5 233.0,53.7 233.8,57.6 234.6,57.0 235.4,58.5 236.2,62.1 237.0,62.1 237.8,58.2 238.6,63.4 239.5,69.2 240.3,74.7 241.1,69.6 241.9,71.0 242.7,71.8 243.5,74.8 244.3,78.2 245.1,84.7 245.9,84.9 246.7,84.8 247.5,91.0 248.3,94.5 249.1,97.1 249.9,97.8 250.7,97.7 251.5,95.3 252.4,92.2 253.2,89.8 254.0,86.7 254.8,90.6 255.6,92.8 256.4,90.3 257.2,90.1 258.0,90.6"/><polyline class="l1" points="4.0,130.6 4.8,130.2 5.6,129.8 6.4,129.5 7.2,129.1 8.0,128.9 8.8,128.7 9.6,128.5 10.5,128.4 11.3,128.4 12.1,128.3 12.9,128.4 13.7,128.4 14.5,128.4 15.3,128.4 16.1,128.4 16.9,128.5 17.7,128.5 18.5,128.4 19.3,128.3 20.1,128.2 20.9,128.3 21.7,128.3 22.5,128.3 23.4,128.1 24.2,128.1 25.0,128.1 25.8,128.0 26.6,127.8 27.4,127.7 28.2,127.6 29.0,127.4 29.8,127.2 30.6,127.0 31.4,126.7 32.2,126.3 33.0,126.0 33.8,125.7 34.6,125.4 35.4,125.2 36.3,124.9 37.1,124.6 37.9,124.3 38.7,123.9 39.5,123.6 40.3,123.2 41.1,122.9 41.9,122.5 42.7,122.3 43.5,122.0 44.3,121.7 45.1,121.4 45.9,121.0 46.7,120.5 47.5,120.1 48.3,119.6 49.2,119.1 50.0,118.5 50.8,117.9 51.6,117.2 52.4,116.5 53.2,115.9 54.0,115.2 54.8,114.6 55.6,114.0 56.4,113.3 57.2,112.6 58.0,112.0 58.8,111.4 59.6,110.9 60.4,110.4 61.3,109.9 62.1,109.3 62.9,108.7 63.7,108.3 64.5,107.7 65.3,107.1 66.1,106.5 66.9,105.8 67.7,105.1 68.5,104.5 69.3,103.9 70.1,103.2 70.9,102.6 71.7,101.9 72.5,101.3 73.3,100.6 74.2,100.0 75.0,99.5 75.8,99.1 76.6,98.7 77.4,98.3 78.2,98.1 79.0,97.9 79.8,97.6 80.6,97.5 81.4,97.3 82.2,97.1 83.0,96.8 83.8,96.5 84.6,96.2 85.4,95.8 86.2,95.4 87.1,95.1 87.9,94.8 88.7,94.5 89.5,94.2 90.3,94.0 91.1,93.8 91.9,93.6 92.7,93.4 93.5,93.1 94.3,92.9 95.1,92.5 95.9,92.2 96.7,91.7 97.5,91.1 98.3,90.5 99.1,89.9 100.0,89.2 100.8,88.5 101.6,87.9 102.4,87.3 103.2,86.8 104.0,86.3 104.8,85.9 105.6,85.4 106.4,85.0 107.2,84.7 108.0,84.3 108.8,84.0 109.6,83.7 110.4,83.5 111.2,83.2 112.1,83.1 112.9,83.0 113.7,82.9 114.5,82.7 115.3,82.5 116.1,82.2 116.9,81.9 117.7,81.6 118.5,81.1 119.3,80.9 120.1,80.7 120.9,80.3 121.7,80.1 122.5,79.8 123.3,79.6 124.1,79.3 125.0,79.1 125.8,79.1 126.6,79.0 127.4,78.9 128.2,78.7 129.0,78.5 129.8,78.2 130.6,77.8 131.4,77.5 132.2,77.1 133.0,76.9 133.8,76.6 134.6,76.2 135.4,75.9 136.2,75.5 137.0,75.2 137.9,74.9 138.7,74.6 139.5,74.4 140.3,74.2 141.1,73.7 141.9,73.4 142.7,72.9 143.5,72.4 144.3,71.9 145.1,71.3 145.9,70.6 146.7,70.0 147.5,69.4 148.3,68.6 149.1,67.7 149.9,66.8 150.8,65.8 151.6,64.9 152.4,63.9 153.2,62.9 154.0,61.9 154.8,60.8 155.6,59.8 156.4,58.8 157.2,57.8 158.0,56.8 158.8,55.7 159.6,54.6 160.4,53.3 161.2,52.0 162.0,50.7 162.9,49.5 163.7,48.4 164.5,47.4 165.3,46.4 166.1,45.4 166.9,44.6 167.7,43.7 168.5,42.8 169.3,42.0 170.1,41.2 170.9,40.6 171.7,39.9 172.5,39.2 173.3,38.6 174.1,37.9 174.9,37.4 175.8,36.8 176.6,36.3 177.4,35.9 178.2,35.5 179.0,35.2 179.8,34.7 180.6,34.1 181.4,33.7 182.2,33.3 183.0,33.0 183.8,32.6 184.6,32.2 185.4,31.7 186.2,31.4 187.0,31.1 187.8,30.8 188.7,30.6 189.5,30.6 190.3,30.6 191.1,30.7 191.9,30.9 192.7,30.9 193.5,31.1 194.3,31.4 195.1,31.7 195.9,32.1 196.7,32.2 197.5,32.4 198.3,32.6 199.1,32.9 199.9,33.1 200.7,33.2 201.6,33.3 202.4,33.5 203.2,33.8 204.0,34.1 204.8,34.2 205.6,34.3 206.4,34.4 207.2,34.3 208.0,34.3 208.8,34.3 209.6,34.4 210.4,34.4 211.2,34.4 212.0,34.6 212.8,34.6 213.7,34.6 214.5,34.7 215.3,34.7 216.1,34.7 216.9,34.6 217.7,34.7 218.5,34.9 219.3,35.1 220.1,35.3 220.9,35.5 221.7,35.8 222.5,35.9 223.3,36.0 224.1,36.1 224.9,36.2 225.7,36.4 226.6,36.7 227.4,36.9 228.2,37.2 229.0,37.5 229.8,37.9 230.6,38.2 231.4,38.5 232.2,38.8 233.0,39.2 233.8,39.5 234.6,39.8 235.4,40.2 236.2,40.6 237.0,41.1 237.8,41.5 238.6,42.1 239.5,42.7 240.3,43.6 241.1,44.4 241.9,45.2 242.7,46.1 243.5,46.9 244.3,47.6 245.1,48.6 245.9,49.7 246.7,50.8 247.5,52.0 248.3,53.2 249.1,54.5 249.9,55.7 250.7,57.0 251.5,58.1 252.4,59.1 253.2,60.1 254.0,61.1 254.8,62.1 255.6,63.1 256.4,64.2 257.2,65.3 258.0,66.3"/><text class="lbl l1-t" x="261.0" y="69.3">SMA50</text><polyline class="l2" points="4.0,114.8 4.8,115.1 5.6,115.4 6.4,115.8 7.2,116.1 8.0,116.4 8.8,116.7 9.6,117.0 10.5,117.3 11.3,117.6 12.1,117.9 12.9,118.2 13.7,118.5 14.5,118.7 15.3,119.0 16.1,119.3 16.9,119.5 17.7,119.8 18.5,120.0 19.3,120.2 20.1,120.4 20.9,120.6 21.7,120.8 22.5,120.9 23.4,121.1 24.2,121.3 25.0,121.4 25.8,121.6 26.6,121.8 27.4,121.9 28.2,122.1 29.0,122.2 29.8,122.4 30.6,122.5 31.4,122.7 32.2,122.8 33.0,122.9 33.8,123.1 34.6,123.2 35.4,123.4 36.3,123.5 37.1,123.6 37.9,123.7 38.7,123.9 39.5,124.0 40.3,124.1 41.1,124.2 41.9,124.3 42.7,124.4 43.5,124.5 44.3,124.6 45.1,124.6 45.9,124.7 46.7,124.7 47.5,124.7 48.3,124.7 49.2,124.7 50.0,124.7 50.8,124.7 51.6,124.6 52.4,124.5 53.2,124.5 54.0,124.5 54.8,124.4 55.6,124.3 56.4,124.2 57.2,124.2 58.0,124.1 58.8,124.0 59.6,124.0 60.4,123.9 61.3,123.8 62.1,123.6 62.9,123.5 63.7,123.4 64.5,123.3 65.3,123.1 66.1,123.0 66.9,122.8 67.7,122.7 68.5,122.5 69.3,122.4 70.1,122.2 70.9,122.0 71.7,121.9 72.5,121.7 73.3,121.4 74.2,121.2 75.0,121.1 75.8,120.9 76.6,120.7 77.4,120.5 78.2,120.3 79.0,120.2 79.8,120.0 80.6,119.9 81.4,119.8 82.2,119.6 83.0,119.4 83.8,119.2 84.6,119.0 85.4,118.7 86.2,118.5 87.1,118.2 87.9,118.0 88.7,117.7 89.5,117.5 90.3,117.2 91.1,117.0 91.9,116.8 92.7,116.6 93.5,116.4 94.3,116.2 95.1,116.0 95.9,115.7 96.7,115.5 97.5,115.2 98.3,114.9 99.1,114.6 100.0,114.4 100.8,114.1 101.6,113.8 102.4,113.6 103.2,113.4 104.0,113.1 104.8,112.9 105.6,112.7 106.4,112.5 107.2,112.3 108.0,112.1 108.8,111.9 109.6,111.7 110.4,111.5 111.2,111.2 112.1,111.0 112.9,110.8 113.7,110.5 114.5,110.3 115.3,110.0 116.1,109.8 116.9,109.5 117.7,109.3 118.5,109.0 119.3,108.7 120.1,108.5 120.9,108.2 121.7,108.0 122.5,107.7 123.3,107.5 124.1,107.2 125.0,106.9 125.8,106.6 126.6,106.3 127.4,106.0 128.2,105.7 129.0,105.4 129.8,105.0 130.6,104.7 131.4,104.4 132.2,104.1 133.0,103.8 133.8,103.5 134.6,103.2 135.4,102.9 136.2,102.5 137.0,102.1 137.9,101.8 138.7,101.4 139.5,101.0 140.3,100.6 141.1,100.2 141.9,99.8 142.7,99.5 143.5,99.1 144.3,98.6 145.1,98.2 145.9,97.8 146.7,97.4 147.5,96.9 148.3,96.4 149.1,96.0 149.9,95.4 150.8,94.9 151.6,94.4 152.4,93.9 153.2,93.4 154.0,92.8 154.8,92.3 155.6,91.8 156.4,91.3 157.2,90.8 158.0,90.3 158.8,89.8 159.6,89.3 160.4,88.8 161.2,88.3 162.0,87.7 162.9,87.2 163.7,86.8 164.5,86.3 165.3,85.9 166.1,85.4 166.9,85.0 167.7,84.6 168.5,84.1 169.3,83.6 170.1,83.2 170.9,82.7 171.7,82.3 172.5,81.8 173.3,81.4 174.1,80.9 174.9,80.4 175.8,80.0 176.6,79.5 177.4,79.0 178.2,78.5 179.0,78.1 179.8,77.6 180.6,77.1 181.4,76.6 182.2,76.1 183.0,75.6 183.8,75.1 184.6,74.6 185.4,74.2 186.2,73.6 187.0,73.1 187.8,72.6 188.7,72.2 189.5,71.7 190.3,71.2 191.1,70.8 191.9,70.4 192.7,70.0 193.5,69.6 194.3,69.2 195.1,68.8 195.9,68.5 196.7,68.1 197.5,67.7 198.3,67.3 199.1,67.0 199.9,66.6 200.7,66.2 201.6,65.8 202.4,65.4 203.2,65.0 204.0,64.7 204.8,64.4 205.6,64.0 206.4,63.7 207.2,63.3 208.0,63.0 208.8,62.7 209.6,62.3 210.4,62.0 211.2,61.7 212.0,61.4 212.8,61.2 213.7,60.9 214.5,60.6 215.3,60.3 216.1,60.0 216.9,59.7 217.7,59.4 218.5,59.1 219.3,58.8 220.1,58.6 220.9,58.3 221.7,57.9 222.5,57.6 223.3,57.3 224.1,57.0 224.9,56.6 225.7,56.3 226.6,56.0 227.4,55.8 228.2,55.5 229.0,55.3 229.8,55.0 230.6,54.8 231.4,54.6 232.2,54.4 233.0,54.3 233.8,54.1 234.6,54.0 235.4,53.9 236.2,53.7 237.0,53.6 237.8,53.4 238.6,53.3 239.5,53.1 240.3,53.0 241.1,52.9 241.9,52.7 242.7,52.6 243.5,52.5 244.3,52.4 245.1,52.4 245.9,52.4 246.7,52.4 247.5,52.5 248.3,52.5 249.1,52.6 249.9,52.6 250.7,52.7 251.5,52.7 252.4,52.8 253.2,52.8 254.0,52.8 254.8,52.8 255.6,52.8 256.4,52.9 257.2,52.9 258.0,53.0"/><text class="lbl l2-t" x="261.0" y="56.0">SMA200</text><path class="m-buy" d="M39.5,117.4 l-5,9 h10 z"/><text class="mk buy-t" x="39.5" y="135.4" text-anchor="middle">BUY</text><path class="m-sell" d="M232.2,49.5 l-5,-9 h10 z"/><text class="mk sell-t" x="232.2" y="37.5" text-anchor="middle">SELL</text></svg><!--/chart--></div>
+          <figcaption>A year and a half: buy once SMA50 (blue) is above SMA200 (amber) with a strong trend; hold until the death cross.</figcaption></figure>
+      </article>
+
+      <article class="strat" id="momentum">
+        <div class="strat-text">
+          <div class="strat-head"><span class="num">02</span><h3>Momentum</h3><span class="tag">momentum</span><span class="tag">MACD + RSI</span></div>
+          <p class="idea">Stocks that have been rising tend to keep rising for a while. Buy strength that is still <em>building</em>, not strength that is already exhausted.</p>
+          <div class="rules">
+            <div class="rule"><span class="tag buy">BUY</span><span>3-month return above zero · price above SMA50 · MACD above its signal line and the gap widening · RSI between 50 and 70.</span></div>
+            <div class="rule"><span class="tag sell">SELL</span><span>MACD below its signal with RSI under 50 (momentum faded), or price below SMA50 with MACD below zero.</span></div>
+          </div>
+          <dl class="kv">
+            <dt>Confidence</dt><dd>0.60 · +0.10 MACD above zero · +0.10 volume ≥ 1.5× average</dd>
+            <dt>Suggested</dt><dd>every 5 days · stop 6% · target 15%</dd>
+            <dt>Best for</dt><dd>Market leaders in trending markets.</dd>
+            <dt>Watch out</dt><dd>Skips RSI above 70 on purpose (no chasing). Quick exits can shake it out of long trends.</dd>
+            <dt>2024–25</dt><dd class="mono">+8.9% avg · 79 trades · 43% won · worst drop −18%</dd>
+          </dl>
+        </div>
+        <figure><div class="chart-box"><!--chart:momentum--><svg class="chart" viewBox="0 0 300 150" role="img" aria-label="Price with SMA50 and the MACD histogram below: buy while momentum builds, sell when it fades"><title>Price with SMA50 and the MACD histogram below: buy while momentum builds, sell when it fades</title><line class="sep" x1="4" x2="258" y1="109" y2="109"/><polyline class="price" points="4.0,97.5 6.2,96.9 8.4,95.3 10.6,91.2 12.8,91.9 15.0,92.9 17.3,90.9 19.5,91.9 21.7,86.8 23.9,82.7 26.1,79.2 28.3,78.0 30.5,74.3 32.7,69.7 34.9,66.6 37.1,65.9 39.3,69.5 41.5,65.1 43.8,64.6 46.0,65.7 48.2,61.4 50.4,58.8 52.6,61.6 54.8,60.4 57.0,59.6 59.2,55.0 61.4,59.4 63.6,59.0 65.8,57.8 68.1,51.8 70.3,53.7 72.5,61.4 74.7,64.1 76.9,61.7 79.1,57.6 81.3,50.6 83.5,47.7 85.7,48.7 87.9,44.2 90.1,42.6 92.3,41.6 94.6,39.9 96.8,34.1 99.0,35.4 101.2,37.1 103.4,35.7 105.6,34.2 107.8,35.3 110.0,36.5 112.2,33.6 114.4,27.5 116.6,24.4 118.9,21.4 121.1,16.5 123.3,22.7 125.5,27.2 127.7,28.9 129.9,32.2 132.1,34.9 134.3,34.0 136.5,37.6 138.7,38.4 140.9,44.5 143.1,47.0 145.4,42.0 147.6,43.2 149.8,41.5 152.0,38.5 154.2,39.5 156.4,37.0 158.6,35.6 160.8,32.7 163.0,34.1 165.2,38.3 167.4,41.0 169.7,42.1 171.9,41.7 174.1,43.6 176.3,46.2 178.5,48.1 180.7,45.9 182.9,49.0 185.1,45.4 187.3,50.7 189.5,53.8 191.7,52.4 193.9,52.0 196.2,56.0 198.4,57.6 200.6,61.0 202.8,59.6 205.0,59.2 207.2,62.6 209.4,62.6 211.6,65.0 213.8,66.4 216.0,67.5 218.2,70.4 220.5,70.3 222.7,70.1 224.9,70.1 227.1,67.9 229.3,70.0 231.5,75.6 233.7,78.3 235.9,78.9 238.1,80.0 240.3,79.5 242.5,78.3 244.7,79.8 247.0,81.3 249.2,85.3 251.4,83.5 253.6,85.4 255.8,89.7 258.0,94.0"/><polyline class="l2" points="4.0,90.1 6.2,90.2 8.4,90.3 10.6,90.4 12.8,90.5 15.0,90.7 17.3,90.8 19.5,90.9 21.7,90.8 23.9,90.7 26.1,90.6 28.3,90.4 30.5,90.2 32.7,89.8 34.9,89.4 37.1,89.0 39.3,88.6 41.5,88.2 43.8,87.8 46.0,87.5 48.2,87.0 50.4,86.4 52.6,85.9 54.8,85.3 57.0,84.7 59.2,83.9 61.4,83.3 63.6,82.7 65.8,82.2 68.1,81.5 70.3,80.9 72.5,80.4 74.7,79.9 76.9,79.3 79.1,78.7 81.3,77.8 83.5,76.9 85.7,75.9 87.9,74.9 90.1,73.8 92.3,72.7 94.6,71.6 96.8,70.4 99.0,69.3 101.2,68.1 103.4,66.9 105.6,65.7 107.8,64.4 110.0,63.2 112.2,61.9 114.4,60.5 116.6,59.1 118.9,57.6 121.1,56.1 123.3,54.7 125.5,53.4 127.7,52.2 129.9,51.0 132.1,50.0 134.3,49.0 136.5,48.1 138.7,47.4 140.9,46.8 143.1,46.3 145.4,45.8 147.6,45.4 149.8,44.8 152.0,44.3 154.2,43.8 156.4,43.2 158.6,42.7 160.8,42.2 163.0,41.6 165.2,41.2 167.4,40.8 169.7,40.5 171.9,40.2 174.1,39.9 176.3,39.6 178.5,39.6 180.7,39.4 182.9,39.2 185.1,38.8 187.3,38.6 189.5,38.5 191.7,38.5 193.9,38.6 196.2,38.8 198.4,39.0 200.6,39.4 202.8,39.7 205.0,40.1 207.2,40.7 209.4,41.2 211.6,41.8 213.8,42.4 216.0,43.1 218.2,43.8 220.5,44.5 222.7,45.2 224.9,46.0 227.1,46.9 229.3,47.9 231.5,49.1 233.7,50.2 235.9,51.2 238.1,52.2 240.3,53.2 242.5,54.0 244.7,55.0 247.0,55.8 249.2,56.8 251.4,57.6 253.6,58.3 255.8,59.3 258.0,60.3"/><text class="lbl l2-t" x="261.0" y="63.3">SMA50</text><path class="m-buy" d="M21.7,91.8 l-5,9 h10 z"/><text class="mk buy-t" x="21.7" y="109.8" text-anchor="middle">BUY</text><path class="m-sell" d="M136.5,32.6 l-5,-9 h10 z"/><text class="mk sell-t" x="136.5" y="20.6" text-anchor="middle">SELL</text><rect class="sb neg" x="3.2" y="128.0" width="1.5" height="1.3"/><rect class="sb neg" x="5.4" y="128.0" width="1.5" height="0.8"/><rect class="sb pos" x="7.7" y="127.9" width="1.5" height="0.6"/><rect class="sb pos" x="9.9" y="126.1" width="1.5" height="1.9"/><rect class="sb pos" x="12.1" y="125.1" width="1.5" height="2.9"/><rect class="sb pos" x="14.3" y="124.9" width="1.5" height="3.1"/><rect class="sb pos" x="16.5" y="124.3" width="1.5" height="3.7"/><rect class="sb pos" x="18.7" y="124.4" width="1.5" height="3.6"/><rect class="sb pos" x="20.9" y="123.0" width="1.5" height="5.0"/><rect class="sb pos" x="23.1" y="121.2" width="1.5" height="6.8"/><rect class="sb pos" x="25.3" y="119.3" width="1.5" height="8.7"/><rect class="sb pos" x="27.5" y="118.2" width="1.5" height="9.8"/><rect class="sb pos" x="29.7" y="116.9" width="1.5" height="11.1"/><rect class="sb pos" x="31.9" y="115.4" width="1.5" height="12.6"/><rect class="sb pos" x="34.2" y="114.2" width="1.5" height="13.8"/><rect class="sb pos" x="36.4" y="114.1" width="1.5" height="13.9"/><rect class="sb pos" x="38.6" y="116.0" width="1.5" height="12.0"/><rect class="sb pos" x="40.8" y="116.7" width="1.5" height="11.3"/><rect class="sb pos" x="43.0" y="117.8" width="1.5" height="10.2"/><rect class="sb pos" x="45.2" y="119.5" width="1.5" height="8.5"/><rect class="sb pos" x="47.4" y="120.0" width="1.5" height="8.0"/><rect class="sb pos" x="49.6" y="120.2" width="1.5" height="7.8"/><rect class="sb pos" x="51.8" y="121.8" width="1.5" height="6.2"/><rect class="sb pos" x="54.0" y="123.1" width="1.5" height="4.9"/><rect class="sb pos" x="56.2" y="124.3" width="1.5" height="3.7"/><rect class="sb pos" x="58.5" y="124.1" width="1.5" height="3.9"/><rect class="sb pos" x="60.7" y="125.8" width="1.5" height="2.2"/><rect class="sb pos" x="62.9" y="127.2" width="1.5" height="0.8"/><rect class="sb neg" x="65.1" y="128.0" width="1.5" height="0.6"/><rect class="sb pos" x="67.3" y="127.2" width="1.5" height="0.8"/><rect class="sb pos" x="69.5" y="127.5" width="1.5" height="0.6"/><rect class="sb neg" x="71.7" y="128.0" width="1.5" height="2.4"/><rect class="sb neg" x="73.9" y="128.0" width="1.5" height="5.3"/><rect class="sb neg" x="76.1" y="128.0" width="1.5" height="6.4"/><rect class="sb neg" x="78.3" y="128.0" width="1.5" height="5.8"/><rect class="sb neg" x="80.5" y="128.0" width="1.5" height="3.3"/><rect class="sb neg" x="82.7" y="128.0" width="1.5" height="1.0"/><rect class="sb pos" x="85.0" y="128.0" width="1.5" height="0.6"/><rect class="sb pos" x="87.2" y="126.3" width="1.5" height="1.7"/><rect class="sb pos" x="89.4" y="125.2" width="1.5" height="2.8"/><rect class="sb pos" x="91.6" y="124.6" width="1.5" height="3.4"/><rect class="sb pos" x="93.8" y="124.1" width="1.5" height="3.9"/><rect class="sb pos" x="96.0" y="122.6" width="1.5" height="5.4"/><rect class="sb pos" x="98.2" y="122.7" width="1.5" height="5.3"/><rect class="sb pos" x="100.4" y="123.8" width="1.5" height="4.2"/><rect class="sb pos" x="102.6" y="124.6" width="1.5" height="3.4"/><rect class="sb pos" x="104.8" y="125.3" width="1.5" height="2.7"/><rect class="sb pos" x="107.0" y="126.4" width="1.5" height="1.6"/><rect class="sb pos" x="109.3" y="128.0" width="1.5" height="0.6"/><rect class="sb neg" x="111.5" y="128.0" width="1.5" height="0.6"/><rect class="sb pos" x="113.7" y="127.2" width="1.5" height="0.8"/><rect class="sb pos" x="115.9" y="125.9" width="1.5" height="2.1"/><rect class="sb pos" x="118.1" y="124.6" width="1.5" height="3.4"/><rect class="sb pos" x="120.3" y="122.9" width="1.5" height="5.1"/><rect class="sb pos" x="122.5" y="124.3" width="1.5" height="3.7"/><rect class="sb pos" x="124.7" y="127.2" width="1.5" height="0.8"/><rect class="sb neg" x="126.9" y="128.0" width="1.5" height="1.9"/><rect class="sb neg" x="129.1" y="128.0" width="1.5" height="4.9"/><rect class="sb neg" x="131.3" y="128.0" width="1.5" height="7.7"/><rect class="sb neg" x="133.5" y="128.0" width="1.5" height="9.2"/><rect class="sb neg" x="135.8" y="128.0" width="1.5" height="11.0"/><rect class="sb neg" x="138.0" y="128.0" width="1.5" height="12.2"/><rect class="sb neg" x="140.2" y="128.0" width="1.5" height="14.4"/><rect class="sb neg" x="142.4" y="128.0" width="1.5" height="16.0"/><rect class="sb neg" x="144.6" y="128.0" width="1.5" height="14.9"/><rect class="sb neg" x="146.8" y="128.0" width="1.5" height="14.0"/><rect class="sb neg" x="149.0" y="128.0" width="1.5" height="12.3"/><rect class="sb neg" x="151.2" y="128.0" width="1.5" height="9.8"/><rect class="sb neg" x="153.4" y="128.0" width="1.5" height="8.1"/><rect class="sb neg" x="155.6" y="128.0" width="1.5" height="5.9"/><rect class="sb neg" x="157.8" y="128.0" width="1.5" height="3.9"/><rect class="sb neg" x="160.1" y="128.0" width="1.5" height="1.6"/><rect class="sb neg" x="162.3" y="128.0" width="1.5" height="0.6"/><rect class="sb neg" x="164.5" y="128.0" width="1.5" height="1.2"/><rect class="sb neg" x="166.7" y="128.0" width="1.5" height="2.4"/><rect class="sb neg" x="168.9" y="128.0" width="1.5" height="3.4"/><rect class="sb neg" x="171.1" y="128.0" width="1.5" height="3.8"/><rect class="sb neg" x="173.3" y="128.0" width="1.5" height="4.4"/><rect class="sb neg" x="175.5" y="128.0" width="1.5" height="5.4"/><rect class="sb neg" x="177.7" y="128.0" width="1.5" height="6.3"/><rect class="sb neg" x="179.9" y="128.0" width="1.5" height="5.9"/><rect class="sb neg" x="182.1" y="128.0" width="1.5" height="6.2"/><rect class="sb neg" x="184.3" y="128.0" width="1.5" height="5.0"/><rect class="sb neg" x="186.6" y="128.0" width="1.5" height="5.5"/><rect class="sb neg" x="188.8" y="128.0" width="1.5" height="6.4"/><rect class="sb neg" x="191.0" y="128.0" width="1.5" height="6.1"/><rect class="sb neg" x="193.2" y="128.0" width="1.5" height="5.4"/><rect class="sb neg" x="195.4" y="128.0" width="1.5" height="5.8"/><rect class="sb neg" x="197.6" y="128.0" width="1.5" height="6.1"/><rect class="sb neg" x="199.8" y="128.0" width="1.5" height="6.9"/><rect class="sb neg" x="202.0" y="128.0" width="1.5" height="6.5"/><rect class="sb neg" x="204.2" y="128.0" width="1.5" height="5.6"/><rect class="sb neg" x="206.4" y="128.0" width="1.5" height="5.6"/><rect class="sb neg" x="208.6" y="128.0" width="1.5" height="5.1"/><rect class="sb neg" x="210.9" y="128.0" width="1.5" height="5.1"/><rect class="sb neg" x="213.1" y="128.0" width="1.5" height="5.0"/><rect class="sb neg" x="215.3" y="128.0" width="1.5" height="4.8"/><rect class="sb neg" x="217.5" y="128.0" width="1.5" height="5.1"/><rect class="sb neg" x="219.7" y="128.0" width="1.5" height="4.7"/><rect class="sb neg" x="221.9" y="128.0" width="1.5" height="3.9"/><rect class="sb neg" x="224.1" y="128.0" width="1.5" height="2.9"/><rect class="sb neg" x="226.3" y="128.0" width="1.5" height="1.3"/><rect class="sb neg" x="228.5" y="128.0" width="1.5" height="0.6"/><rect class="sb neg" x="230.7" y="128.0" width="1.5" height="1.4"/><rect class="sb neg" x="232.9" y="128.0" width="1.5" height="2.5"/><rect class="sb neg" x="235.1" y="128.0" width="1.5" height="2.9"/><rect class="sb neg" x="237.4" y="128.0" width="1.5" height="3.0"/><rect class="sb neg" x="239.6" y="128.0" width="1.5" height="2.5"/><rect class="sb neg" x="241.8" y="128.0" width="1.5" height="1.4"/><rect class="sb neg" x="244.0" y="128.0" width="1.5" height="0.8"/><rect class="sb neg" x="246.2" y="128.0" width="1.5" height="0.6"/><rect class="sb neg" x="248.4" y="128.0" width="1.5" height="1.2"/><rect class="sb neg" x="250.6" y="128.0" width="1.5" height="0.8"/><rect class="sb neg" x="252.8" y="128.0" width="1.5" height="0.7"/><rect class="sb neg" x="255.0" y="128.0" width="1.5" height="1.6"/><rect class="sb neg" x="257.2" y="128.0" width="1.5" height="3.1"/><text class="lbl" x="261.0" y="131.0">MACD</text></svg><!--/chart--></div>
+          <figcaption>Green MACD bars growing = momentum building (buy). Red bars with RSI under 50 = it faded (sell).</figcaption></figure>
+      </article>
+
+      <article class="strat" id="breakout">
+        <div class="strat-text">
+          <div class="strat-head"><span class="num">03</span><h3>Breakout</h3><span class="tag">breakout</span><span class="tag">20-day high + volume</span></div>
+          <p class="idea">A stock stuck under a ceiling finally closes above it, with lots of buyers behind the move. Volume is the proof: without it, most breakouts fail.</p>
+          <div class="rules">
+            <div class="rule"><span class="tag buy">BUY</span><span>Close above the highest high of the 20 days before · volume ≥ 1.5× its 20-day average · close in the upper half of the day's range (not rejected).</span></div>
+            <div class="rule"><span class="tag sell">SELL</span><span>Close below the lowest low of the 10 days before (the Turtle traders' exit).</span></div>
+          </div>
+          <dl class="kv">
+            <dt>Confidence</dt><dd>0.60 · +0.10 tight base (the 20 days before spanned ≤ 4 normal days' moves) · +0.05 above SMA50</dd>
+            <dt>Suggested</dt><dd>every day · stop 5% · target 15% · before the close (the day's volume is complete)</dd>
+            <dt>Best for</dt><dd>Stocks leaving a tight, quiet consolidation.</dd>
+            <dt>Watch out</dt><dd>False breakouts that fall straight back. A weekly check misses the breakout day.</dd>
+            <dt>2024–25</dt><dd class="mono">+4.2% avg · 40 trades · 35% won · worst drop −12%</dd>
+          </dl>
+        </div>
+        <figure><div class="chart-box"><!--chart:breakout--><svg class="chart" viewBox="0 0 300 150" role="img" aria-label="A tight range, then a close above the 20-day high on heavy volume; exit on a close below the 10-day low"><title>A tight range, then a close above the 20-day high on heavy volume; exit on a close below the 10-day low</title><line class="sep" x1="4" x2="258" y1="111" y2="111"/><polyline class="l1" points="4.0,65.9 8.2,73.0 12.5,77.0 16.7,77.0 20.9,77.0 25.2,77.0 29.4,77.0 33.6,80.8 37.9,80.8 42.1,80.8 46.3,80.8 50.6,78.9 54.8,75.7 59.0,75.7 63.3,73.3 67.5,73.3 71.7,73.3 76.0,73.3 80.2,73.3 84.4,73.3 88.7,73.3 92.9,73.3 97.1,73.3 101.4,73.3 105.6,73.3 109.8,73.3 114.1,73.3 118.3,73.3 122.5,72.9 126.8,72.9 131.0,71.5 135.2,71.5 139.5,71.5 143.7,71.5 147.9,71.5 152.2,71.5 156.4,71.5 160.6,71.5 164.9,71.5 169.1,71.5 173.3,57.8 177.6,55.4 181.8,48.8 186.0,48.5 190.3,46.1 194.5,39.9 198.7,34.6 203.0,30.9 207.2,25.2 211.4,25.2 215.7,24.6 219.9,24.4 224.1,24.4 228.4,22.4 232.6,16.5 236.8,16.5 241.1,16.5 245.3,16.5 249.5,16.5 253.8,16.5 258.0,16.5" stroke-dasharray="3 3"/><text class="lbl l1-t" x="261.0" y="19.5">20d high</text><polyline class="l3" points="4.0,94.5 8.2,97.0 12.5,97.0 16.7,97.0 20.9,97.0 25.2,97.5 29.4,97.5 33.6,97.5 37.9,97.5 42.1,97.5 46.3,97.5 50.6,97.5 54.8,97.5 59.0,97.5 63.3,97.5 67.5,97.5 71.7,97.4 76.0,97.4 80.2,94.3 84.4,89.7 88.7,89.7 92.9,87.3 97.1,88.8 101.4,89.5 105.6,89.5 109.8,89.5 114.1,89.5 118.3,89.5 122.5,89.5 126.8,89.5 131.0,89.5 135.2,89.5 139.5,89.5 143.7,89.5 147.9,88.0 152.2,89.1 156.4,89.5 160.6,89.5 164.9,89.5 169.1,89.5 173.3,89.5 177.6,89.5 181.8,89.5 186.0,89.5 190.3,89.5 194.5,89.5 198.7,89.5 203.0,88.0 207.2,85.2 211.4,85.2 215.7,62.1 219.9,59.7 224.1,53.2 228.4,52.8 232.6,50.5 236.8,44.3 241.1,39.1 245.3,41.9 249.5,48.9 253.8,55.8 258.0,62.7" stroke-dasharray="3 3"/><text class="lbl l3-t" x="261.0" y="65.7">10d low</text><polyline class="price" points="4.0,95.0 8.2,94.2 12.5,94.9 16.7,94.4 20.9,95.5 25.2,92.9 29.4,95.4 33.6,92.3 37.9,87.1 42.1,87.6 46.3,81.0 50.6,77.8 54.8,82.2 59.0,75.4 63.3,75.8 67.5,75.6 71.7,76.6 76.0,81.6 80.2,81.6 84.4,85.3 88.7,80.9 92.9,86.7 97.1,87.5 101.4,86.0 105.6,84.3 109.8,82.1 114.1,78.4 118.3,75.0 122.5,75.2 126.8,73.6 131.0,76.9 135.2,78.9 139.5,79.3 143.7,83.5 147.9,87.1 152.2,87.4 156.4,85.9 160.6,82.2 164.9,83.2 169.1,60.0 173.3,57.5 177.6,51.0 181.8,50.6 186.0,48.3 190.3,42.1 194.5,36.8 198.7,33.1 203.0,27.5 207.2,33.7 211.4,26.9 215.7,26.7 219.9,29.0 224.1,24.7 228.4,18.8 232.6,25.8 236.8,32.7 241.1,39.7 245.3,46.7 249.5,53.6 253.8,60.6 258.0,67.5"/><path class="m-buy" d="M169.1,65.0 l-5,9 h10 z"/><text class="mk buy-t" x="169.1" y="83.0" text-anchor="middle">BUY</text><path class="m-sell" d="M241.1,34.7 l-5,-9 h10 z"/><text class="mk sell-t" x="241.1" y="22.7" text-anchor="middle">SELL</text><rect class="sb vol" x="2.5" y="133.7" width="2.9" height="10.3"/><rect class="sb vol" x="6.8" y="135.3" width="2.9" height="8.7"/><rect class="sb vol" x="11.0" y="133.2" width="2.9" height="10.8"/><rect class="sb vol" x="15.2" y="134.5" width="2.9" height="9.5"/><rect class="sb vol" x="19.5" y="132.3" width="2.9" height="11.7"/><rect class="sb vol" x="23.7" y="133.8" width="2.9" height="10.2"/><rect class="sb vol" x="27.9" y="133.8" width="2.9" height="10.2"/><rect class="sb vol" x="32.2" y="131.5" width="2.9" height="12.5"/><rect class="sb vol" x="36.4" y="133.7" width="2.9" height="10.3"/><rect class="sb vol" x="40.6" y="133.9" width="2.9" height="10.1"/><rect class="sb vol" x="44.9" y="133.9" width="2.9" height="10.1"/><rect class="sb vol" x="49.1" y="133.4" width="2.9" height="10.6"/><rect class="sb vol" x="53.3" y="135.0" width="2.9" height="9.0"/><rect class="sb vol" x="57.6" y="133.1" width="2.9" height="10.9"/><rect class="sb vol" x="61.8" y="131.5" width="2.9" height="12.5"/><rect class="sb vol" x="66.0" y="133.0" width="2.9" height="11.0"/><rect class="sb vol" x="70.3" y="132.2" width="2.9" height="11.8"/><rect class="sb vol" x="74.5" y="131.4" width="2.9" height="12.6"/><rect class="sb vol" x="78.7" y="131.8" width="2.9" height="12.2"/><rect class="sb vol" x="83.0" y="132.2" width="2.9" height="11.8"/><rect class="sb vol" x="87.2" y="131.9" width="2.9" height="12.1"/><rect class="sb vol" x="91.4" y="131.9" width="2.9" height="12.1"/><rect class="sb vol" x="95.7" y="134.3" width="2.9" height="9.7"/><rect class="sb vol" x="99.9" y="133.4" width="2.9" height="10.6"/><rect class="sb vol" x="104.1" y="134.0" width="2.9" height="10.0"/><rect class="sb vol" x="108.4" y="134.3" width="2.9" height="9.7"/><rect class="sb vol" x="112.6" y="133.0" width="2.9" height="11.0"/><rect class="sb vol" x="116.8" y="134.1" width="2.9" height="9.9"/><rect class="sb vol" x="121.1" y="132.8" width="2.9" height="11.2"/><rect class="sb vol" x="125.3" y="132.9" width="2.9" height="11.1"/><rect class="sb vol" x="129.5" y="135.0" width="2.9" height="9.0"/><rect class="sb vol" x="133.8" y="133.5" width="2.9" height="10.5"/><rect class="sb vol" x="138.0" y="133.8" width="2.9" height="10.2"/><rect class="sb vol" x="142.2" y="132.4" width="2.9" height="11.6"/><rect class="sb vol" x="146.5" y="135.1" width="2.9" height="8.9"/><rect class="sb vol" x="150.7" y="134.7" width="2.9" height="9.3"/><rect class="sb vol" x="154.9" y="133.2" width="2.9" height="10.8"/><rect class="sb vol" x="159.2" y="133.7" width="2.9" height="10.3"/><rect class="sb vol" x="163.4" y="132.6" width="2.9" height="11.4"/><rect class="sb hl" x="167.6" y="114.0" width="2.9" height="30.0"/><rect class="sb vol" x="171.9" y="134.6" width="2.9" height="9.4"/><rect class="sb vol" x="176.1" y="131.4" width="2.9" height="12.6"/><rect class="sb vol" x="180.3" y="134.4" width="2.9" height="9.6"/><rect class="sb vol" x="184.6" y="134.8" width="2.9" height="9.2"/><rect class="sb vol" x="188.8" y="134.2" width="2.9" height="9.8"/><rect class="sb vol" x="193.0" y="134.0" width="2.9" height="10.0"/><rect class="sb vol" x="197.3" y="134.5" width="2.9" height="9.5"/><rect class="sb vol" x="201.5" y="133.1" width="2.9" height="10.9"/><rect class="sb vol" x="205.7" y="131.4" width="2.9" height="12.6"/><rect class="sb vol" x="210.0" y="134.9" width="2.9" height="9.1"/><rect class="sb vol" x="214.2" y="133.6" width="2.9" height="10.4"/><rect class="sb vol" x="218.4" y="132.6" width="2.9" height="11.4"/><rect class="sb vol" x="222.7" y="131.6" width="2.9" height="12.4"/><rect class="sb vol" x="226.9" y="131.1" width="2.9" height="12.9"/><rect class="sb vol" x="231.1" y="134.8" width="2.9" height="9.2"/><rect class="sb vol" x="235.4" y="133.1" width="2.9" height="10.9"/><rect class="sb vol" x="239.6" y="131.7" width="2.9" height="12.3"/><rect class="sb vol" x="243.8" y="135.2" width="2.9" height="8.8"/><rect class="sb vol" x="248.1" y="132.9" width="2.9" height="11.1"/><rect class="sb vol" x="252.3" y="134.7" width="2.9" height="9.3"/><rect class="sb vol" x="256.5" y="132.1" width="2.9" height="11.9"/><text class="lbl" x="261.0" y="132.0">volume</text></svg><!--/chart--></div>
+          <figcaption>The blue dashed line is the 20-day high; the breakout day's volume bar is highlighted. The red dashed 10-day low is the exit.</figcaption></figure>
+      </article>
+
+      <article class="strat" id="mean_reversion">
+        <div class="strat-text">
+          <div class="strat-head"><span class="num">04</span><h3>Mean reversion</h3><span class="tag">mean reversion</span><span class="tag">Bollinger + RSI</span></div>
+          <p class="idea">Prices stretched far from their average tend to snap back. Buy a sharp oversold dip once it starts bouncing; sell when it's back at the average.</p>
+          <div class="rules">
+            <div class="rule"><span class="tag buy">BUY</span><span>In the last 3 days the low went below the lower Bollinger Band with RSI under 30 · today closes back inside the bands on an up candle · not in a strong downtrend.</span></div>
+            <div class="rule"><span class="tag sell">SELL</span><span>Close at or above the middle band (the 20-day average): the snap-back is done.</span></div>
+          </div>
+          <dl class="kv">
+            <dt>Confidence</dt><dd>0.60 · +0.10 above SMA200 (a dip inside a long uptrend) · +0.05 hammer or bullish engulfing</dd>
+            <dt>Suggested</dt><dd>every day · stop 5% · target 8%</dd>
+            <dt>Best for</dt><dd>Range-bound stocks, and dips inside long uptrends.</dd>
+            <dt>Watch out</dt><dd>Rare. A crash looks like a dip at first, so it skips “falling knives” (ADX ≥ 30 with sellers in control).</dd>
+            <dt>2024–25</dt><dd class="mono">−1.6% avg · 13 trades · 54% won · worst drop −5%</dd>
+          </dl>
+        </div>
+        <figure><div class="chart-box"><!--chart:mean_reversion--><svg class="chart" viewBox="0 0 300 150" role="img" aria-label="Bollinger Bands: buy when an oversold dip closes back inside the lower band, sell at the middle band"><title>Bollinger Bands: buy when an oversold dip closes back inside the lower band, sell at the middle band</title><polygon class="band" points="4.0,78.7 8.3,83.9 12.6,85.7 16.9,88.6 21.2,88.3 25.5,85.4 29.8,80.1 34.1,73.3 38.4,70.6 42.7,67.4 47.1,59.2 51.4,52.7 55.7,47.7 60.0,43.1 64.3,40.3 68.6,38.3 72.9,37.1 77.2,33.7 81.5,32.4 85.8,31.4 90.1,30.3 94.4,29.9 98.7,31.1 103.0,33.0 107.3,33.6 111.6,34.4 115.9,35.2 120.2,35.4 124.5,36.9 128.8,38.1 133.2,36.5 137.5,34.5 141.8,33.2 146.1,32.8 150.4,31.4 154.7,31.7 159.0,31.8 163.3,30.9 167.6,30.2 171.9,29.8 176.2,30.5 180.5,30.7 184.8,30.5 189.1,30.5 193.4,30.8 197.7,29.5 202.0,24.7 206.3,19.5 210.6,19.1 214.9,20.6 219.3,23.2 223.6,27.0 227.9,30.9 232.2,33.9 236.5,39.3 240.8,40.4 245.1,40.9 249.4,40.5 253.7,39.8 258.0,38.6 258.0,103.0 253.7,103.0 249.4,102.9 245.1,102.8 240.8,102.9 236.5,103.1 232.2,105.2 227.9,105.5 223.6,105.8 219.3,105.2 214.9,103.3 210.6,99.8 206.3,93.9 202.0,83.7 197.7,75.1 193.4,71.1 189.1,70.1 184.8,70.3 180.5,70.4 176.2,70.3 171.9,69.2 167.6,66.1 163.3,63.6 159.0,60.9 154.7,61.0 150.4,61.6 146.1,62.6 141.8,63.2 137.5,63.6 133.2,63.4 128.8,63.1 124.5,67.9 120.2,73.2 115.9,74.4 111.6,76.9 107.3,81.1 103.0,85.4 98.7,90.9 94.4,96.8 90.1,101.3 85.8,106.5 81.5,112.7 77.2,118.2 72.9,121.1 68.6,125.4 64.3,128.7 60.0,131.5 55.7,132.2 51.4,132.9 47.1,131.4 42.7,129.0 38.4,129.0 34.1,129.1 29.8,126.0 25.5,123.1 21.2,121.4 16.9,121.2 12.6,122.9 8.3,123.7 4.0,126.5"/><polyline class="l2" points="4.0,102.6 8.3,103.8 12.6,104.3 16.9,104.9 21.2,104.8 25.5,104.2 29.8,103.1 34.1,101.2 38.4,99.8 42.7,98.2 47.1,95.3 51.4,92.8 55.7,90.0 60.0,87.3 64.3,84.5 68.6,81.8 72.9,79.1 77.2,76.0 81.5,72.5 85.8,68.9 90.1,65.8 94.4,63.3 98.7,61.0 103.0,59.2 107.3,57.3 111.6,55.7 115.9,54.8 120.2,54.3 124.5,52.4 128.8,50.6 133.2,49.9 137.5,49.0 141.8,48.2 146.1,47.7 150.4,46.5 154.7,46.4 159.0,46.3 163.3,47.2 167.6,48.1 171.9,49.5 176.2,50.4 180.5,50.5 184.8,50.4 189.1,50.3 193.4,50.9 197.7,52.3 202.0,54.2 206.3,56.7 210.6,59.4 214.9,62.0 219.3,64.2 223.6,66.4 227.9,68.2 232.2,69.6 236.5,71.2 240.8,71.7 245.1,71.8 249.4,71.7 253.7,71.4 258.0,70.8"/><text class="lbl l2-t" x="261.0" y="73.8">mean</text><polyline class="price" points="4.0,104.5 8.3,96.5 12.6,97.5 16.9,92.4 21.2,85.3 25.5,81.6 29.8,73.6 34.1,66.7 38.4,79.9 42.7,75.2 47.1,52.5 51.4,54.0 55.7,55.1 60.0,53.9 64.3,58.1 68.6,59.3 72.9,59.1 77.2,45.5 81.5,46.2 85.8,41.6 90.1,42.0 94.4,47.2 98.7,50.6 103.0,57.0 107.3,47.4 111.6,48.2 115.9,56.8 120.2,56.1 124.5,42.1 128.8,39.5 133.2,38.9 137.5,36.2 141.8,38.0 146.1,44.0 150.4,34.7 154.7,56.0 159.0,58.6 163.3,63.6 167.6,64.3 171.9,68.2 176.2,60.4 180.5,49.7 184.8,48.0 189.1,55.5 193.4,59.5 197.7,75.9 202.0,95.2 206.3,106.1 210.6,96.5 214.9,89.9 219.3,84.4 223.6,79.3 227.9,74.8 232.2,70.8 236.5,67.4 240.8,65.1 245.1,62.2 249.4,60.5 253.7,58.1 258.0,57.0"/><path class="m-buy" d="M210.6,101.5 l-5,9 h10 z"/><text class="mk buy-t" x="210.6" y="119.5" text-anchor="middle">BUY</text><path class="m-sell" d="M236.5,62.4 l-5,-9 h10 z"/><text class="mk sell-t" x="236.5" y="50.4" text-anchor="middle">SELL</text></svg><!--/chart--></div>
+          <figcaption>The shaded band is ±2 standard deviations around the 20-day average (amber). Buy the bounce back inside; sell at the average.</figcaption></figure>
+      </article>
+
+      <article class="strat" id="range_trading">
+        <div class="strat-text">
+          <div class="strat-head"><span class="num">05</span><h3>Range trading</h3><span class="tag">mean reversion</span><span class="tag">support &amp; resistance</span></div>
+          <p class="idea">When a stock bounces between a floor (support) and a ceiling (resistance), buy near the floor and sell near the ceiling. Only when the market is truly going sideways.</p>
+          <div class="rules">
+            <div class="rule"><span class="tag buy">BUY</span><span>ADX under 20 (no trend) · both edges of the last 40 days' range tested at least twice · range 4–30% tall · price in the bottom quarter · up candle.</span></div>
+            <div class="rule"><span class="tag sell">SELL</span><span>Price in the top quarter of the range, or a close below support (the range broke).</span></div>
+          </div>
+          <dl class="kv">
+            <dt>Confidence</dt><dd>BUY 0.60 · +0.10 hammer / bullish engulfing · +0.05 RSI under 40. SELL +0.10 with a shooting star / bearish engulfing; a broken support is 0.70.</dd>
+            <dt>Suggested</dt><dd>every day · stop 4% · target 8%</dd>
+            <dt>Best for</dt><dd>Sideways, choppy stocks.</dd>
+            <dt>Watch out</dt><dd>Every range ends with a breakout. The stop-loss is your protection.</dd>
+            <dt>2024–25</dt><dd class="mono">+4.3% avg · 17 trades · 53% won · worst drop −4%</dd>
+          </dl>
+        </div>
+        <figure><div class="chart-box"><!--chart:range_trading--><svg class="chart" viewBox="0 0 300 150" role="img" aria-label="A sideways range: buy bounces in the bottom quarter near support, sell in the top quarter near resistance"><title>A sideways range: buy bounces in the bottom quarter near support, sell in the top quarter near resistance</title><rect class="zone-buy" x="4.0" y="105.3" width="254.0" height="27.6"/><rect class="zone-sell" x="4.0" y="22.5" width="254.0" height="27.6"/><line class="lvl" x1="4.0" x2="258.0" y1="132.9" y2="132.9"/><text class="lbl" x="261.0" y="135.9">support</text><line class="lvl" x1="4.0" x2="258.0" y1="22.5" y2="22.5"/><text class="lbl" x="261.0" y="25.5">resist.</text><polyline class="price" points="4.0,120.6 7.7,130.1 11.4,124.8 15.0,118.1 18.7,95.9 22.4,86.5 26.1,71.8 29.8,49.7 33.4,38.2 37.1,19.1 40.8,23.0 44.5,37.3 48.2,54.3 51.9,57.5 55.5,84.2 59.2,109.7 62.9,113.4 66.6,130.1 70.3,117.7 73.9,115.3 77.6,110.2 81.3,91.7 85.0,80.8 88.7,46.3 92.3,39.9 96.0,28.9 99.7,24.2 103.4,36.9 107.1,48.7 110.8,63.9 114.4,78.2 118.1,100.8 121.8,113.1 125.5,119.6 129.2,123.2 132.8,122.6 136.5,114.7 140.2,97.4 143.9,74.3 147.6,53.5 151.2,39.2 154.9,35.3 158.6,26.9 162.3,30.8 166.0,35.0 169.7,59.6 173.3,68.0 177.0,89.5 180.7,107.6 184.4,107.0 188.1,115.1 191.7,128.9 195.4,113.1 199.1,96.7 202.8,78.0 206.5,70.6 210.1,46.9 213.8,35.7 217.5,33.9 221.2,27.2 224.9,40.3 228.6,50.9 232.2,71.8 235.9,83.2 239.6,99.8 243.3,116.5 247.0,126.4 250.6,123.2 254.3,116.0 258.0,104.4"/><path class="m-buy" d="M132.8,127.6 l-5,9 h10 z"/><text class="mk buy-t" x="132.8" y="145.6" text-anchor="middle">BUY</text><path class="m-sell" d="M151.2,34.2 l-5,-9 h10 z"/><text class="mk sell-t" x="151.2" y="22.2" text-anchor="middle">SELL</text><path class="m-buy" d="M184.4,112.0 l-5,9 h10 z"/><text class="mk buy-t" x="184.4" y="130.0" text-anchor="middle">BUY</text><path class="m-sell" d="M210.1,41.9 l-5,-9 h10 z"/><text class="mk sell-t" x="210.1" y="29.9" text-anchor="middle">SELL</text><path class="m-buy" d="M250.6,128.2 l-5,9 h10 z"/><text class="mk buy-t" x="250.6" y="146.2" text-anchor="middle">BUY</text></svg><!--/chart--></div>
+          <figcaption>Green = the buy zone (bottom quarter), red = the sell zone (top quarter) of the last 40 days' range.</figcaption></figure>
+      </article>
+
+      <article class="strat" id="ma_pullback">
+        <div class="strat-text">
+          <div class="strat-head"><span class="num">06</span><h3>Pullback to the 20 EMA</h3><span class="tag">trend</span><span class="tag">swing trading</span></div>
+          <p class="idea">In an uptrend, wait for a dip back to the 20-day average and buy when buyers step in again. You join the trend at a discount instead of chasing it.</p>
+          <div class="rules">
+            <div class="rule"><span class="tag buy">BUY</span><span>EMA20 above a rising EMA50 · today's or yesterday's low touched EMA20 (within 0.5%) · close back above EMA20 on an up candle.</span></div>
+            <div class="rule"><span class="tag sell">SELL</span><span>EMA20 crosses below EMA50, or price closes below EMA50.</span></div>
+          </div>
+          <dl class="kv">
+            <dt>Confidence</dt><dd>0.60 · +0.10 hammer / bullish engulfing · +0.05 RSI 40–60 (a calm dip)</dd>
+            <dt>Suggested</dt><dd>every day · stop 5% · target 12%</dd>
+            <dt>Best for</dt><dd>Healthy uptrends with regular pullbacks. Holds days to weeks.</dd>
+            <dt>Watch out</dt><dd>A “pullback” can be the start of a reversal; the EMA50 exit limits the damage.</dd>
+            <dt>2024–25</dt><dd class="mono">+18.1% avg · 119 trades · 38% won · worst drop −18%</dd>
+          </dl>
+        </div>
+        <figure><div class="chart-box"><!--chart:ma_pullback--><svg class="chart" viewBox="0 0 300 150" role="img" aria-label="An uptrend with pullbacks: buy when a dip touches EMA20 and bounces, sell if price closes below EMA50"><title>An uptrend with pullbacks: buy when a dip touches EMA20 and bounces, sell if price closes below EMA50</title><polyline class="price" points="4.0,129.3 6.9,132.9 9.7,127.4 12.6,121.6 15.4,118.2 18.3,112.8 21.1,109.7 24.0,105.3 26.8,102.4 29.7,109.8 32.5,115.0 35.4,117.6 38.2,118.4 41.1,114.3 44.0,105.9 46.8,100.2 49.7,96.6 52.5,94.2 55.4,85.0 58.2,81.9 61.1,88.6 63.9,91.3 66.8,96.4 69.6,98.6 72.5,99.0 75.3,93.2 78.2,87.2 81.1,84.6 83.9,83.5 86.8,79.5 89.6,72.9 92.5,78.3 95.3,82.7 98.2,83.5 101.0,85.8 103.9,82.5 106.7,78.1 109.6,74.0 112.4,71.4 115.3,68.2 118.2,71.5 121.0,67.5 123.9,69.2 126.7,71.4 129.6,76.4 132.4,76.0 135.3,68.8 138.1,67.3 141.0,63.7 143.8,61.2 146.7,59.7 149.6,53.2 152.4,46.6 155.3,52.6 158.1,57.0 161.0,60.0 163.8,64.8 166.7,58.5 169.5,53.8 172.4,49.1 175.2,49.4 178.1,42.3 180.9,44.7 183.8,41.1 186.7,42.3 189.5,46.1 192.4,52.4 195.2,57.7 198.1,57.3 200.9,50.3 203.8,45.3 206.6,44.1 209.5,35.3 212.3,32.9 215.2,28.0 218.0,37.4 220.9,41.7 223.8,44.2 226.6,48.0 229.5,46.4 232.3,39.7 235.2,38.9 238.0,31.2 240.9,27.8 243.7,24.1 246.6,19.1 249.4,22.2 252.3,20.9 255.1,24.7 258.0,33.4"/><polyline class="l1" points="4.0,129.0 6.9,129.4 9.7,129.2 12.6,128.5 15.4,127.5 18.3,126.1 21.1,124.5 24.0,122.7 26.8,120.8 29.7,119.7 32.5,119.3 35.4,119.1 38.2,119.0 41.1,118.6 44.0,117.4 46.8,115.8 49.7,113.9 52.5,112.0 55.4,109.5 58.2,106.8 61.1,105.1 63.9,103.8 66.8,103.1 69.6,102.7 72.5,102.3 75.3,101.4 78.2,100.1 81.1,98.6 83.9,97.2 86.8,95.5 89.6,93.3 92.5,91.9 95.3,91.0 98.2,90.3 101.0,89.9 103.9,89.2 106.7,88.1 109.6,86.8 112.4,85.3 115.3,83.7 118.2,82.5 121.0,81.1 123.9,80.0 126.7,79.1 129.6,78.9 132.4,78.6 135.3,77.7 138.1,76.7 141.0,75.5 143.8,74.1 146.7,72.7 149.6,70.9 152.4,68.6 155.3,67.0 158.1,66.1 161.0,65.5 163.8,65.4 166.7,64.8 169.5,63.7 172.4,62.3 175.2,61.1 178.1,59.3 180.9,57.9 183.8,56.3 186.7,55.0 189.5,54.1 192.4,54.0 195.2,54.3 198.1,54.6 200.9,54.2 203.8,53.4 206.6,52.5 209.5,50.8 212.3,49.1 215.2,47.1 218.0,46.2 220.9,45.8 223.8,45.6 226.6,45.8 229.5,45.9 232.3,45.3 235.2,44.7 238.0,43.4 240.9,41.9 243.7,40.2 246.6,38.2 249.4,36.7 252.3,35.2 255.1,34.2 258.0,34.1"/><text class="lbl l1-t" x="261.0" y="37.1">EMA20</text><polyline class="l2" points="4.0,131.9 6.9,131.9 9.7,131.8 12.6,131.4 15.4,130.8 18.3,130.1 21.1,129.3 24.0,128.4 26.8,127.4 29.7,126.7 32.5,126.2 35.4,125.9 38.2,125.6 41.1,125.1 44.0,124.4 46.8,123.4 49.7,122.4 52.5,121.3 55.4,119.9 58.2,118.4 61.1,117.2 63.9,116.2 66.8,115.4 69.6,114.8 72.5,114.1 75.3,113.3 78.2,112.3 81.1,111.2 83.9,110.1 86.8,108.9 89.6,107.5 92.5,106.4 95.3,105.4 98.2,104.6 101.0,103.8 103.9,103.0 106.7,102.0 109.6,100.9 112.4,99.8 115.3,98.5 118.2,97.5 121.0,96.3 123.9,95.2 126.7,94.3 129.6,93.6 132.4,92.9 135.3,92.0 138.1,91.0 141.0,89.9 143.8,88.8 146.7,87.7 149.6,86.3 152.4,84.8 155.3,83.5 158.1,82.5 161.0,81.6 163.8,80.9 166.7,80.0 169.5,79.0 172.4,77.8 175.2,76.7 178.1,75.4 180.9,74.2 183.8,72.9 186.7,71.7 189.5,70.7 192.4,70.0 195.2,69.5 198.1,69.0 200.9,68.3 203.8,67.4 206.6,66.4 209.5,65.2 212.3,64.0 215.2,62.5 218.0,61.6 220.9,60.8 223.8,60.1 226.6,59.7 229.5,59.1 232.3,58.4 235.2,57.6 238.0,56.6 240.9,55.5 243.7,54.2 246.6,52.8 249.4,51.6 252.3,50.4 255.1,49.4 258.0,48.8"/><text class="lbl l2-t" x="261.0" y="51.8">EMA50</text><path class="m-buy" d="M75.3,98.2 l-5,9 h10 z"/><text class="mk buy-t" x="75.3" y="116.2" text-anchor="middle">BUY</text></svg><!--/chart--></div>
+          <figcaption>Price dips to the blue EMA20 while the amber EMA50 keeps rising; the bounce is the entry.</figcaption></figure>
+      </article>
+
+      <article class="strat" id="reversal">
+        <div class="strat-text">
+          <div class="strat-head"><span class="num">07</span><h3>Reversal</h3><span class="tag">mean reversion</span><span class="tag">RSI divergence</span></div>
+          <p class="idea">After a long fall, the price makes a new low but RSI doesn't: sellers are running out of steam. Buy once an up candle confirms the turn.</p>
+          <div class="rules">
+            <div class="rule"><span class="tag buy">BUY</span><span>Two recent swing lows: the newer one lower in price but higher in RSI (the first with RSI under 35, the newer at most 5 days old) · today closes up, above yesterday's close.</span></div>
+            <div class="rule"><span class="tag sell">SELL</span><span>The mirror at the top: a higher high with a lower RSI (the first above 65), plus a down candle.</span></div>
+          </div>
+          <dl class="kv">
+            <dt>Confidence</dt><dd>0.60 · +0.10 hammer / bullish engulfing · +0.05 close above yesterday's high</dd>
+            <dt>Suggested</dt><dd>every day · stop 5% · target 10%</dd>
+            <dt>Best for</dt><dd>Oversold stocks after a long decline.</dd>
+            <dt>Watch out</dt><dd>Contrarian: when it's wrong, it bought a falling stock. Rare signals.</dd>
+            <dt>2024–25</dt><dd class="mono">+4.8% avg · 13 trades · 62% won · worst drop −7%</dd>
+          </dl>
+        </div>
+        <figure><div class="chart-box"><!--chart:reversal--><svg class="chart" viewBox="0 0 300 150" role="img" aria-label="Price makes a lower low while RSI makes a higher low (divergence), then an up candle confirms the turn"><title>Price makes a lower low while RSI makes a higher low (divergence), then an up candle confirms the turn</title><line class="sep" x1="4" x2="258" y1="107" y2="107"/><polyline class="price" points="4.0,18.7 9.2,18.7 14.4,16.5 19.6,19.6 24.7,20.9 29.9,19.2 35.1,19.5 40.3,20.4 45.5,24.8 50.7,23.4 55.8,25.8 61.0,24.9 66.2,27.2 71.4,28.4 76.6,25.1 81.8,27.4 86.9,34.1 92.1,43.0 97.3,53.8 102.5,62.3 107.7,74.8 112.9,82.8 118.0,89.9 123.2,95.7 128.4,90.0 133.6,85.4 138.8,81.4 144.0,78.3 149.1,74.7 154.3,72.3 159.5,75.9 164.7,74.7 169.9,79.1 175.1,78.3 180.2,82.3 185.4,85.1 190.6,83.9 195.8,87.5 201.0,90.6 206.2,89.8 211.3,93.7 216.5,96.0 221.7,93.7 226.9,86.8 232.1,82.1 237.3,78.2 242.4,75.0 247.6,71.3 252.8,69.7 258.0,66.9"/><path class="m-buy" d="M226.9,91.8 l-5,9 h10 z"/><text class="mk buy-t" x="226.9" y="109.8" text-anchor="middle">BUY</text><line class="guide" x1="4" x2="258" y1="133.8" y2="133.8"/><text class="lbl" x="261.0" y="136.8">30</text><polyline class="l1" points="4.0,126.6 9.2,126.5 14.4,124.6 19.6,127.6 24.7,128.6 29.9,127.1 35.1,127.4 40.3,128.1 45.5,131.3 50.7,129.9 55.8,131.5 61.0,130.6 66.2,131.9 71.4,132.6 76.6,129.4 81.8,130.8 86.9,133.8 92.1,136.3 97.3,138.2 102.5,139.2 107.7,140.2 112.9,140.7 118.0,141.0 123.2,141.3 128.4,138.6 133.6,136.7 138.8,135.1 144.0,133.9 149.1,132.5 154.3,131.6 159.5,132.4 164.7,131.9 169.9,132.8 175.1,132.5 180.2,133.3 185.4,133.9 190.6,133.3 195.8,134.1 201.0,134.7 206.2,134.3 211.3,135.1 216.5,135.5 221.7,134.2 226.9,130.9 232.1,128.9 237.3,127.5 242.4,126.3 247.6,125.2 252.8,124.7 258.0,123.8"/><text class="lbl l1-t" x="261.0" y="116.0">RSI</text><line class="div" x1="123.2" y1="97.3" x2="216.5" y2="97.5"/><line class="div" x1="123.2" y1="141.3" x2="216.5" y2="135.5"/><text class="lbl note-t" x="208.8" y="107.5" text-anchor="end">lower low</text></svg><!--/chart--></div>
+          <figcaption>The dashed lines: price falls to a lower low (top) while RSI makes a higher low (bottom). That disagreement is the divergence.</figcaption></figure>
+      </article>
+
+      <article class="strat" id="gap_and_go">
+        <div class="strat-text">
+          <div class="strat-head"><span class="num">08</span><h3>Gap and go</h3><span class="tag">event</span><span class="tag">gap trading</span></div>
+          <p class="idea">When big news makes a stock open far above yesterday's close and it never looks back, the move often keeps going.</p>
+          <div class="rules">
+            <div class="rule"><span class="tag buy">BUY</span><span>Opens ≥ 2% above yesterday's close (and ≥ half a normal day's move) · never falls back to yesterday's close · closes at or above the open · volume ≥ 1.5×.</span></div>
+            <div class="rule"><span class="tag sell">SELL</span><span>A gap down that stays below the open and never gets back to yesterday's close.</span></div>
+          </div>
+          <dl class="kv">
+            <dt>Confidence</dt><dd>0.60 · +0.10 a fresh news catalyst explains the gap · +0.05 closes in the top quarter of the day</dd>
+            <dt>Suggested</dt><dd>every day · stop 3% · target 6% · <b>after the open</b> (by 10:00 you can see if the gap holds)</dd>
+            <dt>Best for</dt><dd>Earnings and news days.</dd>
+            <dt>Watch out</dt><dd>Gaps that “fill” (fall back). The backtest only tests close decisions, not the 10:00 check.</dd>
+            <dt>2024–25</dt><dd class="mono">+0.5% avg · 17 trades · 41% won · worst drop −4%</dd>
+          </dl>
+        </div>
+        <figure><div class="chart-box"><!--chart:gap_and_go--><svg class="chart" viewBox="0 0 300 150" role="img" aria-label="Daily candles: the stock opens well above yesterday's close, never fills the gap, on heavy volume"><title>Daily candles: the stock opens well above yesterday's close, never fills the gap, on heavy volume</title><line class="sep" x1="4" x2="258" y1="111" y2="111"/><line class="wick down" x1="4.0" x2="4.0" y1="88.1" y2="95.9"/><rect class="body down" x="0.5" y="90.8" width="6.9" height="2.3"/><line class="wick up" x1="16.1" x2="16.1" y1="82.7" y2="95.9"/><rect class="body up" x="12.6" y="85.4" width="6.9" height="7.7"/><line class="wick down" x1="28.2" x2="28.2" y1="82.7" y2="90.0"/><rect class="body down" x="24.7" y="85.4" width="6.9" height="1.8"/><line class="wick down" x1="40.3" x2="40.3" y1="84.5" y2="91.8"/><rect class="body down" x="36.8" y="87.3" width="6.9" height="1.8"/><line class="wick down" x1="52.4" x2="52.4" y1="86.4" y2="95.3"/><rect class="body down" x="48.9" y="89.1" width="6.9" height="3.5"/><line class="wick down" x1="64.5" x2="64.5" y1="89.8" y2="95.5"/><rect class="body down" x="61.0" y="92.6" width="6.9" height="1.0"/><line class="wick up" x1="76.6" x2="76.6" y1="84.8" y2="95.5"/><rect class="body up" x="73.1" y="87.6" width="6.9" height="5.2"/><line class="wick down" x1="88.7" x2="88.7" y1="84.8" y2="92.6"/><rect class="body down" x="85.2" y="87.6" width="6.9" height="2.2"/><line class="wick down" x1="100.8" x2="100.8" y1="87.1" y2="93.7"/><rect class="body down" x="97.3" y="89.8" width="6.9" height="1.1"/><line class="wick up" x1="112.9" x2="112.9" y1="86.4" y2="93.7"/><rect class="body up" x="109.4" y="89.1" width="6.9" height="1.9"/><line class="wick down" x1="125.0" x2="125.0" y1="86.4" y2="97.5"/><rect class="body down" x="121.5" y="89.1" width="6.9" height="5.7"/><line class="wick up" x1="137.0" x2="137.0" y1="89.4" y2="97.5"/><rect class="body up" x="133.6" y="92.1" width="6.9" height="2.7"/><line class="wick up" x1="149.1" x2="149.1" y1="87.1" y2="94.9"/><rect class="body up" x="145.7" y="89.9" width="6.9" height="2.3"/><line class="wick up" x1="161.2" x2="161.2" y1="83.4" y2="92.6"/><rect class="body up" x="157.8" y="86.1" width="6.9" height="3.7"/><line class="wick up" x1="173.3" x2="173.3" y1="79.6" y2="88.9"/><rect class="body up" x="169.9" y="82.4" width="6.9" height="3.8"/><line class="wick up" x1="185.4" x2="185.4" y1="37.3" y2="55.6"/><rect class="body up" x="182.0" y="39.5" width="6.9" height="11.8"/><line class="wick up" x1="197.5" x2="197.5" y1="30.6" y2="45.1"/><rect class="body up" x="194.1" y="33.6" width="6.9" height="8.6"/><line class="wick down" x1="209.6" x2="209.6" y1="30.0" y2="39.5"/><rect class="body down" x="206.2" y="33.0" width="6.9" height="3.6"/><line class="wick up" x1="221.7" x2="221.7" y1="25.5" y2="41.5"/><rect class="body up" x="218.3" y="28.5" width="6.9" height="10.1"/><line class="wick up" x1="233.8" x2="233.8" y1="21.0" y2="31.7"/><rect class="body up" x="230.3" y="24.0" width="6.9" height="4.7"/><line class="wick down" x1="245.9" x2="245.9" y1="21.9" y2="29.2"/><rect class="body down" x="242.4" y="24.9" width="6.9" height="1.4"/><line class="wick up" x1="258.0" x2="258.0" y1="16.5" y2="27.6"/><rect class="body up" x="254.5" y="19.5" width="6.9" height="5.1"/><path class="m-buy" d="M185.4,64.2 l-5,9 h10 z"/><text class="mk buy-t" x="185.4" y="82.2" text-anchor="middle">BUY</text><text class="lbl note-t" x="169.7" y="60.8" text-anchor="end">gap</text><rect class="sb vol" x="-0.0" y="135.2" width="8.1" height="8.8"/><rect class="sb vol" x="12.1" y="135.5" width="8.1" height="8.5"/><rect class="sb vol" x="24.1" y="136.3" width="8.1" height="7.7"/><rect class="sb vol" x="36.2" y="135.7" width="8.1" height="8.3"/><rect class="sb vol" x="48.3" y="135.1" width="8.1" height="8.9"/><rect class="sb vol" x="60.4" y="134.0" width="8.1" height="10.0"/><rect class="sb vol" x="72.5" y="136.4" width="8.1" height="7.6"/><rect class="sb vol" x="84.6" y="133.4" width="8.1" height="10.6"/><rect class="sb vol" x="96.7" y="134.8" width="8.1" height="9.2"/><rect class="sb vol" x="108.8" y="132.8" width="8.1" height="11.2"/><rect class="sb vol" x="120.9" y="134.5" width="8.1" height="9.5"/><rect class="sb vol" x="133.0" y="135.4" width="8.1" height="8.6"/><rect class="sb vol" x="145.1" y="133.6" width="8.1" height="10.4"/><rect class="sb vol" x="157.2" y="136.4" width="8.1" height="7.6"/><rect class="sb vol" x="169.3" y="136.2" width="8.1" height="7.8"/><rect class="sb hl" x="181.4" y="114.0" width="8.1" height="30.0"/><rect class="sb vol" x="193.5" y="130.9" width="8.1" height="13.1"/><rect class="sb vol" x="205.6" y="130.9" width="8.1" height="13.1"/><rect class="sb vol" x="217.7" y="130.9" width="8.1" height="13.1"/><rect class="sb vol" x="229.8" y="130.9" width="8.1" height="13.1"/><rect class="sb vol" x="241.9" y="130.9" width="8.1" height="13.1"/><rect class="sb vol" x="254.0" y="130.9" width="8.1" height="13.1"/><text class="lbl" x="261.0" y="132.0">volume</text></svg><!--/chart--></div>
+          <figcaption>Daily candles: the gap is the empty space between yesterday's close and today's open. The highlighted volume bar is the gap day.</figcaption></figure>
+      </article>
+
+      <article class="strat" id="news_catalyst">
+        <div class="strat-text">
+          <div class="strat-head"><span class="num">09</span><h3>News catalyst</h3><span class="tag">event</span><span class="tag blue">RAG-driven</span></div>
+          <p class="idea">Trade the news, but only when the market agrees with it. Earnings surprises especially tend to keep drifting in their direction for days (“post-earnings drift”).</p>
+          <div class="rules">
+            <div class="rule"><span class="tag buy">BUY</span><span>News sentiment bullish and the price is up today.</span></div>
+            <div class="rule"><span class="tag sell">SELL</span><span>News sentiment bearish and the price is down today.</span></div>
+          </div>
+          <dl class="kv">
+            <dt>Confidence</dt><dd>0.55 base (an opinion piece on a quiet day stays under the default 0.60) · +0.10 a fresh catalyst · +0.10 volume ≥ 1.5×. No extra news tilt.</dd>
+            <dt>Suggested</dt><dd>every day · stop 4% · target 10% · <b>both</b> 10:00 and 15:30</dd>
+            <dt>Best for</dt><dd>Event-driven stocks. Needs working news keys.</dd>
+            <dt>Watch out</dt><dd>Only as good as the news feed. Not in the price-only replay, because it needs past news.</dd>
+          </dl>
+          <p class="note">Right now all three news sources (Alpaca, Polygon, Finnhub) answer <code>401</code>, so only news already stored is used. Fix the keys in <code>decision-service/.env</code> before running this one.</p>
+        </div>
+        <figure><div class="chart-box"><!--chart:news_catalyst--><svg class="chart" viewBox="0 0 300 150" role="img" aria-label="Fresh bullish news on an up day with heavy volume buys; bearish news on a down day sells"><title>Fresh bullish news on an up day with heavy volume buys; bearish news on a down day sells</title><line class="sep" x1="4" x2="258" y1="111" y2="111"/><line class="flagpole" x1="88.7" x2="88.7" y1="10.0" y2="104.0"/><text class="lbl buy-t" x="91.7" y="16.0">earnings beat</text><line class="flagpole" x1="215.7" x2="215.7" y1="10.0" y2="104.0"/><text class="lbl sell-t" x="218.7" y="102.0">probe</text><polyline class="price" points="4.0,97.5 12.5,95.1 20.9,93.5 29.4,91.7 37.9,87.2 46.3,85.7 54.8,86.4 63.3,83.3 71.7,81.1 80.2,76.8 88.7,54.6 97.1,52.8 105.6,50.9 114.1,47.8 122.5,45.4 131.0,45.8 139.5,43.8 147.9,35.5 156.4,34.8 164.9,32.9 173.3,31.7 181.8,25.3 190.3,20.8 198.7,20.7 207.2,16.5 215.7,40.9 224.1,40.3 232.6,42.1 241.1,39.2 249.5,41.0 258.0,39.5"/><path class="m-buy" d="M88.7,59.6 l-5,9 h10 z"/><text class="mk buy-t" x="88.7" y="77.6" text-anchor="middle">BUY</text><path class="m-sell" d="M215.7,35.9 l-5,-9 h10 z"/><text class="mk sell-t" x="215.7" y="23.9" text-anchor="middle">SELL</text><rect class="sb vol" x="1.1" y="131.0" width="5.7" height="13.0"/><rect class="sb vol" x="9.6" y="129.4" width="5.7" height="14.6"/><rect class="sb vol" x="18.1" y="130.8" width="5.7" height="13.2"/><rect class="sb vol" x="26.5" y="131.1" width="5.7" height="12.9"/><rect class="sb vol" x="35.0" y="129.7" width="5.7" height="14.3"/><rect class="sb vol" x="43.5" y="129.1" width="5.7" height="14.9"/><rect class="sb vol" x="51.9" y="129.3" width="5.7" height="14.7"/><rect class="sb vol" x="60.4" y="133.9" width="5.7" height="10.1"/><rect class="sb vol" x="68.9" y="130.0" width="5.7" height="14.0"/><rect class="sb vol" x="77.3" y="131.1" width="5.7" height="12.9"/><rect class="sb hl" x="85.8" y="114.0" width="5.7" height="30.0"/><rect class="sb vol" x="94.3" y="130.2" width="5.7" height="13.8"/><rect class="sb vol" x="102.7" y="130.2" width="5.7" height="13.8"/><rect class="sb vol" x="111.2" y="130.2" width="5.7" height="13.8"/><rect class="sb vol" x="119.7" y="130.2" width="5.7" height="13.8"/><rect class="sb vol" x="128.1" y="130.2" width="5.7" height="13.8"/><rect class="sb vol" x="136.6" y="130.2" width="5.7" height="13.8"/><rect class="sb vol" x="145.1" y="130.2" width="5.7" height="13.8"/><rect class="sb vol" x="153.5" y="130.2" width="5.7" height="13.8"/><rect class="sb vol" x="162.0" y="130.2" width="5.7" height="13.8"/><rect class="sb vol" x="170.5" y="130.2" width="5.7" height="13.8"/><rect class="sb vol" x="178.9" y="130.2" width="5.7" height="13.8"/><rect class="sb vol" x="187.4" y="130.2" width="5.7" height="13.8"/><rect class="sb vol" x="195.9" y="130.2" width="5.7" height="13.8"/><rect class="sb vol" x="204.3" y="130.2" width="5.7" height="13.8"/><rect class="sb hl" x="212.8" y="116.5" width="5.7" height="27.5"/><rect class="sb vol" x="221.3" y="130.2" width="5.7" height="13.8"/><rect class="sb vol" x="229.7" y="130.2" width="5.7" height="13.8"/><rect class="sb vol" x="238.2" y="130.2" width="5.7" height="13.8"/><rect class="sb vol" x="246.7" y="130.2" width="5.7" height="13.8"/><rect class="sb vol" x="255.1" y="130.2" width="5.7" height="13.8"/><text class="lbl" x="261.0" y="132.0">volume</text></svg><!--/chart--></div>
+          <figcaption>The flags mark news days: an earnings beat on a strong up day buys; a probe on a down day sells.</figcaption></figure>
+      </article>
+
+      <article class="strat" id="fibonacci">
+        <div class="strat-text">
+          <div class="strat-head"><span class="num">10</span><h3>Fibonacci retracement</h3><span class="tag">trend</span><span class="tag">golden zone</span></div>
+          <p class="idea">After a strong move up, prices often pull back about half to two thirds of it before continuing. Buy the bounce in that “golden zone”.</p>
+          <div class="rules">
+            <div class="rule"><span class="tag buy">BUY</span><span>A clean up-move of 8%+ in the last 60 days (its high at least 3 days ago) · today's low reaches the 50% level · the close holds above 61.8% on an up candle · 78.6% never broken.</span></div>
+            <div class="rule"><span class="tag sell">SELL</span><span>Close below the 78.6% level: the move failed.</span></div>
+          </div>
+          <dl class="kv">
+            <dt>Confidence</dt><dd>0.60 · +0.10 hammer / bullish engulfing · +0.05 above SMA200</dd>
+            <dt>Suggested</dt><dd>every day · stop 5% · target 12%</dd>
+            <dt>Best for</dt><dd>Trending stocks after a sharp run-up.</dd>
+            <dt>Watch out</dt><dd>The Fibonacci ratios are a popular convention, not a law. Treat it as a disciplined “buy the pullback” rule.</dd>
+            <dt>2024–25</dt><dd class="mono">+15.8% avg · 38 trades · 50% won · worst drop −11%</dd>
+          </dl>
+        </div>
+        <figure><div class="chart-box"><!--chart:fibonacci--><svg class="chart" viewBox="0 0 300 150" role="img" aria-label="After a strong move up, buy the bounce inside the 50 to 61.8% golden zone; sell below the 78.6% level"><title>After a strong move up, buy the bounce inside the 50 to 61.8% golden zone; sell below the 78.6% level</title><rect class="zone-gold" x="51.3" y="76.0" width="206.7" height="13.4"/><line class="lvl" x1="51.3" x2="258.0" y1="19.1" y2="19.1"/><text class="lbl" x="261.0" y="22.1">100%</text><line class="lvl" x1="51.3" x2="258.0" y1="76.0" y2="76.0"/><text class="lbl" x="261.0" y="75.0">50%</text><line class="lvl" x1="51.3" x2="258.0" y1="89.4" y2="89.4"/><text class="lbl" x="261.0" y="97.4">61.8%</text><line class="lvl-sell" x1="51.3" x2="258.0" y1="108.5" y2="108.5"/><text class="lbl" x="261.0" y="111.5">78.6%</text><line class="lvl" x1="51.3" x2="258.0" y1="132.9" y2="132.9"/><text class="lbl" x="261.0" y="135.9">0%</text><polyline class="price" points="4.0,131.0 9.9,131.1 15.8,131.0 21.7,130.5 27.6,129.7 33.5,128.8 39.4,127.8 45.3,126.9 51.3,121.2 57.2,115.8 63.1,112.0 69.0,108.6 74.9,103.7 80.8,97.1 86.7,89.9 92.6,84.0 98.5,79.9 104.4,76.5 110.3,72.1 116.2,65.9 122.1,58.8 128.0,52.3 134.0,47.7 139.9,44.4 145.8,40.4 151.7,34.7 157.6,27.7 163.5,20.9 169.4,27.1 175.3,33.4 181.2,39.7 187.1,46.0 193.0,52.2 198.9,58.5 204.8,64.8 210.7,71.1 216.7,77.3 222.6,72.8 228.5,68.8 234.4,64.3 240.3,60.8 246.2,55.8 252.1,52.7 258.0,48.2"/><path class="m-buy" d="M222.6,90.4 l-5,9 h10 z"/><text class="mk buy-t" x="222.6" y="108.4" text-anchor="middle">BUY</text></svg><!--/chart--></div>
+          <figcaption>Levels are measured down from the move's high: the amber band is the 50–61.8% golden zone, the red line 78.6% is the exit.</figcaption></figure>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ================= WHICH ONE ================= -->
+  <section id="which">
+    <div class="section-head">
+      <h2>Which one fits the stock?</h2>
+      <p>Look at the last few months of the chart first. Then backtest your pick against the simple default on that stock before trusting it.</p>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>If the stock…</th><th>Try</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td>has been rising for months</td><td><a href="#trend_following">Trend following</a>, <a href="#ma_pullback">Pullback</a>, <a href="#momentum">Momentum</a></td><td>Ride the trend; the pullback joins it at a discount.</td></tr>
+          <tr><td>moves sideways in a box</td><td><a href="#range_trading">Range trading</a>, <a href="#mean_reversion">Mean reversion</a></td><td>Buy low, sell high inside the box.</td></tr>
+          <tr><td>has gone quiet in a tight range</td><td><a href="#breakout">Breakout</a></td><td>Quiet stretches often end with a big move.</td></tr>
+          <tr><td>ran up sharply and is pulling back</td><td><a href="#fibonacci">Fibonacci</a>, <a href="#ma_pullback">Pullback</a></td><td>Buy the dip inside the bigger move.</td></tr>
+          <tr><td>has earnings or big news coming</td><td><a href="#gap_and_go">Gap and go</a>, <a href="#news_catalyst">News catalyst</a></td><td>Events move prices for days. Needs news keys.</td></tr>
+          <tr><td>has fallen hard for weeks</td><td><a href="#reversal">Reversal</a> (carefully)</td><td>Selling exhaustion turns; wrong more often.</td></tr>
+          <tr><td>you're not sure</td><td><a href="#sma_rsi">SMA trend + RSI</a></td><td>The baseline. Every other strategy should beat it on your stock.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= RESULTS ================= -->
+  <section id="results">
+    <div class="section-head">
+      <h2>How they did on past prices</h2>
+      <p>A replay of every strategy on 10 large US stocks (AAPL, MSFT, NVDA, AMZN, META, TSLA, JPM, XOM, KO, SPY) from January 2024 to December 2025, with the backtest's rules: each strategy's suggested settings, fills at the close with 0.05% slippage, $10,000 per stock.</p>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Strategy</th><th class="num">Avg return</th><th class="num">Median</th><th class="num">Beat B&amp;H</th><th class="num">Trades</th><th class="num">Won</th><th class="num">Avg worst drop</th></tr></thead>
+        <tbody>
+          <tr><td>Trend following</td><td class="num pos">+26.1%</td><td class="num">+19.4%</td><td class="num">0 / 10</td><td class="num">25</td><td class="num">36%</td><td class="num neg">−23.4%</td></tr>
+          <tr><td>SMA trend + RSI</td><td class="num pos">+22.0%</td><td class="num">+23.0%</td><td class="num">0 / 10</td><td class="num">158</td><td class="num">52%</td><td class="num neg">−19.2%</td></tr>
+          <tr><td>Pullback to the 20 EMA</td><td class="num pos">+18.1%</td><td class="num">+13.9%</td><td class="num">0 / 10</td><td class="num">119</td><td class="num">38%</td><td class="num neg">−17.5%</td></tr>
+          <tr><td>Fibonacci</td><td class="num pos">+15.8%</td><td class="num">+8.3%</td><td class="num">0 / 10</td><td class="num">38</td><td class="num">50%</td><td class="num neg">−10.5%</td></tr>
+          <tr><td>Momentum</td><td class="num pos">+8.9%</td><td class="num">−0.2%</td><td class="num">0 / 10</td><td class="num">79</td><td class="num">43%</td><td class="num neg">−17.7%</td></tr>
+          <tr><td>Reversal</td><td class="num pos">+4.8%</td><td class="num">0.0%</td><td class="num">0 / 10</td><td class="num">13</td><td class="num">62%</td><td class="num neg">−7.3%</td></tr>
+          <tr><td>Range trading</td><td class="num pos">+4.3%</td><td class="num">+5.7%</td><td class="num">0 / 10</td><td class="num">17</td><td class="num">53%</td><td class="num neg">−3.7%</td></tr>
+          <tr><td>Breakout</td><td class="num pos">+4.2%</td><td class="num">−1.0%</td><td class="num">0 / 10</td><td class="num">40</td><td class="num">35%</td><td class="num neg">−11.8%</td></tr>
+          <tr><td>Gap and go</td><td class="num pos">+0.5%</td><td class="num">+0.2%</td><td class="num">0 / 10</td><td class="num">17</td><td class="num">41%</td><td class="num neg">−4.3%</td></tr>
+          <tr><td>Mean reversion</td><td class="num neg">−1.6%</td><td class="num">0.0%</td><td class="num">0 / 10</td><td class="num">13</td><td class="num">54%</td><td class="num neg">−4.6%</td></tr>
+          <tr><td>News catalyst</td><td class="num" colspan="6"><span class="muted">not replayed: needs the news of each past day</span></td></tr>
+          <tr class="baseline"><td>Buy &amp; hold</td><td class="num pos">+78.8%</td><td class="num"></td><td class="num"></td><td class="num">—</td><td class="num"></td><td class="num neg">−29.0%</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="cards">
+      <p class="note"><b>No strategy beat simply holding the stock</b>, on any of the ten. 2024–25 was a strong bull market (NVDA alone rose 287%), and timing rules spend part of the time in cash, which costs a lot when prices only go up.</p>
+      <p class="note safe">What they bought instead is <b>smaller drops</b>. The setup strategies (range, mean reversion, gap) fell 4–5% at worst, against 29% for buy &amp; hold. That matters more in a falling market.</p>
+      <p class="note info">These are <b>price-only</b> rules: no news tilt, one market period, the suggested settings untouched. Treat it as a behaviour check, not a forecast, and backtest on your own stock and dates.</p>
+    </div>
+  </section>
+
+  <!-- ================= LEFT OUT ================= -->
+  <section id="left-out">
+    <div class="section-head">
+      <h2>Why these ten</h2>
+      <p>They were picked from four strategy round-ups (<a href="https://www.evest.com/en/trading-blog/trading-strategies/" target="_blank" rel="noreferrer">Evest</a>, <a href="https://datadriveninvestor.com/articles/top-10-trading-strategies-that-everyone-should-know/" target="_blank" rel="noreferrer">DataDrivenInvestor</a>, <a href="https://xbtfx.com/blog/top-15-most-popular-trading-strategies/" target="_blank" rel="noreferrer">XBTFX</a>, <a href="https://www.dbs.bank.in/in/treasures/articles/learning-centre/trading-strategies" target="_blank" rel="noreferrer">DBS</a>) for what these bots can really run: US stocks, daily bars, one symbol per bot, long only.</p>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Left out</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td>Scalping, high-frequency and day trading</td><td>Need minute-by-minute data and fast execution; the bots decide on daily bars.</td></tr>
+          <tr><td>ICT, Smart Money Concepts, London / New York session plays, liquidity sweeps</td><td>Intraday, mostly forex ideas that depend on order flow inside the day.</td></tr>
+          <tr><td>Pairs trading and arbitrage</td><td>Need two stocks and short selling; each bot trades one symbol, long only.</td></tr>
+          <tr><td>Trendlines</td><td>Hand-drawn and subjective. Support/resistance and breakouts cover the idea with clear rules.</td></tr>
+          <tr><td>Swing and position trading</td><td>Styles (how long you hold), not rules. Covered by the pullback and trend-following strategies.</td></tr>
+          <tr><td>Algorithmic, quant, copy and robo trading</td><td>Ways to trade, not strategies. This app <em>is</em> the algorithm.</td></tr>
+          <tr><td>Options, crypto and forex</td><td>Other markets. The bots trade US stocks.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= INDICATORS ================= -->
+  <section id="indicators">
+    <div class="section-head">
+      <h2>Indicators A–Z</h2>
+      <p>Every word the strategies and their decision steps use, in plain language.</p>
+    </div>
+    <div class="gloss-tools">
+      <label for="gloss-search" class="muted" style="font-size:14px">Find a term</label>
+      <input id="gloss-search" type="search" placeholder="e.g. MACD, ADX, engulfing, catalyst" autocomplete="off">
+      <span class="count" id="gloss-count" aria-live="polite"></span>
+    </div>
+    <div class="gloss-groups">
+
+      <div class="gloss-group">
+        <h3>Trend</h3>
+        <dl class="terms">
+          <div class="term"><dt>SMA</dt><dd>Simple moving average: the plain average close of the last N days. Smooths out the noise.<span class="ex">SMA50 = average of the last 50 closes</span></dd></div>
+          <div class="term"><dt>EMA</dt><dd>Exponential moving average: like an SMA, but recent days count more, so it turns sooner.</dd></div>
+          <div class="term"><dt>Golden cross / death cross</dt><dd>SMA50 crossing above SMA200 (golden: a long uptrend may be starting) or below it (death: it may be over).</dd></div>
+          <div class="term"><dt>ADX</dt><dd>Average Directional Index, 0–100: how <em>strong</em> a trend is, not which way. Under 20 = no trend (sideways), over 25 = a real trend.</dd></div>
+          <div class="term"><dt>+DI / −DI</dt><dd>The two halves of ADX: +DI measures the push up, −DI the push down. Whichever is higher is in control.</dd></div>
+          <div class="term"><dt>Uptrend / downtrend</dt><dd>Higher highs and higher lows (up), or lower highs and lower lows (down). The strategies read it from averages.</dd></div>
+        </dl>
+      </div>
+
+      <div class="gloss-group">
+        <h3>Momentum</h3>
+        <dl class="terms">
+          <div class="term"><dt>RSI</dt><dd>Relative Strength Index, 0–100: recent gains vs losses. Over 70 = overbought (rose fast), under 30 = oversold. The new strategies use Wilder's version, as charting apps do.</dd></div>
+          <div class="term"><dt>MACD</dt><dd>Moving Average Convergence Divergence: the 12-day EMA minus the 26-day EMA. Above zero = short-term prices above longer-term ones.</dd></div>
+          <div class="term"><dt>MACD signal line</dt><dd>A 9-day EMA of the MACD. MACD crossing above it = momentum turning up.</dd></div>
+          <div class="term"><dt>MACD histogram</dt><dd>MACD minus its signal line. Growing bars = momentum speeding up.</dd></div>
+          <div class="term"><dt>3-month return</dt><dd>How much the price changed over the last 63 trading days. Momentum only buys stocks that are up.</dd></div>
+          <div class="term"><dt>Divergence</dt><dd>Price and RSI disagreeing: a lower low in price with a higher low in RSI (bullish), or the reverse at a top (bearish). A sign the move is tiring.</dd></div>
+        </dl>
+      </div>
+
+      <div class="gloss-group">
+        <h3>Volatility &amp; levels</h3>
+        <dl class="terms">
+          <div class="term"><dt>Bollinger Bands</dt><dd>A band 2 standard deviations above and below the 20-day average. About 95% of closes land inside; outside = stretched.</dd></div>
+          <div class="term"><dt>Middle band</dt><dd>The 20-day average inside the Bollinger Bands: “the mean” that mean reversion expects prices to return to.</dd></div>
+          <div class="term"><dt>ATR</dt><dd>Average True Range: how far the stock usually moves in a day, gaps included. Used to judge whether a gap or a range is big for <em>this</em> stock.</dd></div>
+          <div class="term"><dt>Support</dt><dd>A price floor where buyers kept stepping in before.</dd></div>
+          <div class="term"><dt>Resistance</dt><dd>A price ceiling where sellers kept showing up before.</dd></div>
+          <div class="term"><dt>20-day high / 10-day low</dt><dd>The highest high of the last 20 days and lowest low of the last 10 (Donchian channels, used by the famous Turtle traders).</dd></div>
+          <div class="term"><dt>Base (consolidation)</dt><dd>A quiet stretch where the price moves sideways in a tight range. Tight bases often lead to strong breakouts.</dd></div>
+          <div class="term"><dt>Fibonacci levels</dt><dd>Points 50%, 61.8% and 78.6% of the way back down a move, measured from its high.</dd></div>
+          <div class="term"><dt>Golden zone</dt><dd>Between the 50% and 61.8% Fibonacci levels: where pullbacks in strong moves often stop.</dd></div>
+        </dl>
+      </div>
+
+      <div class="gloss-group">
+        <h3>Volume &amp; candles</h3>
+        <dl class="terms">
+          <div class="term"><dt>Volume</dt><dd>How many shares traded that day. Heavy volume = many people agree with the move.</dd></div>
+          <div class="term"><dt>Relative volume</dt><dd>Today's volume ÷ the average of the 20 days before.<span class="ex">1.5× = 50% busier than usual. Live checks scale a still-forming day up to a full-day estimate first.</span></dd></div>
+          <div class="term"><dt>Candlestick</dt><dd>One day drawn as a box from open to close (green up, red down) with wicks to the high and low.</dd></div>
+          <div class="term"><dt>Hammer</dt><dd>A small body at the top of a long lower wick: sellers pushed it down, buyers pushed it all the way back. A bullish sign after a drop.</dd></div>
+          <div class="term"><dt>Shooting star</dt><dd>The upside-down hammer: a long upper wick, small body at the bottom. Buyers got rejected. Bearish after a rise.</dd></div>
+          <div class="term"><dt>Bullish / bearish engulfing</dt><dd>A day whose body completely covers the previous day's body in the other direction. A strong turn signal.</dd></div>
+          <div class="term"><dt>Gap</dt><dd>Today opening well above (gap up) or below (gap down) yesterday's close, usually after news.</dd></div>
+          <div class="term"><dt>Gap fill</dt><dd>The price falling back to yesterday's close, erasing the gap. Gap and go skips gaps that fill.</dd></div>
+        </dl>
+      </div>
+
+      <div class="gloss-group">
+        <h3>News</h3>
+        <dl class="terms">
+          <div class="term"><dt>Sentiment</dt><dd>The AI's read of recent headlines: bullish, bearish or neutral. Tilts confidence ±0.15.</dd></div>
+          <div class="term"><dt>Catalyst</dt><dd>A real, company-specific event from the last 48 hours: earnings, guidance, up/downgrade, deal, FDA decision, recall, lawsuit, buyback.</dd></div>
+          <div class="term"><dt>Post-earnings drift</dt><dd>The tendency of a stock to keep moving for days or weeks in the direction of an earnings surprise. The idea behind the news catalyst strategy.</dd></div>
+          <div class="term"><dt>RAG</dt><dd>“Retrieval-augmented generation”: find the most relevant stored headlines first, then let the AI read only those.</dd></div>
+        </dl>
+      </div>
+
+      <div class="gloss-group">
+        <h3>Decisions</h3>
+        <dl class="terms">
+          <div class="term"><dt>Setup</dt><dd>The situation a strategy waits for (an oversold dip, a breakout day). Most days there is none, so the answer is HOLD.</dd></div>
+          <div class="term"><dt>Confirmation</dt><dd>Extra evidence on top of the setup (volume, a candle pattern, the bigger trend) that raises confidence.</dd></div>
+          <div class="term"><dt>Exit rule</dt><dd>The strategy's own reason to sell. The stop-loss and take-profit work on top of it.</dd></div>
+          <div class="term"><dt>Whipsaw</dt><dd>Getting in and out repeatedly for small losses as a signal flips back and forth in a sideways market.</dd></div>
+          <div class="term"><dt>Falling knife</dt><dd>A stock dropping hard that looks “cheap” but keeps falling. Mean reversion refuses to buy one.</dd></div>
+          <div class="term"><dt>Contrarian</dt><dd>Trading against the current move, betting it turns. The reversal strategy does this.</dd></div>
+        </dl>
+      </div>
+
+      <p class="empty" id="gloss-empty" hidden>No term matches that. Try a shorter word.</p>
+    </div>
+  </section>
+
+  <footer>
+    Matches <code>decision-service/app/strategies.py</code> on branch <code>trading-strategies</code>. The live list with every rule is also at <code>GET http://localhost:8000/strategies</code>. How a decision becomes an order is in the <a href="trading-bot-lifecycle.html">Trading Bot Lifecycle</a> guide. Not financial advice: backtest and paper-trade a strategy for weeks before real money.
+  </footer>
+</div>
+
+<script>
+  // Glossary filter: hides terms (and empty groups) that don't contain the typed text.
+  (function () {
+    const input = document.getElementById("gloss-search");
+    const groups = [...document.querySelectorAll(".gloss-group")];
+    const count = document.getElementById("gloss-count");
+    const empty = document.getElementById("gloss-empty");
+    const total = document.querySelectorAll(".term").length;
+
+    function apply() {
+      const q = input.value.trim().toLowerCase();
+      let shown = 0;
+      for (const g of groups) {
+        let inGroup = 0;
+        for (const t of g.querySelectorAll(".term")) {
+          const hit = !q || t.textContent.toLowerCase().includes(q);
+          t.hidden = !hit;
+          if (hit) inGroup++;
+        }
+        g.hidden = inGroup === 0;
+        shown += inGroup;
+      }
+      empty.hidden = shown !== 0;
+      count.textContent = q ? `${shown} of ${total} terms` : `${total} terms`;
+    }
+    input.addEventListener("input", apply);
+    apply();
+  })();
+</script>
+</body>
+</html>

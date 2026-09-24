@@ -1,9 +1,11 @@
+import { ExportOutlined } from "@ant-design/icons";
 import { Button, Typography } from "antd";
 import { strategyInfo, type StrategyInfo } from "../strategies";
 
 const MUTED = "#8b98b5";
 
-/** The selected strategy's rules in words, plus a one-click "use its suggested settings". */
+/** The selected strategy's rules in words, a one-click "use its suggested settings", and a link to its guide
+ *  section (a new tab, so a half-filled form isn't lost). */
 export default function StrategyHelp({ id, onApply }: { id: string | undefined; onApply: (s: StrategyInfo["suggested"]) => void }) {
   const s = id ? strategyInfo(id) : undefined;
   if (!s) return null;
@@ -22,6 +24,9 @@ export default function StrategyHelp({ id, onApply }: { id: string | undefined; 
       <Button type="link" size="small" style={{ fontSize: 12, paddingInline: 6 }} onClick={() => onApply(g)}>
         Apply
       </Button>
+      <a href={`/guides/trading-strategies.html#${s.id}`} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>
+        Chart &amp; details <ExportOutlined style={{ fontSize: 10 }} />
+      </a>
     </div>
   );
 }
