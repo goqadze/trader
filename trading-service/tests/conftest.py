@@ -36,6 +36,7 @@ os.environ["SCHEDULER_ENABLED"] = "false"
 for _key in ("ALPACA_PAPER_KEY_ID", "ALPACA_PAPER_SECRET_KEY", "ALPACA_LIVE_KEY_ID", "ALPACA_LIVE_SECRET_KEY"):
     os.environ[_key] = ""
 os.environ["ALLOW_LIVE_TRADING"] = "false"
+os.environ["SENTRY_DSN"] = ""  # the tests' deliberate failures must not land in GlitchTip as real errors
 os.environ["JWT_SECRET"] = "test-secret-" + "x" * 32  # fixed, so tests never depend on the one in your .env
 os.environ["COOKIE_SECURE"] = "false"  # the test client talks plain http
 

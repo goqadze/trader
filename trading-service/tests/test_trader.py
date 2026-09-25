@@ -2,12 +2,15 @@
 
 from datetime import timedelta
 
+import pytest
+
 from conftest import FakeBroker, at, make_bot, signal
 from sqlalchemy import select
 
+from app.brokers import BrokerError
 from app.decision_client import SignalError
 from app.models import Decision, EquitySnapshot, Event, Order
-from app.trader import evaluate, reconcile, submit_order, sync_pending, watch
+from app.trader import evaluate, fresh_quote, reconcile, submit_order, sync_pending, watch
 
 T = at(19, 30)  # Monday 15:30 New York, market open
 
@@ -233,3 +236,22 @@ def test_every_decision_is_kept_in_history(session):
         evaluate(session, bot, broker, T, "manual", signal(action))
     rows = list(session.scalars(select(Decision).where(Decision.bot_id == bot.id)))
     assert [r.action for r in rows] == ["HOLD", "BUY", "SELL"]
+
+
+def test_a_stale_quote_message_stays_the_same_while_it_stays_stale(session):
+    # One problem, one message: the audit log throttle and GlitchTip group it instead of a new entry every 5 minutes
+    bot = make_bot(session, shares=10)
+    broker = FakeBroker(now=T, quote_at=T - timedelta(hours=1))
+    messages = []
+    for later in (T, T + timedelta(minutes=5)):
+        with pytest.raises(BrokerError) as e:
+            fresh_quote(broker, bot, later)
+        messages.append(str(e.value))
+    assert messages[0] == messages[1] and "stale" in messages[0]
+
+
+def test_a_flat_bot_does_not_need_a_fresh_quote(session):
+    bot = make_bot(session)  # no shares: nothing to protect
+    broker = FakeBroker(price=42.0, now=T, quote_at=T - timedelta(hours=1))
+    assert watch(session, bot, broker, T) is None  # no BrokerError
+    assert bot.last_price == 42.0

@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from .brokers import Broker, BrokerError, BrokerOrder, Quote
 from .config import settings
 from .decision_client import SignalError, get_signal
-from .market import ny_date
+from .market import NY, ny_date
 from .models import OPEN_ORDER_STATUSES, Bot, Decision, EquitySnapshot, Event, Order
 
 logger = logging.getLogger("trading-service")
@@ -75,9 +75,11 @@ def resting_stop(session: Session, bot: Bot) -> Order | None:
 def fresh_quote(broker: Broker, bot: Bot, now: datetime) -> Quote:
     """A quote we're willing to trade on. Also refreshes the bot's last known price."""
     q = broker.quote(bot.symbol)
-    age = now - q.at
-    if age > timedelta(minutes=settings.max_quote_age_minutes):
-        raise BrokerError(f"quote for {bot.symbol} is {int(age.total_seconds() // 60)} min old; not trading on stale data")
+    if now - q.at > timedelta(minutes=settings.max_quote_age_minutes):
+        # Named by the last trade's time, not its age: the message stays the same while the quote stays stale,
+        # so the audit log and error monitoring count one problem instead of a new one every few minutes
+        raise BrokerError(f"quote for {bot.symbol} is stale (last trade {q.at.astimezone(NY):%Y-%m-%d %H:%M} New York, "
+                          f"over {settings.max_quote_age_minutes} min ago); not trading on stale data")
     bot.last_price, bot.last_price_at = q.price, q.at
     return q
 
@@ -314,9 +316,16 @@ def mark_to_market(session: Session, bot: Bot, price: float, now: datetime) -> N
 
 def watch(session: Session, bot: Bot, broker: Broker, now: datetime) -> Order | None:
     """Periodic check during market hours: refresh the price, record equity, and exit on stop-loss/target."""
+    if bot.shares <= 0:
+        # Flat: nothing to protect and equity is just cash, so the price is only for display and any age will do.
+        # (A thinly traded symbol can go an hour without a trade on the free IEX feed; that's no error here.)
+        q = broker.quote(bot.symbol)
+        bot.last_price, bot.last_price_at = q.price, q.at
+        mark_to_market(session, bot, q.price, now)
+        return None
     q = fresh_quote(broker, bot, now)
     mark_to_market(session, bot, q.price, now)
-    if bot.shares <= 0 or open_orders(session, bot):
+    if open_orders(session, bot):
         return None
     # A stop order resting at the broker owns the stop-loss: selling here as well could sell twice
     broker_holds_stop = resting_stop(session, bot) is not None

@@ -4,19 +4,20 @@
 .PHONY: test test-decision test-backtest test-trading backup-trading-db guide-charts
 
 # Run all backend tests (both services).
+# SENTRY_DSN is blanked in every test run: the tests' deliberate failures must not land in GlitchTip as real errors.
 test: test-decision test-backtest test-trading
 
 # decision-service tests (risk sizing, decision rules, indicators, news RAG).
 # The news store tests run against Postgres + pgvector in a separate `news_test` database.
 test-decision:
 	docker compose up -d --wait news-db
-	docker compose run --rm --no-deps -v "$(CURDIR)/decision-service:/code" -w /code \
+	docker compose run --rm --no-deps -v "$(CURDIR)/decision-service:/code" -w /code -e SENTRY_DSN= \
 		-e TEST_NEWS_DATABASE_URL=postgresql://news:news@news-db:5432/news_test \
 		decision-service sh -c "pip install -q -r requirements-dev.txt && pytest"
 
 # backtest-service tests (engine, fees/slippage, risk exits, config, client).
 test-backtest:
-	docker compose run --rm --no-deps -v "$(CURDIR)/backtest-service:/code" -w /code \
+	docker compose run --rm --no-deps -v "$(CURDIR)/backtest-service:/code" -w /code -e SENTRY_DSN= \
 		backtest-service sh -c "pip install -q -r requirements-dev.txt && pytest"
 
 # trading-service tests (trader rules, scheduler timing, API guard rails, broker adapters).
@@ -24,7 +25,7 @@ test-backtest:
 # `trading_test` database, so your real trading history is never touched.
 test-trading:
 	docker compose up -d --wait trading-db
-	docker compose run --rm --no-deps -v "$(CURDIR)/trading-service:/code" -w /code \
+	docker compose run --rm --no-deps -v "$(CURDIR)/trading-service:/code" -w /code -e SENTRY_DSN= \
 		-e TEST_DATABASE_URL=postgresql+psycopg://trading:trading@trading-db:5432/trading_test \
 		trading-service sh -c "pip install -q -r requirements-dev.txt && pytest"
 
