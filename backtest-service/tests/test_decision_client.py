@@ -92,3 +92,9 @@ def test_a_422_is_not_retried():
     client = _Client(resp=_Resp(422, None, "not enough price history"))
     asyncio.run(get_signal(client, "AAPL", date(2025, 1, 1)))
     assert client.calls == 1
+
+
+def test_backtests_ask_for_no_llm_explanation():
+    client = _Client(resp=_Resp(200, {"action": "HOLD", "confidence": 0.5}))
+    asyncio.run(get_signal(client, "AAPL", date(2025, 1, 1)))
+    assert client.kwargs["params"]["explain"] == "false"

@@ -87,61 +87,6 @@ def test_finished_bars_are_left_alone():
     assert tools.project_partial_volume(df, next_morning)[1] is None  # no bar for June 3 yet
 
 
-# --- replaying a past moment of a session (backtests deciding at 10:00) ------------------------------------
-
-def _daily(day: date, close=110.0):
-    idx = pd.DatetimeIndex([pd.Timestamp(day) - pd.Timedelta(days=1), pd.Timestamp(day)])
-    return pd.DataFrame({"Open": [99.0, 101.0], "High": [101.0, 115.0], "Low": [98.0, 95.0],
-                         "Close": [100.0, close], "Volume": [1000.0, 5000.0]}, index=idx)
-
-
-def _half_hours(day: date):
-    """30-minute bars indexed by their start, New York time: 9:30, 10:00, 10:30."""
-    start = pd.Timestamp(f"{day} 09:30", tz="America/New_York")
-    idx = pd.DatetimeIndex([start, start + pd.Timedelta(minutes=30), start + pd.Timedelta(minutes=60)])
-    return pd.DataFrame({"Open": [101.0, 103.0, 104.0], "High": [104.0, 115.0, 106.0], "Low": [100.0, 95.0, 103.0],
-                         "Close": [103.0, 104.0, 105.0], "Volume": [800.0, 600.0, 500.0]}, index=idx)
-
-
-@pytest.fixture
-def half_hours(monkeypatch):
-    tools._intraday.clear()
-    monkeypatch.setattr(tools, "_download_intraday", lambda symbol: _half_hours(date(2026, 8, 3)))
-    yield
-    tools._intraday.clear()
-
-
-def test_a_10am_replay_sees_only_the_first_half_hour(half_hours):
-    ten = datetime(2026, 8, 3, 10, 0, tzinfo=tools.MARKET_TZ)
-    df, note = tools.rewind_to(_daily(date(2026, 8, 3)), "AAPL", ten)
-    last = df.iloc[-1]
-    # 9:30-10:00 only: the 10:00 bar's spike to 115 and dip to 95 hadn't happened yet
-    assert (last.Open, last.High, last.Low, last.Close, last.Volume) == (101.0, 104.0, 100.0, 103.0, 800.0)
-    assert df.iloc[0].Close == 100.0  # earlier days untouched
-    assert "10:00" in note
-
-
-def test_a_later_moment_includes_every_finished_bar(half_hours):
-    df, _ = tools.rewind_to(_daily(date(2026, 8, 3)), "AAPL", datetime(2026, 8, 3, 10, 45, tzinfo=tools.MARKET_TZ))
-    last = df.iloc[-1]
-    assert (last.High, last.Low, last.Close, last.Volume) == (115.0, 95.0, 104.0, 1400.0)  # 10:30 bar not finished
-
-
-def test_no_intraday_data_is_a_clear_error(half_hours):
-    with pytest.raises(ValueError, match="60 days"):
-        tools.rewind_to(_daily(date(2026, 8, 4)), "AAPL", datetime(2026, 8, 4, 10, 0, tzinfo=tools.MARKET_TZ))
-
-
-def test_intraday_bars_are_downloaded_once(monkeypatch):
-    tools._intraday.clear()
-    calls = []
-    monkeypatch.setattr(tools, "_download_intraday", lambda symbol: calls.append(symbol) or _half_hours(date(2026, 8, 3)))
-    tools.intraday_bars("AAPL")
-    tools.intraday_bars("AAPL")
-    assert calls == ["AAPL"]
-    tools._intraday.clear()
-
-
 def test_a_past_10am_decision_uses_the_replayed_day(monkeypatch):
     from app import agent
 

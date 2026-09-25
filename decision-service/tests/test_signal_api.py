@@ -59,3 +59,10 @@ def test_strategies_catalog_lists_every_strategy_with_its_rules():
     assert body[0]["id"] == "sma_rsi"  # the original simple strategy stays first (the default)
     assert len(body) == 11
     assert all(s["buy"] and s["sell"] and s["summary"] and s["suggested"]["rebalance_days"] >= 1 for s in body)
+
+
+def test_explain_false_turns_off_the_llm_explanation(seen):
+    client = TestClient(main.app)
+    client.post("/signal", params={"symbol": "AAPL", "as_of": "2025-06-02"})
+    client.post("/signal", params={"symbol": "AAPL", "as_of": "2025-06-02", "explain": "false"})
+    assert [s["llm_explanation"] for s in seen] == [True, False]  # live bots keep it by default

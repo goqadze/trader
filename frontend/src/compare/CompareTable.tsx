@@ -87,6 +87,14 @@ export default function CompareTable({
           if (!r) return <span style={{ color: MUTED }}>…</span>;
           const v = m.value(r);
           const top = v != null && best.get(m.key) === v;
+          const warning = m.warn?.(r);
+          if (warning) {
+            return (
+              <Tooltip title={warning}>
+                <span style={{ color: "#faad14" }}>{m.format(v, r)}</span>
+              </Tooltip>
+            );
+          }
           return <span style={top ? { color: BEST, fontWeight: 600 } : undefined}>{m.format(v, r)}</span>;
         },
       })

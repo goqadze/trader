@@ -1,4 +1,5 @@
 import { Alert, Card, Col, Row, Space, Tag } from "antd";
+import { FEW_TRADES } from "../checkAt";
 import ActivityLog from "../components/ActivityLog";
 import ConfigForm from "../components/ConfigForm";
 import EquityChart from "../components/EquityChart";
@@ -20,13 +21,15 @@ export default function BacktestPage() {
   const { state, start } = useBacktest();
   const running = state.status === "starting" || state.status === "running";
   const r = state.result;
+  const lagged = r?.alpha_vs_buy_hold_pct != null && r.alpha_vs_buy_hold_pct < 0;
+  const thin = r != null && r.num_trades < FEW_TRADES; // too few trades for the numbers to mean much
 
   return (
     <>
       {state.error && <Alert type="error" message={state.error} showIcon style={{ marginBottom: 16 }} />}
       {r && state.config && (
         <Alert
-          type={r.alpha_vs_buy_hold_pct != null && r.alpha_vs_buy_hold_pct < 0 ? "warning" : "success"}
+          type={lagged || thin ? "warning" : "success"}
           showIcon
           style={{ marginBottom: 16 }}
           message={
@@ -39,9 +42,11 @@ export default function BacktestPage() {
             </Space>
           }
           description={
-            r.alpha_vs_buy_hold_pct != null && r.alpha_vs_buy_hold_pct < 0
-              ? "This setup lagged buy & hold. You can still paper-trade it, but test other parameters first."
-              : "Happy with it? Paper-trade the exact same parameters on live prices before risking real money."
+            thin
+              ? `Only ${r.num_trades} closed trade${r.num_trades === 1 ? "" : "s"}: too few to tell skill from luck. Test a longer window, or other symbols, before trusting this result.`
+              : lagged
+                ? "This setup lagged buy & hold. You can still paper-trade it, but test other parameters first."
+                : "Happy with it? Paper-trade the exact same parameters on live prices before risking real money."
           }
           action={<TradeThisButton config={state.config} />}
         />

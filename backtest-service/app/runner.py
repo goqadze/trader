@@ -9,7 +9,7 @@ import httpx
 import pandas as pd
 import yfinance as yf
 
-from .decision_client import get_signal
+from .decision_client import BASE as DECISION_BASE, get_signal
 from .engines import SimplePortfolioEngine
 from .models import RunConfig
 
@@ -48,13 +48,6 @@ CLOSE_HOUR = 16  # regular close, New York time (half days close earlier; waitin
 # The "after the open" decision moment, as trading-service's default (DECISION_MINUTES_AFTER_OPEN = 30)
 OPEN_SLOT = dtime(10, 0)
 HALF_HOUR = pd.Timedelta(minutes=30)
-# Yahoo keeps 30-minute bars for 60 days; a day of margin for time zones and the request's own timing
-INTRADAY_DAYS = 59
-
-
-def earliest_intraday_start() -> date:
-    """The earliest backtest start that can replay 10:00 decisions."""
-    return datetime.now(NY).date() - timedelta(days=INTRADAY_DAYS)
 
 
 def _fetch_prices(symbol: str, start: date, end: date, now: pd.Timestamp | None = None) -> pd.DataFrame:
@@ -68,18 +61,27 @@ def _fetch_prices(symbol: str, start: date, end: date, now: pd.Timestamp | None 
     return _finished_sessions(bars, now or pd.Timestamp.now(tz=NEW_YORK))
 
 
+def _intraday_bars(symbol: str, start: date, end: date) -> pd.DataFrame:
+    """Regular-hours 30-minute bars from decision-service (which holds the market-data keys: Alpaca, years of
+    history; Yahoo's last 60 days without them), indexed by each bar's start in New York time."""
+    r = httpx.get(f"{DECISION_BASE}/bars/intraday", params={"symbol": symbol, "start": str(start), "end": str(end)}, timeout=180)
+    if r.status_code != 200:
+        raise ValueError(f"30-minute prices for {symbol} unavailable: decision-service {r.status_code}: {r.text[:200]}")
+    rows = r.json()
+    if not rows:
+        return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
+    df = pd.DataFrame(rows).rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"})
+    df.index = pd.DatetimeIndex(pd.to_datetime(df["t"], utc=True)).tz_convert(NY)  # a year mixes -04:00 and -05:00
+    return df[["Open", "High", "Low", "Close"]]
+
+
 def _fetch_open_slots(symbol: str, start: date, end: date) -> pd.DataFrame:
     """Per trading day, from 30-minute bars: the 10:00 New York price, the range before it (9:30-10:00) and the
     range after it (10:00 to the close). The engine decides at 10:00 on that price, then checks the stop and
-    target on the rest of the day."""
-    df = yf.download(symbol, start=start, end=end + timedelta(days=1), interval="30m", progress=False, auto_adjust=True)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+    target on the rest of the day. A day missing here becomes a failed 10:00 decision in the engine."""
+    df = _intraday_bars(symbol, start, end)
     if df.empty:
-        raise ValueError(f"No 30-minute prices for {symbol} in {start}..{end} (Yahoo keeps them for 60 days)")
-    if df.index.tz is None:
-        df.index = df.index.tz_localize("UTC")
-    df = df.tz_convert(NY).dropna(subset=["Close"])
+        raise ValueError(f"No 30-minute prices for {symbol} in {start}..{end} (without Alpaca keys, Yahoo keeps only 60 days)")
     rows = {}
     for day, g in df.groupby(df.index.date):
         slot = pd.Timestamp(datetime.combine(day, OPEN_SLOT), tz=NY)

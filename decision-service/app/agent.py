@@ -9,10 +9,11 @@ from langgraph.graph import END, START, StateGraph
 
 from pydantic import BaseModel
 
+from .intraday import rewind_to
 from .observability import trace_config
 from .risk import position_size
 from .strategies import DEFAULT_STRATEGY, STRATEGIES, NewsView, format_facts
-from .tools import MARKET_TZ, get_prices, project_partial_volume, rewind_to
+from .tools import MARKET_TZ, get_prices, project_partial_volume
 
 logger = logging.getLogger("decision-service")
 
@@ -25,6 +26,7 @@ class State(TypedDict, total=False):
     decided_at: datetime  # optional: the exact decision moment (live bots); news after it is ignored
     strategy: str  # which decision strategy runs (a key of strategies.STRATEGIES)
     account_balance: float  # used to size a BUY (risk a fixed % of this)
+    llm_explanation: bool  # False: skip the LLM explanation and give the rule text (backtests: thousands of decisions)
     stop_pct: float  # optional per-request stop-loss distance (else STOP_PCT env)
     target_pct: float  # optional per-request target distance (else TARGET_PCT env)
     indicators: dict  # the strategy's facts: indicator values and patterns, always incl. last_close
@@ -233,7 +235,7 @@ def size_position(state: State) -> State:
 def explain(state: State) -> State:
     """Node 5: write a short human-readable explanation of the decision."""
     facts = "; ".join(state["steps"])
-    if os.getenv("OPENAI_API_KEY"):
+    if os.getenv("OPENAI_API_KEY") and state.get("llm_explanation", True):
         try:
             msg = _chat(max_retries=EXPLAIN_RETRIES).invoke(
                 f"In 2 sentences, explain this trading signal for a human trader: name the rule that fired and the "

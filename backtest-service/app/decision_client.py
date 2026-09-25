@@ -21,7 +21,9 @@ async def get_signal(client: httpx.AsyncClient, symbol: str, as_of: date, strate
     put in `reasoning` so it shows up in the activity log, and `error` marks it so the run can count failures.
     stop_pct / target_pct are only sent when set, so decision-service's env defaults apply otherwise.
     decided_at = a moment during as_of's session (10:00): decision-service replays the day as it stood then."""
-    params = {"symbol": symbol, "as_of": as_of.isoformat(), "strategy": strategy}
+    # explain=false: no LLM-written explanation (the rule text instead). A backtest makes thousands of decisions,
+    # the explanation changes none of them, and it would use most of the OpenAI rate limit
+    params = {"symbol": symbol, "as_of": as_of.isoformat(), "strategy": strategy, "explain": "false"}
     if stop_pct is not None:
         params["stop_pct"] = stop_pct
     if target_pct is not None:

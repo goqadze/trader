@@ -85,8 +85,8 @@ How a bot runs (`trading-service/app/scheduler.py`):
   - **Both**: 10:00 and 15:30 on each decision day.
 
   Every check uses the same daily indicators, with that moment's price. News only counts up to the
-  decision moment. Backtests test all three: "After the open" replays 10:00 from Yahoo's 30-minute
-  prices, so only for the last 60 days. Holidays and early closes
+  decision moment. Backtests test all three: "After the open" replays 10:00 from 30-minute prices
+  (Alpaca's, years back, with the same keys as the news; Yahoo's last 60 days without them). Holidays and early closes
   come from the NYSE calendar.
 - **Same rules as the backtest**: BUY when flat and confidence ≥ minimum, spending `position_pct`
   of the bot's cash; SELL the whole position on a SELL signal, the stop-loss, or the take-profit.

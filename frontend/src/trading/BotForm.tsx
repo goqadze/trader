@@ -197,7 +197,7 @@ export default function BotForm({ open, editing, initial, brokers, times = slotT
         <Form.Item
           name="decide_at"
           label="Check at (New York time)"
-          tooltip={`When the bot asks for a signal on a decision day. Backtests can test all three (after the open: the last 60 days only). “After the open” skips the jumpy first 30 minutes and uses the same daily indicators with the ${times.open} price. “Both” checks twice: a morning BUY can be sold at ${times.close} (and the reverse).`}
+          tooltip={`When the bot asks for a signal on a decision day. Backtests can test all three. “After the open” skips the jumpy first 30 minutes and uses the same daily indicators with the ${times.open} price. “Both” checks twice: a morning BUY can be sold at ${times.close} (and the reverse).`}
         >
           <Radio.Group
             optionType="button"

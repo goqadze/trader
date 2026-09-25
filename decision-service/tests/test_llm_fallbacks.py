@@ -59,3 +59,10 @@ def test_a_failed_analysis_leaves_no_lock_behind(monkeypatch):
     with pytest.raises(RuntimeError):
         agent.news_rag({"symbol": "AAPL", "as_of": date(2026, 8, 3), "steps": []})
     assert agent._news_inflight == {}
+
+
+def test_backtests_can_skip_the_llm_explanation(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setattr("langchain_openai.ChatOpenAI", lambda **kw: pytest.fail("explain=False must not call the LLM"))
+    out = agent.explain({"symbol": "AAPL", "action": "HOLD", "llm_explanation": False, "steps": ["no setup -> HOLD"]})
+    assert out["reasoning"] == "HOLD AAPL: no setup -> HOLD"

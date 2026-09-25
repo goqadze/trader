@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
 from .agent import agent  # the compiled LangGraph workflow
+from .intraday import bars_between
 from .strategies import DEFAULT_STRATEGY, STRATEGIES, catalog
 
 logger = logging.getLogger("decision-service")
@@ -51,6 +52,22 @@ def strategies():
     return catalog()
 
 
+@app.get("/bars/intraday")
+def intraday_bars(symbol: str, start: date, end: date):
+    """Regular-hours 30-minute bars (New York time, each stamped with its START) for backtests that decide after
+    the open: they need each day's 10:00 price and the range around it. From Alpaca when its keys are set (years
+    of history), else Yahoo (the last 60 days). The data keys stay in this service."""
+    if end < start:
+        raise HTTPException(422, "end must not be before start")
+    try:
+        df = bars_between(symbol.upper(), start, end)
+    except Exception as e:
+        logger.exception("intraday bars failed for %s %s..%s", symbol, start, end)
+        raise HTTPException(502, f"30-minute prices unavailable: {type(e).__name__}: {e}")
+    return [{"t": ts.isoformat(), "open": float(r.Open), "high": float(r.High), "low": float(r.Low),
+             "close": float(r.Close), "volume": float(r.Volume)} for ts, r in df.iterrows()]
+
+
 @app.post("/signal", response_model=Signal)
 def signal(
     symbol: str,
@@ -60,6 +77,7 @@ def signal(
     stop_pct: float | None = Query(None, gt=0, le=0.5),
     target_pct: float | None = Query(None, gt=0, le=2),
     decided_at: datetime | None = None,
+    explain: bool = True,
 ):
     """as_of lets the backtester replay history without look-ahead.
     strategy = which decision strategy runs (GET /strategies lists them; default: the simple SMA/RSI one).
@@ -67,11 +85,15 @@ def signal(
     stop_pct / target_pct override the STOP_PCT / TARGET_PCT env defaults, so each trading bot or
     backtest can run its own risk levels.
     decided_at (live bots) = the exact decision moment, e.g. 10:00 New York: news published after it is
-    ignored. Without it the news cutoff is 15:30 New York on as_of."""
+    ignored. Without it the news cutoff is 15:30 New York on as_of. A past decided_at (a backtest replaying
+    10:00) sees that day as it stood then, rebuilt from 30-minute bars.
+    explain=false skips the LLM-written explanation (the reasoning is the rule text instead): backtests make
+    thousands of decisions, and the explanation doesn't change any of them."""
     as_of = as_of or date.today()  # default to today for live use
     if strategy not in STRATEGIES:
         raise HTTPException(422, f"unknown strategy '{strategy}'; one of {list(STRATEGIES)}")
-    state = {"symbol": symbol.upper(), "as_of": as_of, "strategy": strategy, "account_balance": account_balance}
+    state = {"symbol": symbol.upper(), "as_of": as_of, "strategy": strategy, "account_balance": account_balance,
+             "llm_explanation": explain}
     if decided_at is not None:
         decided_at = decided_at if decided_at.tzinfo else decided_at.replace(tzinfo=timezone.utc)
         # Must fall on as_of's New York date, or a backtest could let tomorrow's news into today's decision

@@ -1,6 +1,7 @@
 // The measurements a strategy comparison shows, with what each means and which direction is better.
 // Values come from backtest-service's engine (SimplePortfolioEngine._metrics).
 
+import { FEW_TRADES } from "../checkAt";
 import type { Result } from "../types";
 
 export interface Metric {
@@ -12,6 +13,7 @@ export interface Metric {
   better?: "high" | "low"; // highlight the best run; none = neither direction is "better"
   buyHold?: (r: Result) => number | null | undefined; // the buy & hold benchmark's value, if it has one
   table?: boolean; // a summary-table column (every metric is in the per-strategy details)
+  warn?: (r: Result) => string | null; // a caution shown with the value (in yellow, on hover)
 }
 
 const num = (v: number | null | undefined, digits = 2) => (v == null ? "—" : v.toFixed(digits));
@@ -62,8 +64,9 @@ export const METRICS: Metric[] = [
   },
   {
     key: "num_trades", title: "Trades", table: true,
-    help: "Closed round trips (a buy, then a sell). A position still open at the end isn't counted here.",
+    help: `Closed round trips (a buy, then a sell). A position still open at the end isn't counted here. Under ${FEW_TRADES}, luck can explain the whole result.`,
     value: (r) => r.num_trades, format: (v) => num(v, 0),
+    warn: (r) => (r.num_trades < FEW_TRADES ? `Only ${r.num_trades} closed trades: too few to tell skill from luck` : null),
   },
   {
     key: "profit_factor", title: "Profit factor", table: true, better: "high",

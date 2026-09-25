@@ -5,7 +5,7 @@ import os
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
 from .models import RunConfig, RunSummary
-from .runner import RUNS, earliest_intraday_start, start_run
+from .runner import RUNS, start_run
 
 logger = logging.getLogger("backtest-service")
 logging.basicConfig(level=logging.INFO)
@@ -34,9 +34,6 @@ async def create_run(cfg: RunConfig):
     Must be async: start_run() schedules an asyncio task, which needs a running event loop."""
     if cfg.end <= cfg.start:
         raise HTTPException(422, "end must be after start")
-    if cfg.decide_at != "close" and cfg.start < earliest_intraday_start():
-        raise HTTPException(422, f"Checking after the open replays 10:00 from 30-minute prices, which Yahoo keeps for "
-                                 f"60 days: start on or after {earliest_intraday_start()}, or check before the close")
     run = start_run(cfg)
     return {"run_id": run.id}
 

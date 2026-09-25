@@ -1,7 +1,7 @@
 import { Button, Card, Checkbox, DatePicker, Form, Input, InputNumber, Segmented, Select, Space, Typography } from "antd";
 import { Dayjs } from "dayjs";
-import { CHECK_AT_OPTIONS, clampToIntraday, defaultRange, earliestIntradayStart, needsIntraday } from "../checkAt";
-import { STRATEGIES, strategyInfo, strategyShortName, type StrategyId } from "../strategies";
+import { CHECK_AT_OPTIONS, defaultRange } from "../checkAt";
+import { STRATEGIES, strategyInfo, type StrategyId } from "../strategies";
 import type { DecideAt } from "../trading/types";
 import type { RunConfig } from "../types";
 
@@ -26,15 +26,11 @@ interface FormValues {
 // "Each strategy's suggested time" first: it's the default, and how each strategy is meant to trade
 const COMPARE_CHECK_AT = [{ value: "suggested", label: "Each strategy's suggested time" }, ...CHECK_AT_OPTIONS];
 
-/** Can this window replay 10:00 decisions? (30-minute prices only go back 60 days.) */
-const intradayOk = (range: [Dayjs, Dayjs] | undefined) => !range?.[0] || !range[0].isBefore(earliestIntradayStart(), "day");
-
-/** The check time a strategy runs with. "suggested" follows the strategy (Gap and go after the open, News
- *  catalyst at both), falling back to the close when the window is older than the 30-minute prices. */
+/** The check time a strategy runs with: one for all, or "suggested", which follows the strategy (Gap and go after
+ *  the open, News catalyst at both, the rest before the close). */
 function checkAt(id: StrategyId, v: Partial<FormValues>): DecideAt {
   if (v.decide_at && v.decide_at !== "suggested") return v.decide_at;
-  const suggested = strategyInfo(id)!.suggested.decide_at ?? "close";
-  return intradayOk(v.range) ? suggested : "close";
+  return strategyInfo(id)!.suggested.decide_at ?? "close";
 }
 
 /** One RunConfig per picked strategy. "suggested" gives each its own rebalance/stop/target (a breakout checked
@@ -81,12 +77,6 @@ export default function CompareForm({ onRun, running }: Props) {
   const values = Form.useWatch([], form) as Partial<FormValues> | undefined;
   const settings = values?.settings ?? "suggested";
   const calls = values ? decisionCalls(values) : null;
-  const decideAt = values?.decide_at ?? "suggested";
-  const limitDates = decideAt !== "suggested" && needsIntraday(decideAt);
-  // Suggested times on a window too old for 30-minute prices: these strategies lose their after-the-open check
-  const fallBack = decideAt === "suggested" && !intradayOk(values?.range)
-    ? (values?.strategies ?? []).filter((id) => needsIntraday(strategyInfo(id)?.suggested.decide_at))
-    : [];
 
   return (
     <Card title="Compare strategies" size="small">
@@ -94,12 +84,6 @@ export default function CompareForm({ onRun, running }: Props) {
         form={form}
         layout="vertical"
         onFinish={(v) => onRun(toConfigs(v))}
-        onValuesChange={(changed: Partial<FormValues>) => {
-          // Checking after the open needs 30-minute prices: move a window that starts too early to the first day with them
-          if (changed.decide_at && changed.decide_at !== "suggested" && needsIntraday(changed.decide_at)) {
-            form.setFieldValue("range", clampToIntraday(form.getFieldValue("range")));
-          }
-        }}
         initialValues={{
           strategies: STRATEGIES.map((s) => s.id),
           settings: "suggested",
@@ -147,26 +131,13 @@ export default function CompareForm({ onRun, running }: Props) {
         <Form.Item name="symbol" label="Symbol" rules={[{ required: true }]}>
           <Input />
         </Form.Item>
-        <Form.Item
-          name="range"
-          label="Date range"
-          rules={[{ required: true }]}
-          extra={
-            fallBack.length > 0 && (
-              <span style={{ color: "#faad14" }}>
-                {fallBack.map(strategyShortName).join(" and ")} normally check after the open, which needs 30-minute prices (they go
-                back to {earliestIntradayStart().format("YYYY-MM-DD")}). With this window they check before the close.
-              </span>
-            )
-          }
-        >
-          <DatePicker.RangePicker style={{ width: "100%" }} disabledDate={(d) => limitDates && d.isBefore(earliestIntradayStart(), "day")} />
+        <Form.Item name="range" label="Date range" rules={[{ required: true }]}>
+          <DatePicker.RangePicker style={{ width: "100%" }} />
         </Form.Item>
         <Form.Item
           name="decide_at"
           label="Check at (New York time)"
           tooltip="When each decision day decides, like a trading bot's “Check at”. Suggested: Gap and go after the open (10:00), News catalyst at both times, the rest before the close (15:30). Pick one time to run every strategy on it."
-          extra={limitDates ? `10:00 is replayed from 30-minute prices, which go back to ${earliestIntradayStart().format("YYYY-MM-DD")}.` : undefined}
         >
           <Select options={COMPARE_CHECK_AT} />
         </Form.Item>

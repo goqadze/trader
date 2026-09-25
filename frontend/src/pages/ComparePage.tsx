@@ -1,7 +1,7 @@
 import { LoadingOutlined } from "@ant-design/icons";
 import { Alert, Card, Col, Empty, Row, Tabs, Typography } from "antd";
-import dayjs from "dayjs";
 import { useState } from "react";
+import { FEW_TRADES } from "../checkAt";
 import CompareChart from "../compare/CompareChart";
 import CompareForm from "../compare/CompareForm";
 import CompareTable from "../compare/CompareTable";
@@ -13,8 +13,15 @@ import type { BacktestState, Result } from "../types";
 const MUTED = "#8b98b5";
 const signed = (v: number) => `${v > 0 ? "+" : ""}${v.toFixed(2)}%`;
 
-/** The winners in words: best return, best risk-adjusted, smallest drawdown, and who beat buy & hold. */
-function Verdict({ done, total, days }: { done: [StrategyId, Result][]; total: number; days: number }) {
+/** "3 closed trades plus one still open" */
+function tradeCount(r: Result) {
+  const n = r.num_trades;
+  return `${n} closed trade${n === 1 ? "" : "s"}${r.open_position ? " plus one still open" : ""}`;
+}
+
+/** The winners in words: best return, best risk-adjusted, smallest drawdown, who beat buy & hold, and whether the
+ *  leader's result rests on enough trades to mean anything. */
+function Verdict({ done, total }: { done: [StrategyId, Result][]; total: number }) {
   if (done.length < 2) return null;
   const top = (f: (r: Result) => number | null | undefined) =>
     done.filter(([, r]) => f(r) != null).sort(([, a], [, b]) => f(b)! - f(a)!)[0];
@@ -24,9 +31,11 @@ function Verdict({ done, total, days }: { done: [StrategyId, Result][]; total: n
   const bh = done[0][1].buy_hold_return_pct;
   const beat = done.filter(([, r]) => r.beat_buy_hold).length;
   const finished = done.length === total;
+  const leader = strategyShortName(byReturn[0]);
+  const thin = byReturn[1].num_trades < FEW_TRADES;
   return (
     <Alert
-      type={beat > 0 ? "success" : "warning"}
+      type={beat > 0 && !thin ? "success" : "warning"}
       showIcon
       style={{ marginBottom: 16 }}
       message={
@@ -44,9 +53,9 @@ function Verdict({ done, total, days }: { done: [StrategyId, Result][]; total: n
         </span>
       }
       description={
-        days < 180
-          ? `${days} days is a short window: a handful of trades decide these numbers, and a strategy that waits for its setup may not have had one. Check the leaders over a longer range (a year or two) before trusting them.`
-          : "Past results on one symbol don't guarantee the future. Paper-trade the winner before risking real money."
+        thin
+          ? `${leader}'s result comes from ${tradeCount(byReturn[1])}: too few to tell skill from luck. Prefer strategies with more trades, or test a longer window or other symbols.`
+          : `${leader} made ${tradeCount(byReturn[1])}. Past results on one symbol don't guarantee the future: check the leader on a different period, then paper-trade it before risking real money.`
       }
     />
   );
@@ -78,7 +87,6 @@ export default function ComparePage() {
   const running = order.some((id) => runs[id]?.status === "starting" || runs[id]?.status === "running");
   const done = order.flatMap((id): [StrategyId, Result][] => (runs[id]?.result ? [[id, runs[id]!.result!]] : []));
   const cfg = order.length ? runs[order[0]]?.config : undefined;
-  const days = cfg ? dayjs(cfg.end).diff(dayjs(cfg.start), "day") : 0;
 
   return (
     <Row gutter={[16, 16]}>
@@ -99,7 +107,7 @@ export default function ComparePage() {
           </Card>
         ) : (
           <>
-            <Verdict done={done} total={order.length} days={days} />
+            <Verdict done={done} total={order.length} />
             <Card
               title={`${cfg?.symbol} · ${cfg?.start} → ${cfg?.end}`}
               size="small"

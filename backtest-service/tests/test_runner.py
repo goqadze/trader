@@ -121,10 +121,10 @@ def test_open_slots_split_each_day_at_10am(monkeypatch):
     from app import runner
 
     start = pd.Timestamp("2026-09-24 09:30", tz="America/New_York")
-    idx = pd.DatetimeIndex([start + pd.Timedelta(minutes=30 * k) for k in range(4)]).tz_convert("UTC")  # Yahoo sends UTC
+    idx = pd.DatetimeIndex([start + pd.Timedelta(minutes=30 * k) for k in range(4)])
     half_hours = pd.DataFrame({"Open": [100.0, 102.0, 103.0, 101.0], "High": [103.0, 110.0, 104.0, 102.0],
                                "Low": [99.0, 101.0, 97.0, 100.0], "Close": [102.0, 103.0, 101.0, 101.5]}, index=idx)
-    monkeypatch.setattr(runner.yf, "download", lambda *a, **k: half_hours)
+    monkeypatch.setattr(runner, "_intraday_bars", lambda *a: half_hours)
     slots = runner._fetch_open_slots("AAPL", date(2026, 9, 24), date(2026, 9, 24))
     row = slots.loc[date(2026, 9, 24)]
     assert row["price"] == 102.0  # the 9:30 bar's close = the price at 10:00
@@ -132,23 +132,28 @@ def test_open_slots_split_each_day_at_10am(monkeypatch):
     assert (row["high_after"], row["low_after"]) == (110.0, 97.0)  # 10:00 to the close
 
 
-def test_open_slots_without_data_explain_the_60_day_limit(monkeypatch):
+def test_open_slots_without_data_are_a_clear_error(monkeypatch):
     import pytest
 
     from app import runner
 
-    monkeypatch.setattr(runner.yf, "download", lambda *a, **k: pd.DataFrame())
-    with pytest.raises(ValueError, match="60 days"):
+    monkeypatch.setattr(runner, "_intraday_bars", lambda *a: pd.DataFrame(columns=["Open", "High", "Low", "Close"]))
+    with pytest.raises(ValueError, match="No 30-minute prices"):
         runner._fetch_open_slots("AAPL", date(2025, 1, 1), date(2025, 2, 1))
 
 
-def test_the_api_refuses_an_open_backtest_older_than_the_intraday_data():
-    from fastapi.testclient import TestClient
+def test_intraday_bars_come_from_decision_service(monkeypatch):
+    from app import runner
 
-    from app.main import app
-    from app.runner import earliest_intraday_start
+    class Resp:
+        status_code = 200
 
-    first = earliest_intraday_start()
-    body = {"start": str(first - timedelta(days=1)), "end": str(first + timedelta(days=20)), "decide_at": "open"}
-    r = TestClient(app).post("/runs", json=body)
-    assert r.status_code == 422 and "60 days" in r.json()["detail"]
+        def json(self):  # across the switch to summer time: two different UTC offsets
+            return [{"t": "2025-03-07T09:30:00-05:00", "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 10.0},
+                    {"t": "2025-03-10T09:30:00-04:00", "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.6, "volume": 10.0}]
+
+    asked = {}
+    monkeypatch.setattr(runner.httpx, "get", lambda url, params, timeout: asked.update(url=url, **params) or Resp())
+    df = runner._intraday_bars("AAPL", date(2025, 3, 3), date(2025, 3, 3))
+    assert asked["url"].endswith("/bars/intraday") and asked["start"] == "2025-03-03"
+    assert [str(t) for t in df.index] == ["2025-03-07 09:30:00-05:00", "2025-03-10 09:30:00-04:00"]
