@@ -225,3 +225,13 @@ def test_old_events_and_background_chatter_are_not_catalysts():
         _item("AMD stock beat Nvidia by 160 points in 2026", 2),  # "beat" as in outperformed, not beat estimates
     ]
     assert news.catalysts(items) == []
+
+
+def test_placeholder_keys_do_not_enable_a_source(monkeypatch):
+    from app.news import enabled_sources
+
+    monkeypatch.setenv("ALPACA_API_KEY", "PK123")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "secret")
+    monkeypatch.setenv("POLYGON_API_KEY", "# paste your Polygon key")
+    monkeypatch.setenv("FINNHUB_API_KEY", "   ")
+    assert enabled_sources() == ["alpaca"]

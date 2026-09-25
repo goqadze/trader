@@ -21,6 +21,9 @@ export const INITIAL: BacktestState = {
   bhShares: 0,
 };
 
+// When a slot decides, New York time (backtest-service's OPEN_SLOT; the close decision uses the day's close)
+const SLOT_TIMES = { open: "10:00", close: "15:30" } as const;
+
 /** Fold one WebSocket event into a run's UI state. Pure, so the strategy comparison reuses it per run. */
 export function applyEvent(s: BacktestState, ev: RunEvent): BacktestState {
   if (ev.type === "start") {
@@ -29,23 +32,20 @@ export function applyEvent(s: BacktestState, ev: RunEvent): BacktestState {
   if (ev.type === "step") {
     // Every day feeds the chart (smooth curve); buy & hold is derived from the same price.
     const chart = [...s.chart, { date: ev.date, strategy: Math.round(ev.equity), buyhold: Math.round(s.bhShares * ev.price) }];
-    // Only decision days (BUY/SELL/HOLD, uppercase) go in the log; "hold" carry-days don't.
-    const isDecision = ev.action === "BUY" || ev.action === "SELL" || ev.action === "HOLD";
-    const log = isDecision
-      ? [
-          {
-            key: ev.seq,
-            date: ev.date,
-            action: ev.action,
-            confidence: ev.confidence,
-            price: ev.price,
-            equity: ev.equity,
-            sentiment: ev.sentiment,
-            reasoning: ev.reasoning,
-          },
-          ...s.log,
-        ].slice(0, 200)
-      : s.log;
+    // Only decisions go in the log (newest first), not the carry days in between
+    const showTime = s.config?.decide_at != null && s.config.decide_at !== "close";
+    const rows = (ev.decisions ?? []).map((d, k) => ({
+      key: ev.seq * 2 + k,
+      date: ev.date,
+      time: showTime ? SLOT_TIMES[d.slot] : undefined,
+      action: d.action,
+      confidence: d.confidence,
+      price: d.price,
+      equity: d.equity,
+      sentiment: d.sentiment,
+      reasoning: d.reasoning,
+    }));
+    const log = rows.length ? [...rows.reverse(), ...s.log].slice(0, 200) : s.log;
     return { ...s, i: ev.i, equity: ev.equity, returnPct: (ev.equity / s.initialCash - 1) * 100, position: ev.position, chart, log };
   }
   if (ev.type === "trade") return { ...s, trades: s.trades + 1 };

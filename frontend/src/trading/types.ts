@@ -11,7 +11,7 @@ export interface StrategyParams {
   strategy: StrategyId;
   min_confidence: number;
   rebalance_days: number;
-  decide_at: DecideAt; // live bots only: the backtest always decides before the close
+  decide_at: DecideAt; // when a decision day decides; backtests replay "open"/"both" too (last 60 days only)
   position_pct: number;
   stop_pct: number;
   target_pct: number;

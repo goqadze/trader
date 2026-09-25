@@ -1,7 +1,7 @@
 """Tests for the Run pub/sub bookkeeping."""
 
 import asyncio
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 
@@ -83,7 +83,7 @@ def test_only_max_parallel_runs_execute_at_once(monkeypatch):
     active = {"now": 0, "peak": 0}
 
     class FakeEngine:
-        async def run(self, cfg, prices, decide, emit, bars=None):
+        async def run(self, cfg, prices, decide, emit, bars=None, open_slots=None):
             active["now"] += 1
             active["peak"] = max(active["peak"], active["now"])
             await asyncio.sleep(0.01)
@@ -115,3 +115,40 @@ def test_finished_sessions_also_trims_ohlc_bars():
     bars = pd.DataFrame({"Open": [1.0, 2.0, 3.0], "Close": [1.0, 2.0, 3.0]}, index=_closes().index)
     during = pd.Timestamp("2026-09-25 11:00", tz="America/New_York")
     assert list(_finished_sessions(bars, during).index) == [date(2026, 9, 23), date(2026, 9, 24)]
+
+
+def test_open_slots_split_each_day_at_10am(monkeypatch):
+    from app import runner
+
+    start = pd.Timestamp("2026-09-24 09:30", tz="America/New_York")
+    idx = pd.DatetimeIndex([start + pd.Timedelta(minutes=30 * k) for k in range(4)]).tz_convert("UTC")  # Yahoo sends UTC
+    half_hours = pd.DataFrame({"Open": [100.0, 102.0, 103.0, 101.0], "High": [103.0, 110.0, 104.0, 102.0],
+                               "Low": [99.0, 101.0, 97.0, 100.0], "Close": [102.0, 103.0, 101.0, 101.5]}, index=idx)
+    monkeypatch.setattr(runner.yf, "download", lambda *a, **k: half_hours)
+    slots = runner._fetch_open_slots("AAPL", date(2026, 9, 24), date(2026, 9, 24))
+    row = slots.loc[date(2026, 9, 24)]
+    assert row["price"] == 102.0  # the 9:30 bar's close = the price at 10:00
+    assert (row["high_before"], row["low_before"]) == (103.0, 99.0)
+    assert (row["high_after"], row["low_after"]) == (110.0, 97.0)  # 10:00 to the close
+
+
+def test_open_slots_without_data_explain_the_60_day_limit(monkeypatch):
+    import pytest
+
+    from app import runner
+
+    monkeypatch.setattr(runner.yf, "download", lambda *a, **k: pd.DataFrame())
+    with pytest.raises(ValueError, match="60 days"):
+        runner._fetch_open_slots("AAPL", date(2025, 1, 1), date(2025, 2, 1))
+
+
+def test_the_api_refuses_an_open_backtest_older_than_the_intraday_data():
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.runner import earliest_intraday_start
+
+    first = earliest_intraday_start()
+    body = {"start": str(first - timedelta(days=1)), "end": str(first + timedelta(days=20)), "decide_at": "open"}
+    r = TestClient(app).post("/runs", json=body)
+    assert r.status_code == 422 and "60 days" in r.json()["detail"]

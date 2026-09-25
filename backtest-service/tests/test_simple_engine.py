@@ -23,7 +23,7 @@ def _prices(values, start=date(2025, 1, 6)):
     return pd.Series([float(v) for v in values], index=idx)
 
 
-def _run(prices, decide, bars=None, **overrides):
+def _run(prices, decide, bars=None, open_slots=None, **overrides):
     cfg_args = dict(
         symbol="TEST", start=prices.index[0], end=prices.index[-1],
         initial_cash=10_000, min_confidence=0.6, rebalance_days=1,
@@ -36,7 +36,7 @@ def _run(prices, decide, bars=None, **overrides):
     async def emit(ev):
         events.append(ev)
 
-    result = asyncio.run(SimplePortfolioEngine().run(cfg, prices, decide, emit, bars=bars))
+    result = asyncio.run(SimplePortfolioEngine().run(cfg, prices, decide, emit, bars=bars, open_slots=open_slots))
     return result, events
 
 
@@ -49,7 +49,7 @@ def _bars(rows, start=date(2025, 1, 6)):
 
 def _const(signal):
     """A decide() that returns the same signal every day."""
-    async def decide(symbol, as_of):
+    async def decide(symbol, as_of, slot="close"):
         return dict(signal)
     return decide
 
@@ -58,7 +58,7 @@ def _scripted(signals):
     """A decide() that returns signals in order, repeating the last one after they run out."""
     state = {"i": 0}
 
-    async def decide(symbol, as_of):
+    async def decide(symbol, as_of, slot="close"):
         sig = signals[min(state["i"], len(signals) - 1)]
         state["i"] += 1
         return dict(sig)
@@ -189,7 +189,7 @@ def test_equity_curve_has_a_point_per_day_with_expected_keys():
 def test_rebalance_days_limits_decision_calls():
     calls = {"n": 0}
 
-    async def counting_decide(symbol, as_of):
+    async def counting_decide(symbol, as_of, slot="close"):
         calls["n"] += 1
         return dict(BUY)
 
@@ -251,7 +251,7 @@ def test_buy_and_hold_drawdown_is_measured_on_the_price():
 
 
 def test_failed_decisions_are_counted():
-    async def failing(symbol, as_of):
+    async def failing(symbol, as_of, slot="close"):
         return {"action": "HOLD", "confidence": 0.0, "reasoning": "decision-service 500", "error": True}
 
     res, _ = _run(_prices([100, 101, 102]), failing)
@@ -321,3 +321,85 @@ def test_stop_fill_still_pays_slippage():
     closes, bars = _bars([(100, 100, 100, 100), (99, 100, 95, 99)])
     sell = _only_sell(_run(closes, _const(BUY_96_108), bars=bars, rebalance_days=100, slippage_pct=0.01)[0])
     assert sell["price"] == round(96.0 * 0.99, 4)
+
+
+
+# --- deciding after the open (10:00) and at both times ---------------------
+
+def _slots(rows, start=date(2025, 1, 6)):
+    """(price at 10:00, high before, low before, high after, low after) per day, as the runner builds them."""
+    idx = [start + timedelta(days=i) for i in range(len(rows))]
+    cols = ["price", "high_before", "low_before", "high_after", "low_after"]
+    return pd.DataFrame([[float(x) for x in r] for r in rows], index=idx, columns=cols)
+
+
+def _recording(signal):
+    """A decide() that returns `signal` and remembers which slots it was asked for."""
+    asked = []
+
+    async def decide(symbol, as_of, slot="close"):
+        asked.append((as_of.isoformat(), slot))
+        return dict(signal)
+    return decide, asked
+
+
+def test_an_open_decision_fills_at_the_10am_price():
+    closes, bars = _bars([(100, 106, 99, 105), (105, 106, 104, 105)])
+    slots = _slots([(102, 103, 99, 106, 101), (105, 105, 104, 106, 104)])
+    decide, asked = _recording({"action": "BUY", "confidence": 0.9})
+    res, _ = _run(closes, decide, bars=bars, open_slots=slots, decide_at="open", rebalance_days=100)
+    assert asked == [("2025-01-06", "open")]  # only the open slot, never the close
+    assert res["trades"][0]["price"] == 102.0  # the 10:00 price, not the 105 close
+
+
+def test_a_10am_entry_is_protected_for_the_rest_of_that_day():
+    # Bought at 10:00 for 100; the afternoon drops to 94, through the 96 stop
+    closes, bars = _bars([(101, 101, 94, 95)])
+    slots = _slots([(100, 101, 99, 100, 94)])
+    res, _ = _run(closes, _const(BUY_96_108), bars=bars, open_slots=slots, decide_at="open", rebalance_days=100)
+    sell = _only_sell(res)
+    assert (sell["reason"], sell["price"], sell["hold_days"]) == ("stop-loss", 96.0, 0)
+
+
+def test_the_morning_before_10am_is_checked_before_deciding():
+    # Holding from day 1; day 2 dips to 95 before 10:00: stopped out at 96 before the 10:00 decision
+    closes, bars = _bars([(100, 100, 100, 100), (99, 100, 95, 99)])
+    slots = _slots([(100, 100, 100, 100, 100), (97, 99, 95, 100, 97)])
+    decide, asked = _recording(BUY_96_108)
+    res, _ = _run(closes, decide, bars=bars, open_slots=slots, decide_at="open")
+    buys = [t for t in res["trades"] if t["side"] == "BUY"]
+    assert _only_sell(res)["price"] == 96.0
+    assert len(buys) == 2 and buys[1]["price"] == 97.0  # flat again at 10:00, so the BUY signal re-enters
+
+
+def test_both_decides_twice_on_a_decision_day():
+    closes, bars = _bars([(100, 101, 99, 100), (100, 101, 99, 100), (100, 101, 99, 100)])
+    slots = _slots([(100, 101, 99, 101, 99)] * 3)
+    decide, asked = _recording({"action": "HOLD", "confidence": 0.0})
+    _, events = _run(closes, decide, bars=bars, open_slots=slots, decide_at="both", rebalance_days=2)
+    assert asked == [("2025-01-06", "open"), ("2025-01-06", "close"), ("2025-01-08", "open"), ("2025-01-08", "close")]
+    steps = [e for e in events if e["type"] == "step"]
+    assert [[d["slot"] for d in s["decisions"]] for s in steps] == [["open", "close"], [], ["open", "close"]]
+
+
+def test_a_morning_buy_can_be_sold_at_the_close():
+    closes, bars = _bars([(100, 101, 99, 103)])
+    slots = _slots([(100, 101, 99, 103, 99)])
+    res, _ = _run(closes, _scripted([BUY, SELL]), bars=bars, open_slots=slots, decide_at="both")
+    sell = _only_sell(res)
+    assert (sell["reason"], sell["price"], sell["pnl"]) == ("signal", 103.0, 300.0)  # 100 shares, +$3
+
+
+def test_a_day_without_30_minute_data_is_a_failed_decision():
+    closes, bars = _bars([(100, 101, 99, 100), (100, 101, 99, 100)])
+    slots = _slots([(100, 101, 99, 101, 99)])  # nothing for day 2
+    decide, asked = _recording({"action": "HOLD", "confidence": 0.0})
+    res, _ = _run(closes, decide, bars=bars, open_slots=slots, decide_at="open")
+    assert asked == [("2025-01-06", "open")]  # day 2 isn't asked: there's no 10:00 to replay
+    assert res["decision_errors"] == 1
+
+
+def test_close_decisions_are_logged_with_their_slot():
+    _, events = _run(_prices([100, 101]), _const({"action": "HOLD", "confidence": 0.0}))
+    steps = [e for e in events if e["type"] == "step"]
+    assert [d["slot"] for d in steps[0]["decisions"]] == ["close"]

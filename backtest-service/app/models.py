@@ -26,6 +26,9 @@ class RunConfig(BaseModel):
     stop_pct: float | None = Field(None, gt=0, le=0.5)  # stop-loss this far below the entry (0.04 = 4%)
     target_pct: float | None = Field(None, gt=0, le=2)  # take profit this far above the entry
     strategy: Strategy = "sma_rsi"  # which decision-service strategy decides (sma_rsi = the original simple one)
+    # When a decision day decides, like a trading bot's "Check at": before the close (on the day's close),
+    # after the open (10:00 New York, replayed from 30-minute bars: the last 60 days only), or both
+    decide_at: Literal["close", "open", "both"] = "close"
 
 
 class RunSummary(BaseModel):

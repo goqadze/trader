@@ -85,12 +85,13 @@ How a bot runs (`trading-service/app/scheduler.py`):
   - **Both**: 10:00 and 15:30 on each decision day.
 
   Every check uses the same daily indicators, with that moment's price. News only counts up to the
-  decision moment. "Before the close" is the only one the backtest tests. Holidays and early closes
+  decision moment. Backtests test all three: "After the open" replays 10:00 from Yahoo's 30-minute
+  prices, so only for the last 60 days. Holidays and early closes
   come from the NYSE calendar.
 - **Same rules as the backtest**: BUY when flat and confidence ≥ minimum, spending `position_pct`
   of the bot's cash; SELL the whole position on a SELL signal, the stop-loss, or the take-profit.
-- **Stricter than the backtest where money is at stake**: stops/targets are checked every 5 minutes
-  during market hours (not only at the close), and it never trades on a quote older than 20 minutes.
+- **Stops and targets during the day**: checked every 5 minutes during market hours (the backtest
+  matches this with each day's high and low), and it never trades on a quote older than 20 minutes.
 - **Alpaca bots keep their stop-loss at the broker**: right after a buy fills, a good-till-canceled stop
   order for all the shares rests at Alpaca. It fires even while this app, or the machine it runs on, is
   off. Every other sell cancels it first and waits for the broker to confirm, so a position can never be

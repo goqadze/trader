@@ -62,3 +62,10 @@ def test_min_confidence_must_be_in_0_1():
 def test_rebalance_days_must_be_at_least_1():
     with pytest.raises(ValidationError):
         _cfg(rebalance_days=0)
+
+
+def test_decide_at_defaults_to_the_close_and_is_validated():
+    assert RunConfig(start=date(2025, 1, 1), end=date(2025, 2, 1)).decide_at == "close"
+    assert RunConfig(start=date(2025, 1, 1), end=date(2025, 2, 1), decide_at="both").decide_at == "both"
+    with pytest.raises(ValidationError):
+        RunConfig(start=date(2025, 1, 1), end=date(2025, 2, 1), decide_at="noon")

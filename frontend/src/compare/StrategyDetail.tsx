@@ -1,5 +1,6 @@
 import { Alert, Card, Descriptions, Space, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
+import { checkAtText } from "../checkAt";
 import ActivityLog from "../components/ActivityLog";
 import EquityChart from "../components/EquityChart";
 import StatTiles from "../components/StatTiles";
@@ -44,8 +45,9 @@ export default function StrategyDetail({ run }: { run: BacktestState }) {
               <b>Buy:</b> {info.buy} · <b>Sell:</b> {info.sell}
             </div>
             <div>
-              Ran with: every {cfg.rebalance_days} day{cfg.rebalance_days === 1 ? "" : "s"} · stop {pct(cfg.stop_pct)} · target {pct(cfg.target_pct)} · min
-              confidence {cfg.min_confidence} ·{" "}
+              Ran with: every {cfg.rebalance_days} day{cfg.rebalance_days === 1 ? "" : "s"} · check{" "}
+              {checkAtText(cfg.decide_at)} · stop {pct(cfg.stop_pct)} · target{" "}
+              {pct(cfg.target_pct)} · min confidence {cfg.min_confidence} ·{" "}
               <a href={`/guides/trading-strategies.html#${info.id}`} target="_blank" rel="noreferrer">
                 chart &amp; details
               </a>

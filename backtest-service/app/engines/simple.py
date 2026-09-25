@@ -11,39 +11,40 @@ class SimplePortfolioEngine(BacktestEngine):
     """A small, honest long/flat portfolio simulator.
 
     Rules:
-      - Every `rebalance_days` trading days we ask decision-service for a signal.
+      - Every `rebalance_days` trading days we ask decision-service for a signal, at the day's slot(s) like a
+        trading bot's "Check at": before the close (on the close), after the open (at 10:00, on the 10:00
+        price), or both.
       - BUY  (confidence >= min_confidence) and currently flat  -> buy with position_pct of cash.
       - SELL (confidence >= min_confidence) and currently long  -> sell the whole position.
       - Otherwise hold.
-      - Every day while holding: the stop-loss and take-profit are checked against the day's range, like the
-        live bots (Alpaca holds the stop at the broker; targets are checked every few minutes).
-    Signal trades fill at that day's close; stop/target exits at their level, or at the open when the price
+      - All day while holding: the stop-loss and take-profit are checked against the price range, like the
+        live bots (Alpaca holds the stop at the broker; targets are checked every few minutes). A 10:00 entry
+        is checked against the rest of that day.
+    Signal trades fill at the slot's price; stop/target exits at their level, or at the open when the price
     gaps past it overnight. Slippage and fees apply to every fill. No leverage, no shorting."""
 
     name = "simple"
 
     async def run(self, cfg: RunConfig, prices: pd.Series, decide: DecideFn, emit: EmitFn,
-                  bars: pd.DataFrame | None = None) -> dict:
+                  bars: pd.DataFrame | None = None, open_slots: pd.DataFrame | None = None) -> dict:
         days: list[date] = list(prices.index)
         cash = cfg.initial_cash
         position = 0.0  # shares held
-        entry_price = 0.0  # price we bought at (includes buy slippage), shown on the trade
         cost_basis = 0.0  # total cash spent to open the position (fill + buy fee), for honest PnL
         entry_i = 0  # index of the entry day, for the holding period
         stop_price = 0.0  # sell if price falls to/below this (set from the agent's sizing at entry)
         target_price = math.inf  # sell if price rises to/above this
         trades: list[dict] = []
         equity_curve: list[dict] = []
-        last_signal = {"action": "HOLD", "confidence": 0.0, "reasoning": "", "steps": []}
-        signals = {"BUY": 0, "SELL": 0, "HOLD": 0}  # what the strategy said on decision days (before the confidence filter)
-        decision_errors = 0  # decision days where decision-service failed (counted as HOLD)
-        no_news = 0  # decision days decided without news sentiment (news off, or its LLM call failed)
+        signals = {"BUY": 0, "SELL": 0, "HOLD": 0}  # what the strategy said, before the confidence filter
+        decision_errors = 0  # decisions where decision-service failed (counted as HOLD)
+        no_news = 0  # decisions made without news sentiment (news off, or its LLM call failed)
 
         async def close_position(i, day, price, reason: str) -> None:
-            """Sell the whole position at today's close (with slippage + fee) and record why.
-            Shared by signal SELLs and the daily stop-loss/target exits so the accounting is identical."""
-            nonlocal cash, position, entry_price, cost_basis, stop_price, target_price
-            fill = price * (1 - cfg.slippage_pct)  # a sell fills a touch BELOW the close (worse)
+            """Sell the whole position at `price` (with slippage + fee) and record why.
+            Shared by signal SELLs and the stop-loss/target exits so the accounting is identical."""
+            nonlocal cash, position, cost_basis, stop_price, target_price
+            fill = price * (1 - cfg.slippage_pct)  # a sell fills a touch BELOW the price (worse)
             proceeds = position * fill
             fee = proceeds * cfg.fee_pct  # commission on the way out too
             net_proceeds = proceeds - fee
@@ -55,41 +56,30 @@ class SimplePortfolioEngine(BacktestEngine):
             trades.append(rec)
             await emit({"type": "trade", **rec})
             position = 0.0
-            entry_price = 0.0
             cost_basis = 0.0
             stop_price = 0.0
             target_price = math.inf
 
-        # Tell monitors the run is starting (frontend uses this to size the progress bar / charts)
-        await emit({"type": "start", "symbol": cfg.symbol, "total": len(days),
-                    "initial_cash": cfg.initial_cash, "first_price": float(prices.iloc[0])})
-
-        for i, day in enumerate(days):
-            price = float(prices.iloc[i])
-
-            # --- Risk exits run EVERY day, before any new signal, while we hold a position ---
-            # This is what actually enforces the risk plan the agent sized. Without bars (closes only), the
-            # day's range is just its close.
+        async def risk_check(i, day, open_: float, high: float, low: float, last: float) -> None:
+            """Exit on the stop-loss or target if this stretch of the day reached it."""
             if position > 0:
-                o, h, lo = (float(bars.iloc[i][k]) for k in ("Open", "High", "Low")) if bars is not None else (price,) * 3
-                hit = _risk_exit(o, h, lo, price, stop_price, target_price)
+                hit = _risk_exit(open_, high, low, last, stop_price, target_price)
                 if hit:
                     await close_position(i, day, hit[1], hit[0])
 
-            # Only spend an LLM call every rebalance_days; other days we simply carry the position.
-            is_decision_day = i % cfg.rebalance_days == 0
-            if is_decision_day:
-                last_signal = await decide(cfg.symbol, day)
-                signals[last_signal["action"]] = signals.get(last_signal["action"], 0) + 1
-                decision_errors += bool(last_signal.get("error"))
-                no_news += not last_signal.get("error") and last_signal.get("sentiment") == "unavailable"
-            action = last_signal["action"] if is_decision_day else "HOLD"
-            conf = float(last_signal.get("confidence", 0.0))
+        async def decide_and_trade(i, day, slot: str, price: float) -> dict:
+            """Ask for a signal at this slot and apply the trading rule at `price`. Returns the activity-log record."""
+            nonlocal cash, position, cost_basis, entry_i, stop_price, target_price, decision_errors, no_news
+            sig = await decide(cfg.symbol, day, slot)
+            action = sig.get("action", "HOLD")
+            conf = float(sig.get("confidence", 0.0))
+            signals[action] = signals.get(action, 0) + 1
+            decision_errors += bool(sig.get("error"))
+            no_news += not sig.get("error") and sig.get("sentiment") == "unavailable"
 
-            # --- Apply the trading rule ---
             if action == "BUY" and conf >= cfg.min_confidence and position == 0 and cash > 0:
                 spend = cash * cfg.position_pct
-                fill = price * (1 + cfg.slippage_pct)  # slippage: a buy fills a touch ABOVE the close (worse)
+                fill = price * (1 + cfg.slippage_pct)  # slippage: a buy fills a touch ABOVE the price (worse)
                 # Size so the shares plus their fee fit the budget: shares * fill * (1 + fee_pct) <= spend
                 shares = math.floor(spend / (fill * (1 + cfg.fee_pct)))  # whole shares only
                 if shares > 0:
@@ -97,31 +87,64 @@ class SimplePortfolioEngine(BacktestEngine):
                     fee = cost * cfg.fee_pct  # commission on the trade value
                     cash -= cost + fee
                     position = shares
-                    entry_price = fill
                     entry_i = i
                     cost_basis = cost + fee  # what it truly cost us to get in
                     # Enforce the stop/target the agent sized for THIS entry (from decision-service).
                     # Falls back to no stop / no target if the signal didn't include a position block.
-                    pos = last_signal.get("position") or {}
+                    pos = sig.get("position") or {}
                     stop_price = float(pos.get("stop_loss") or 0.0)
                     target_price = float(pos.get("target") or math.inf)
-                    trades.append({"side": "BUY", "date": day.isoformat(), "price": round(fill, 4),
-                                   "shares": shares, "fee": round(fee, 2)})
-                    await emit({"type": "trade", "side": "BUY", "date": day.isoformat(),
-                                "price": round(fill, 4), "shares": shares, "fee": round(fee, 2)})
-
+                    rec = {"side": "BUY", "date": day.isoformat(), "price": round(fill, 4), "shares": shares, "fee": round(fee, 2)}
+                    trades.append(rec)
+                    await emit({"type": "trade", **rec})
             elif action == "SELL" and conf >= cfg.min_confidence and position > 0:
                 await close_position(i, day, price, "signal")
+            return {"slot": slot, "action": action, "confidence": conf, "price": price, "equity": cash + position * price,
+                    "sentiment": sig.get("sentiment", ""), "reasoning": sig.get("reasoning", "")}
+
+        # Tell monitors the run is starting (frontend uses this to size the progress bar / charts)
+        await emit({"type": "start", "symbol": cfg.symbol, "total": len(days),
+                    "initial_cash": cfg.initial_cash, "first_price": float(prices.iloc[0])})
+
+        for i, day in enumerate(days):
+            price = float(prices.iloc[i])
+            # The day's range; without bars (closes only) it's just the close
+            o, h, lo = (float(bars.iloc[i][k]) for k in ("Open", "High", "Low")) if bars is not None else (price,) * 3
+            # Only spend an LLM call every rebalance_days; other days we simply carry the position.
+            is_decision_day = i % cfg.rebalance_days == 0
+            decisions: list[dict] = []
+
+            if cfg.decide_at == "close":
+                await risk_check(i, day, o, h, lo, price)  # the whole day passes before the close decision
+            else:
+                slot = open_slots.loc[day] if open_slots is not None and day in open_slots.index else None
+                if slot is None:  # no 30-minute prices for this day: the 10:00 decision can't be replayed
+                    await risk_check(i, day, o, h, lo, price)
+                    if is_decision_day:
+                        signals["HOLD"] += 1
+                        decision_errors += 1
+                        decisions.append({"slot": "open", "action": "HOLD", "confidence": 0.0, "price": price,
+                                          "equity": cash + position * price, "sentiment": "",
+                                          "reasoning": "No 10:00 price for this day (30-minute data missing): no decision"})
+                else:
+                    await risk_check(i, day, o, slot["high_before"], slot["low_before"], slot["price"])  # 9:30-10:00
+                    if is_decision_day:
+                        decisions.append(await decide_and_trade(i, day, "open", float(slot["price"])))
+                    # 10:00 to the close: also covers a position bought at 10:00
+                    await risk_check(i, day, slot["price"], slot["high_after"], slot["low_after"], price)
+            if is_decision_day and cfg.decide_at in ("close", "both"):
+                decisions.append(await decide_and_trade(i, day, "close", price))
 
             # Mark-to-market equity for every day so the chart is smooth
             equity = cash + position * price
             equity_curve.append({"date": day.isoformat(), "equity": equity, "price": price, "position": position})
+            last = decisions[-1] if decisions else {}
             await emit({
                 "type": "step", "i": i + 1, "total": len(days), "date": day.isoformat(),
-                "action": action if is_decision_day else "hold", "confidence": conf,
+                "action": last.get("action", "hold"), "confidence": last.get("confidence", 0.0),
                 "price": price, "cash": cash, "position": position, "equity": equity,
-                "sentiment": last_signal.get("sentiment", "") if is_decision_day else "",
-                "reasoning": last_signal.get("reasoning", "") if is_decision_day else "",
+                "sentiment": last.get("sentiment", ""), "reasoning": last.get("reasoning", ""),
+                "decisions": decisions,  # every decision of the day (two when checking at both times)
             })
 
         result = self._metrics(cfg, prices, cash, position, cost_basis, trades, equity_curve)

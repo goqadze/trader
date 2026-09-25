@@ -33,7 +33,7 @@ export const DEFAULT_PARAMS: StrategyParams = {
   strategy: DEFAULT_STRATEGY,
   min_confidence: 0.6,
   rebalance_days: 5,
-  decide_at: "close", // what the backtest tests
+  decide_at: "close", // the backtest's default too
   position_pct: 1.0,
   stop_pct: 0.04,
   target_pct: 0.08,
@@ -197,7 +197,7 @@ export default function BotForm({ open, editing, initial, brokers, times = slotT
         <Form.Item
           name="decide_at"
           label="Check at (New York time)"
-          tooltip={`When the bot asks for a signal on a decision day. “Before the close” is what the backtest tests. “After the open” skips the jumpy first 30 minutes and uses the same daily indicators with the ${times.open} price. “Both” checks twice: a morning BUY can be sold at ${times.close} (and the reverse).`}
+          tooltip={`When the bot asks for a signal on a decision day. Backtests can test all three (after the open: the last 60 days only). “After the open” skips the jumpy first 30 minutes and uses the same daily indicators with the ${times.open} price. “Both” checks twice: a morning BUY can be sold at ${times.close} (and the reverse).`}
         >
           <Radio.Group
             optionType="button"

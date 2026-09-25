@@ -7,7 +7,12 @@ import type { Action, LogRow } from "../types";
 const SENTIMENT_COLOR: Record<string, string> = { bullish: "green", bearish: "red", neutral: "blue" };
 
 const columns: ColumnsType<LogRow> = [
-  { title: "Date", dataIndex: "date", width: 110 },
+  {
+    title: "Date",
+    dataIndex: "date",
+    width: 110,
+    render: (d: string, r) => (r.time ? <span>{d} <span style={{ color: "#8b98b5" }}>{r.time}</span></span> : d),
+  },
   {
     title: "Action",
     dataIndex: "action",

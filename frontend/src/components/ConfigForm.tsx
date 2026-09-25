@@ -1,6 +1,8 @@
 import { Form, Input, InputNumber, DatePicker, Select, Button, Card } from "antd";
-import dayjs, { Dayjs } from "dayjs";
+import { Dayjs } from "dayjs";
+import { CHECK_AT_OPTIONS, clampToIntraday, defaultRange, earliestIntradayStart, needsIntraday } from "../checkAt";
 import { DEFAULT_STRATEGY, STRATEGY_OPTIONS, strategyInfo, type StrategyId, type StrategyInfo } from "../strategies";
+import type { DecideAt } from "../trading/types";
 import type { RunConfig } from "../types";
 import StrategyHelp from "./StrategyHelp";
 
@@ -15,6 +17,7 @@ interface FormValues {
   stop_pct: number; // percent in the form; sent as a fraction
   target_pct: number;
   strategy: StrategyId;
+  decide_at: DecideAt;
 }
 
 interface Props {
@@ -27,9 +30,17 @@ interface Props {
 export default function ConfigForm({ onRun, running }: Props) {
   const [form] = Form.useForm<FormValues>();
   const strategy = Form.useWatch("strategy", form);
+  const decideAt = Form.useWatch("decide_at", form);
+  // Checking after the open needs 30-minute prices: move a window that starts too early to the first day that has them
+  const fitWindow = (d: DecideAt) => {
+    if (needsIntraday(d)) form.setFieldValue("range", clampToIntraday(form.getFieldValue("range")));
+  };
   // The form shows percents; the catalog stores fractions
-  const applySuggested = (g: StrategyInfo["suggested"]) =>
-    form.setFieldsValue({ rebalance_days: g.rebalance_days, stop_pct: +(g.stop_pct * 100).toFixed(2), target_pct: +(g.target_pct * 100).toFixed(2) });
+  const applySuggested = (g: StrategyInfo["suggested"]) => {
+    const decide_at = g.decide_at ?? "close";
+    form.setFieldsValue({ rebalance_days: g.rebalance_days, stop_pct: +(g.stop_pct * 100).toFixed(2), target_pct: +(g.target_pct * 100).toFixed(2), decide_at });
+    fitWindow(decide_at);
+  };
 
   const submit = (v: FormValues) => {
     onRun({
@@ -43,6 +54,7 @@ export default function ConfigForm({ onRun, running }: Props) {
       stop_pct: v.stop_pct / 100,
       target_pct: v.target_pct / 100,
       strategy: v.strategy,
+      decide_at: v.decide_at,
     });
   };
 
@@ -56,11 +68,13 @@ export default function ConfigForm({ onRun, running }: Props) {
         onValuesChange={(changed: Partial<FormValues>) => {
           const s = changed.strategy && strategyInfo(changed.strategy);
           if (s) applySuggested(s.suggested);
+          if (changed.decide_at) fitWindow(changed.decide_at);
         }}
         initialValues={{
           symbol: "AAPL",
-          // The last 2 months up to today. Today's bar only counts once the market has closed (backtest-service drops it before)
-          range: [dayjs().subtract(2, "month"), dayjs()],
+          // About 2 months up to today (as far back as checking after the open allows). Today's bar only counts once
+          // the market has closed (backtest-service drops it before)
+          range: defaultRange(),
           initial_cash: 10000,
           min_confidence: 0.6,
           rebalance_days: 5,
@@ -68,6 +82,7 @@ export default function ConfigForm({ onRun, running }: Props) {
           stop_pct: 4, // same defaults as decision-service (STOP_PCT / TARGET_PCT)
           target_pct: 8,
           strategy: DEFAULT_STRATEGY,
+          decide_at: "close",
         }}
       >
         <Form.Item name="strategy" label="Strategy">
@@ -77,8 +92,19 @@ export default function ConfigForm({ onRun, running }: Props) {
         <Form.Item name="symbol" label="Symbol" rules={[{ required: true }]}>
           <Input />
         </Form.Item>
-        <Form.Item name="range" label="Date range" rules={[{ required: true }]}>
-          <DatePicker.RangePicker style={{ width: "100%" }} />
+        <Form.Item
+          name="range"
+          label="Date range"
+          rules={[{ required: true }]}
+          extra={needsIntraday(decideAt) ? `Checking after the open replays 10:00 from 30-minute prices, which only go back 60 days (to ${earliestIntradayStart().format("YYYY-MM-DD")}).` : undefined}
+        >
+          <DatePicker.RangePicker
+            style={{ width: "100%" }}
+            disabledDate={(d) => needsIntraday(decideAt) && d.isBefore(earliestIntradayStart(), "day")}
+          />
+        </Form.Item>
+        <Form.Item name="decide_at" label="Check at (New York time)" tooltip="When a decision day decides, like a trading bot's “Check at”. Before the close decides on the day's close; after the open decides at 10:00 on that moment's price, then the stop and target guard the rest of the day; both does the two.">
+          <Select options={CHECK_AT_OPTIONS} />
         </Form.Item>
         <Form.Item name="initial_cash" label="Initial cash ($)">
           <InputNumber min={100} style={{ width: "100%" }} />

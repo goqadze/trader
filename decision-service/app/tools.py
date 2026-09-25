@@ -1,4 +1,5 @@
 import threading
+import time
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -50,6 +51,59 @@ def get_prices(symbol: str, as_of: date, lookback_days: int = LOOKBACK_DAYS) -> 
     return df[(df.index.date >= start) & (df.index.date <= as_of)]
 
 
+# A backtest deciding at a past moment of a session (10:00, like a bot on "after the open") must see that day as
+# it stood then, not its finished daily bar. Yahoo keeps 30-minute bars for the last 60 days only.
+INTRADAY_BAR = timedelta(minutes=30)
+INTRADAY_TTL_S = 1800
+_intraday: dict[str, tuple[float, pd.DataFrame]] = {}
+_intraday_lock = threading.Lock()
+
+
+def _download_intraday(symbol: str) -> pd.DataFrame:
+    """The last 60 days of 30-minute bars, indexed by each bar's START in New York time."""
+    df = yf.download(symbol, period="60d", interval="30m", progress=False, auto_adjust=True)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("UTC")
+    return df.tz_convert(MARKET_TZ)
+
+
+def intraday_bars(symbol: str) -> pd.DataFrame:
+    """_download_intraday through a short-lived cache: a backtest replays dozens of past mornings on one symbol.
+    One download at a time, so simultaneous backtest runs wait for it and share it."""
+    with _intraday_lock:
+        hit = _intraday.get(symbol)
+        if hit and time.monotonic() - hit[0] < INTRADAY_TTL_S:
+            return hit[1]
+        df = _download_intraday(symbol)
+        if len(_intraday) >= _CACHE_SYMBOLS:
+            _intraday.pop(next(iter(_intraday)))
+        _intraday[symbol] = (time.monotonic(), df)
+        return df
+
+
+def rewind_to(df: pd.DataFrame, symbol: str, decided_at: datetime) -> tuple[pd.DataFrame, str]:
+    """Replace decided_at's daily bar with that day as it stood at decided_at: the open, the high and low so far,
+    the latest price as its close, the volume so far. Only 30-minute bars that had FINISHED by then count, so
+    nothing later leaks in. This is what a live bot sees at that moment."""
+    at = decided_at.astimezone(MARKET_TZ)
+    if df.empty or df.index[-1].date() != at.date():
+        raise ValueError(f"No daily bar for {symbol} on {at.date()} to replay")
+    bars = intraday_bars(symbol)
+    day = bars[(bars.index.date == at.date()) & (bars.index + INTRADAY_BAR <= at)]
+    if day.empty:
+        raise ValueError(f"No 30-minute prices for {symbol} before {at:%Y-%m-%d %H:%M} New York "
+                         "(Yahoo keeps them for the last 60 days)")
+    df = df.copy()
+    df.loc[df.index[-1], ["Open", "High", "Low", "Close", "Volume"]] = [
+        float(day["Open"].iloc[0]), float(day["High"].max()), float(day["Low"].min()),
+        float(day["Close"].iloc[-1]), float(day["Volume"].sum()),
+    ]
+    return df, (f"Replayed {at:%H:%M} New York: {at.date()}'s bar as it stood then (from 30-minute bars), "
+                f"latest price ${float(day['Close'].iloc[-1]):.2f}")
+
+
 # Share of a regular session's volume done N minutes after the 9:30 open. US stocks trade in a U-shape:
 # busy open, quiet midday, busy close (the closing auction alone is ~8%). Rough, but far better than
 # comparing half an hour of volume with full-day averages. Assumes a full 6.5h day (half days overshoot).
@@ -71,6 +125,7 @@ def project_partial_volume(df: pd.DataFrame, decided_at: datetime | None) -> tup
     if not 0 < fraction < 1:
         return df, None
     df = df.copy()
+    df["Volume"] = df["Volume"].astype(float)  # Yahoo sends whole numbers; pandas refuses a fraction in an int column
     df.iloc[-1, df.columns.get_loc("Volume")] = df["Volume"].iloc[-1] / fraction
     return df, (f"Today's bar is still forming ({now:%H:%M} New York): its volume is scaled x{1 / fraction:.1f} "
                 "to a full-day estimate before comparing with past days")

@@ -170,9 +170,15 @@ def _safe_error(e: Exception) -> str:
     return re.sub(r"\?[^\s'\"]*", "?<redacted>", str(e))  # drop every query string
 
 
+def _has_key(env: str) -> bool:
+    """Set, and not a commented-out placeholder like "# paste your key here" (which only earns a 401 per call)."""
+    value = (os.getenv(env) or "").strip()
+    return bool(value) and not value.startswith("#")
+
+
 def enabled_sources() -> list[str]:
     """Sources whose API keys are all set in the environment."""
-    return [n for n, (envs, _) in SOURCES.items() if all(os.getenv(e) for e in envs)]
+    return [n for n, (envs, _) in SOURCES.items() if all(_has_key(e) for e in envs)]
 
 
 def ingest_news(symbol: str, as_of: date, days: int = LOOKBACK_DAYS, cutoff: int | None = None) -> dict[str, str]:

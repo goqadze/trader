@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from .observability import trace_config
 from .risk import position_size
 from .strategies import DEFAULT_STRATEGY, STRATEGIES, NewsView, format_facts
-from .tools import get_prices, project_partial_volume
+from .tools import MARKET_TZ, get_prices, project_partial_volume, rewind_to
 
 logger = logging.getLogger("decision-service")
 
@@ -47,7 +47,12 @@ def fetch_data(state: State) -> State:
         raise ValueError(f"Not enough price history for {state['symbol']} as of {state['as_of']}: "
                          f"{strat.name} needs {strat.min_bars} daily bars, got {len(df)}")
     steps = [f"Strategy: {strat.name}", f"Fetched {len(df)} daily bars up to {state['as_of']}"]
-    df, note = project_partial_volume(df, state.get("decided_at"))
+    decided_at = state.get("decided_at")
+    if decided_at and state["as_of"] < datetime.now(MARKET_TZ).date():
+        # A past moment (a backtest replaying 10:00): the finished daily bar would show the rest of the day
+        df, note = rewind_to(df, state["symbol"], decided_at)
+        steps.append(note)
+    df, note = project_partial_volume(df, decided_at)
     if note:
         steps.append(note)
     facts = strat.analyze(df)
@@ -143,13 +148,11 @@ _news_lock = threading.Lock()
 
 
 def _news_cache_key(state: State) -> tuple | None:
-    """Only backtest days that are over (a past as_of, the default 15:30 cutoff) are cached: a live bot's
-    news can still change, and it decides once per slot anyway."""
-    from .news import MARKET_TZ
-
-    if state.get("decided_at") or state["as_of"] >= datetime.now(MARKET_TZ).date():
+    """Only days that are over are cached (backtests): today's news can still change, and a live bot decides
+    once per slot anyway. The decision moment is part of the key: 10:00 sees less news than 15:30."""
+    if state["as_of"] >= datetime.now(MARKET_TZ).date():
         return None
-    return state["symbol"], state["as_of"]
+    return state["symbol"], state["as_of"], state.get("decided_at")
 
 
 def _cached_news(key: tuple, compute: Callable[[], dict]) -> dict:

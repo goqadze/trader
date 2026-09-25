@@ -15,6 +15,7 @@ function toBotParams(cfg: RunConfig): BotFormInitial {
     min_confidence: cfg.min_confidence,
     rebalance_days: cfg.rebalance_days,
     position_pct: cfg.position_pct,
+    decide_at: cfg.decide_at ?? "close", // the bot checks when the backtest did
     ...(cfg.stop_pct != null && { stop_pct: cfg.stop_pct }),
     ...(cfg.target_pct != null && { target_pct: cfg.target_pct }),
   };

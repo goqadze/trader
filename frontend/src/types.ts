@@ -2,6 +2,7 @@
 // These mirror the JSON shapes produced by backtest-service.
 
 import type { StrategyId } from "./strategies";
+import type { DecideAt } from "./trading/types";
 
 export type Action = "BUY" | "SELL" | "HOLD" | "hold"; // "hold" = carry day (non-decision)
 export type RunStatus = "idle" | "starting" | "running" | "done" | "error";
@@ -18,6 +19,7 @@ export interface RunConfig {
   stop_pct?: number; // stop-loss distance below entry as a fraction (0.04 = 4%); omitted = server default
   target_pct?: number; // take-profit distance above entry as a fraction
   strategy: StrategyId;
+  decide_at?: DecideAt; // when a decision day decides, like a bot's "Check at"; omitted = before the close
 }
 
 export interface Trade {
@@ -94,6 +96,17 @@ export interface StepEvent {
   equity: number;
   sentiment: string;
   reasoning: string;
+  decisions?: Decision[]; // every decision of the day: one per slot (two when checking at both times)
+}
+/** One decision within a step: at 10:00 ("open") or before the close. */
+export interface Decision {
+  slot: "open" | "close";
+  action: Action;
+  confidence: number;
+  price: number; // the price it was made (and filled) at
+  equity: number; // right after acting on it
+  sentiment: string;
+  reasoning: string;
 }
 export interface TradeEvent {
   type: "trade";
@@ -120,6 +133,7 @@ export type RunEvent = StartEvent | StepEvent | TradeEvent | DoneEvent | ErrorEv
 export interface LogRow {
   key: number;
   date: string;
+  time?: string; // "10:00" / "15:30" when the run checks after the open (the close alone needs no time)
   action: Action;
   confidence: number;
   price: number;

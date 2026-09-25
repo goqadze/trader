@@ -65,15 +65,21 @@ def test_failed_or_partial_news_is_not_cached(monkeypatch):
     assert len(calls) == 2  # a source may be back next time
 
 
-def test_today_and_live_decisions_are_never_cached(monkeypatch):
+def test_today_is_never_cached(monkeypatch):
     calls = _counting(monkeypatch)
     today = datetime.now(MARKET_TZ).date()  # not over yet
     agent.news_rag(_state(today))
     agent.news_rag(_state(today))
-    live = datetime(2026, 8, 3, 14, 0, tzinfo=timezone.utc)
-    agent.news_rag(_state(PAST, decided_at=live))
-    agent.news_rag(_state(PAST, decided_at=live))
-    assert len(calls) == 4
+    assert len(calls) == 2
+
+
+def test_a_past_10am_decision_is_cached_apart_from_the_close(monkeypatch):
+    calls = _counting(monkeypatch)
+    ten = datetime(2026, 8, 3, 14, 0, tzinfo=timezone.utc)  # 10:00 New York
+    agent.news_rag(_state(PAST, decided_at=ten))
+    agent.news_rag(_state(PAST, "breakout", decided_at=ten))  # another strategy, same morning: shared
+    agent.news_rag(_state(PAST))  # the 15:30 decision sees more news: its own entry
+    assert len(calls) == 2
 
 
 def test_simultaneous_callers_share_one_analysis(monkeypatch):
