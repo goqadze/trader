@@ -13,6 +13,8 @@ AFTER picking nearest neighbours and could silently return fewer matches than as
 import threading
 from datetime import datetime
 
+from psycopg.types.json import Jsonb
+
 import numpy as np
 import psycopg
 from pgvector.psycopg import register_vector
@@ -35,6 +37,17 @@ CREATE TABLE IF NOT EXISTS news (
     PRIMARY KEY (id, symbol)
 );
 CREATE INDEX IF NOT EXISTS news_symbol_published ON news (symbol, published_at DESC);
+-- One news judgment per symbol and decision moment (the news cutoff): the retrieved headlines, fresh catalysts,
+-- the LLM's sentiment and the steps shown. Judged once, then every backtest, comparison and restart reuses it,
+-- so the same settings always give the same result. version: bump to re-judge after changing how it's done.
+CREATE TABLE IF NOT EXISTS news_judgments (
+    symbol     text        NOT NULL,
+    cutoff     timestamptz NOT NULL,
+    version    int         NOT NULL,
+    result     jsonb       NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (symbol, cutoff, version)
+);
 """
 
 
@@ -101,3 +114,15 @@ class NewsStore:
                 {"q": np.asarray(query, dtype=np.float32), "symbol": symbol, "start": start, "end": end, "limit": limit},
             ).fetchall()
         return [{"source": r[0], "document": r[1], "ts": int(r[2].timestamp()), "similarity": float(r[3])} for r in rows]
+
+    def get_judgment(self, symbol: str, cutoff: datetime, version: int) -> dict | None:
+        with self._conn() as conn:
+            row = conn.execute("SELECT result FROM news_judgments WHERE symbol = %s AND cutoff = %s AND version = %s",
+                               (symbol, cutoff, version)).fetchone()
+        return row[0] if row else None
+
+    def put_judgment(self, symbol: str, cutoff: datetime, version: int, result: dict) -> None:
+        """The first judgment for a moment wins: a later one never replaces it."""
+        with self._conn() as conn:
+            conn.execute("INSERT INTO news_judgments (symbol, cutoff, version, result) VALUES (%s, %s, %s, %s) "
+                         "ON CONFLICT DO NOTHING", (symbol, cutoff, version, Jsonb(result)))

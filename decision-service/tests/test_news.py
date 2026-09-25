@@ -235,3 +235,22 @@ def test_placeholder_keys_do_not_enable_a_source(monkeypatch):
     monkeypatch.setenv("POLYGON_API_KEY", "# paste your Polygon key")
     monkeypatch.setenv("FINNHUB_API_KEY", "   ")
     assert enabled_sources() == ["alpaca"]
+
+
+def test_alpaca_news_pages_through_the_whole_window(monkeypatch):
+    from app import news
+
+    monkeypatch.setenv("ALPACA_API_KEY", "PK")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "secret")
+    art = lambda i: {"id": i, "headline": f"h{i}", "summary": "", "created_at": "2025-06-02T14:00:00Z"}  # noqa: E731
+    pages = [{"news": [art(1), art(2)], "next_page_token": "p2"}, {"news": [art(3)], "next_page_token": None}]
+    seen = []
+
+    def fake_get(url, headers, params):
+        seen.append(params.get("page_token"))
+        return pages[len(seen) - 1]
+
+    monkeypatch.setattr(news, "_get", fake_get)
+    out = news._alpaca("AAPL", date(2025, 5, 26), date(2025, 6, 2))
+    assert [a["id"] for a in out] == ["alpaca-1", "alpaca-2", "alpaca-3"]  # not just the newest page
+    assert seen == [None, "p2"]

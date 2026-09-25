@@ -109,3 +109,46 @@ def test_cache_is_bounded(monkeypatch):
     for d in range(5):
         agent.news_rag(_state(PAST + timedelta(days=d)))
     assert len(agent._news_cache) == 3
+
+
+def test_a_saved_judgment_survives_a_restart(monkeypatch, judgments):
+    calls = _counting(monkeypatch)
+    agent.news_rag(_state(PAST))
+    agent._news_cache.clear()  # a restart empties memory ...
+    out = agent.news_rag(_state(PAST, "breakout"))
+    assert len(calls) == 1  # ... but news-db still has the judgment
+    assert out["sentiment"] == "bullish"
+    assert len(judgments.saved) == 1
+
+
+def test_an_incomplete_judgment_is_not_saved(monkeypatch, judgments):
+    _counting(monkeypatch, cacheable=False, sentiment="unavailable")
+    agent.news_rag(_state(PAST))
+    assert judgments.saved == {}
+
+
+def test_a_live_slot_decision_is_saved_for_backtests_of_that_day(monkeypatch, judgments):
+    calls = _counting(monkeypatch)
+    today = datetime.now(MARKET_TZ).date()
+    live = datetime.combine(today, datetime.min.time(), tzinfo=MARKET_TZ).replace(hour=15, minute=30, second=12)
+    agent.news_rag(_state(today, decided_at=live))
+    slot = live.replace(second=0)
+    assert [k[1] for k in judgments.saved] == [slot]  # saved under 15:30:00, where a backtest looks
+    # A manual "Run now" at 12:47 isn't a slot: not saved
+    agent.news_rag(_state(today, decided_at=live.replace(hour=12, minute=47)))
+    assert len(judgments.saved) == 1 and len(calls) == 2
+
+
+def test_a_broken_database_does_not_stop_decisions(monkeypatch):
+    calls = _counting(monkeypatch)
+
+    class Down:
+        def get_judgment(self, *a):
+            raise ConnectionError("news-db down")
+
+        def put_judgment(self, *a):
+            raise ConnectionError("news-db down")
+
+    monkeypatch.setattr(agent, "_judgments", lambda: Down())
+    assert agent.news_rag(_state(PAST))["sentiment"] == "bullish"
+    assert len(calls) == 1

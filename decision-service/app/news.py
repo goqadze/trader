@@ -18,9 +18,9 @@ _store: NewsStore | None = None
 # Every source is converted to the same shape:
 # {"id", "headline", "summary", "ts": unix seconds (UTC), "source"}
 
-# The backtest fills at the day's close, so a decision "as of" a day may only use news published
-# before ~15:30 New York time -- after-hours news (e.g. 16:05 earnings) belongs to the NEXT day.
-# That is the default cutoff; a live bot deciding at another time (e.g. 10:00) passes its exact moment.
+# A decision "as of" a day is made at 15:30 New York time (a bot's close slot, which the backtest replays), so it
+# may only use news published before then -- after-hours news (e.g. 16:05 earnings) belongs to the NEXT day.
+# That is the default cutoff; a decision at another moment (e.g. 10:00) passes that moment.
 MARKET_TZ = ZoneInfo("America/New_York")
 DECISION_TIME = time(15, 30)
 
@@ -90,13 +90,24 @@ def _get(url: str, **kw):
     return r.json()
 
 
+# Pages of 50 (Alpaca's maximum) until the window is complete. A busy stock has a few hundred articles a week;
+# the cap only guards against a runaway loop.
+ALPACA_MAX_PAGES = 30
+
+
 def _alpaca(symbol: str, start: date, end: date) -> list[dict]:
-    """Alpaca News API (Benzinga-sourced); deep free history, so it's the best fit for backtests."""
-    data = _get(
-        "https://data.alpaca.markets/v1beta1/news",
-        headers={"APCA-API-KEY-ID": os.environ["ALPACA_API_KEY"], "APCA-API-SECRET-KEY": os.environ["ALPACA_SECRET_KEY"]},
-        params={"symbols": symbol, "start": f"{start}T00:00:00Z", "end": f"{end + timedelta(days=1)}T00:00:00Z", "limit": 50, "sort": "desc"},
-    )
+    """Alpaca News API (Benzinga-sourced); deep free history, so it's the best fit for backtests.
+    Fetches EVERY article in the window, not just the newest page: otherwise what a day's decision sees would
+    depend on which other days happened to be fetched before (a weekly and a daily backtest would disagree)."""
+    params = {"symbols": symbol, "start": f"{start}T00:00:00Z", "end": f"{end + timedelta(days=1)}T00:00:00Z", "limit": 50, "sort": "desc"}
+    headers = {"APCA-API-KEY-ID": os.environ["ALPACA_API_KEY"], "APCA-API-SECRET-KEY": os.environ["ALPACA_SECRET_KEY"]}
+    news: list[dict] = []
+    for _ in range(ALPACA_MAX_PAGES):
+        data = _get("https://data.alpaca.markets/v1beta1/news", headers=headers, params=params)
+        news += data.get("news", [])
+        if not data.get("next_page_token"):
+            break
+        params = {**params, "page_token": data["next_page_token"]}
     # Convert each article to the common shape; prefix the id with the source to avoid id collisions
     return [
         {
@@ -106,7 +117,7 @@ def _alpaca(symbol: str, start: date, end: date) -> list[dict]:
             "ts": int(datetime.fromisoformat(a["created_at"].replace("Z", "+00:00")).timestamp()),
             "source": "alpaca",
         }
-        for a in data.get("news", [])
+        for a in news
     ]
 
 

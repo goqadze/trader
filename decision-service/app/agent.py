@@ -2,7 +2,7 @@ import logging
 import os
 import threading
 from collections import OrderedDict
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Callable, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -94,7 +94,11 @@ def news_rag(state: State) -> State:
     if not _news_enabled():
         return {"headlines": [], "sentiment": "unavailable", "steps": state["steps"] + ["News RAG skipped (need OPENAI_API_KEY and at least one news source key)"]}
     key = _news_cache_key(state)
-    news = _cached_news(key, lambda: _analyze_news(state)) if key else _analyze_news(state)
+    if key:  # a day that's over (backtests): judged once, then reused everywhere
+        news = _cached_news(key, lambda: _judged_news(state, key))
+    else:
+        news = _analyze_news(state)
+        _remember_live_judgment(state, news)
     return {"headlines": news["headlines"], "catalysts": news["catalysts"], "sentiment": news["sentiment"],
             "steps": state["steps"] + news["steps"]}
 
@@ -140,21 +144,79 @@ def _analyze_news(state: State) -> dict:
     return {"headlines": heads, "catalysts": events, "sentiment": label, "steps": steps, "cacheable": complete}
 
 
-# Comparing strategies replays the same symbol and days once per strategy, and the news step doesn't depend
-# on the strategy. A finished past day's result is kept here, so the news APIs, embeddings and the sentiment
-# LLM run once per (symbol, day) instead of once per strategy. In memory only: a restart clears it.
+# The news step doesn't depend on the strategy, and a day that's over doesn't change. So each (symbol, decision
+# moment) is judged once and saved in news-db (news_judgments): every backtest, comparison and restart then uses
+# the SAME headlines and sentiment, so the same settings give the same result everywhere. This dict is a fast
+# in-memory layer in front of it. Bump NEWS_JUDGMENT_VERSION after changing how news is fetched or judged.
+NEWS_JUDGMENT_VERSION = 1
 NEWS_CACHE_SIZE = 4096
 _news_cache: OrderedDict[tuple, dict] = OrderedDict()
 _news_inflight: dict[tuple, threading.Lock] = {}
 _news_lock = threading.Lock()
 
 
+def _news_cutoff(state: State) -> datetime:
+    """The moment news is judged at: the decision moment, or 15:30 New York on as_of by default."""
+    from .news import decision_cutoff
+
+    at = state.get("decided_at")
+    return at if at else datetime.fromtimestamp(decision_cutoff(state["as_of"]), tz=MARKET_TZ)
+
+
 def _news_cache_key(state: State) -> tuple | None:
-    """Only days that are over are cached (backtests): today's news can still change, and a live bot decides
-    once per slot anyway. The decision moment is part of the key: 10:00 sees less news than 15:30."""
+    """Only days that are over are cached (backtests): today's news can still change. The decision moment is
+    part of the key: 10:00 sees less news than 15:30."""
     if state["as_of"] >= datetime.now(MARKET_TZ).date():
         return None
-    return state["symbol"], state["as_of"], state.get("decided_at")
+    return state["symbol"], _news_cutoff(state)
+
+
+def _judgments():
+    """news-db's store (a function so tests can swap in a fake)."""
+    from .news import _get_store
+
+    return _get_store()
+
+
+def _judged_news(state: State, key: tuple) -> dict:
+    """The saved judgment for this moment, or a new one saved for next time (when complete)."""
+    symbol, cutoff = key
+    try:
+        saved = _judgments().get_judgment(symbol, cutoff, NEWS_JUDGMENT_VERSION)
+    except Exception as e:  # the database being down must not stop decisions; judge afresh
+        logger.warning("news judgment lookup failed for %s %s: %s", symbol, cutoff, type(e).__name__)
+        saved = None
+    if saved is not None:
+        return {**saved, "cacheable": True}
+    out = _analyze_news(state)
+    _save_judgment(symbol, cutoff, out)
+    return out
+
+
+def _save_judgment(symbol: str, cutoff: datetime, out: dict) -> None:
+    if not out["cacheable"]:
+        return  # a source or the LLM failed: let a later run judge the full picture
+    try:
+        _judgments().put_judgment(symbol, cutoff, NEWS_JUDGMENT_VERSION, {k: v for k, v in out.items() if k != "cacheable"})
+    except Exception as e:
+        logger.warning("news judgment save failed for %s %s: %s", symbol, cutoff, type(e).__name__)
+
+
+# A live bot decides in the first minutes of its slot (10:00-10:30 or 15:30-16:00 New York). Its news judgment is
+# saved under the slot's start, where a backtest of that day looks: the backtest then uses exactly the news
+# judgment the bot traded on, not a second opinion.
+LIVE_SLOTS = ((time(10, 0), time(10, 30)), (time(15, 30), time(16, 0)))
+
+
+def _remember_live_judgment(state: State, out: dict) -> None:
+    at = state.get("decided_at")
+    if not at:
+        return
+    local = at.astimezone(MARKET_TZ)
+    for start, end in LIVE_SLOTS:
+        if start <= local.time() < end:
+            _save_judgment(state["symbol"], datetime.combine(local.date(), start, tzinfo=MARKET_TZ), out)
+            return
 
 
 def _cached_news(key: tuple, compute: Callable[[], dict]) -> dict:
