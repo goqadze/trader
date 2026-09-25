@@ -3,7 +3,15 @@
 import asyncio
 from datetime import date
 
+import pytest
+
+from app import decision_client
 from app.decision_client import get_signal
+
+
+@pytest.fixture(autouse=True)
+def _no_retry_pause(monkeypatch):
+    monkeypatch.setattr(decision_client, "RETRY_DELAYS", (0, 0))
 
 
 class _Resp:
@@ -17,17 +25,20 @@ class _Resp:
 
 
 class _Client:
-    """Stand-in for httpx.AsyncClient: returns a canned response or raises."""
+    """Stand-in for httpx.AsyncClient: returns a canned response or raises. `script` gives one outcome
+    per call instead (a _Resp or an exception); the last one repeats."""
 
-    def __init__(self, resp=None, exc=None):
-        self._resp = resp
-        self._exc = exc
+    def __init__(self, resp=None, exc=None, script=None):
+        self._script = script or [exc or resp]
+        self.calls = 0
 
     async def post(self, url, **kwargs):
         self.kwargs = kwargs
-        if self._exc:
-            raise self._exc
-        return self._resp
+        out = self._script[min(self.calls, len(self._script) - 1)]
+        self.calls += 1
+        if isinstance(out, Exception):
+            raise out
+        return out
 
 
 def test_success_returns_the_json_body():
@@ -61,3 +72,23 @@ def test_stop_and_target_are_sent_only_when_set():
     asyncio.run(get_signal(client, "AAPL", date(2025, 1, 1), "breakout", 0.05, 0.1))
     assert client.kwargs["params"]["stop_pct"] == 0.05 and client.kwargs["params"]["target_pct"] == 0.1
     assert client.kwargs["params"]["strategy"] == "breakout"
+
+
+def test_temporary_failures_are_retried():
+    ok = _Resp(200, {"action": "BUY", "confidence": 0.8})
+    client = _Client(script=[_Resp(500, None, "RateLimitError"), RuntimeError("reset"), ok])
+    out = asyncio.run(get_signal(client, "AAPL", date(2025, 1, 1)))
+    assert out["action"] == "BUY" and client.calls == 3
+
+
+def test_retries_are_limited():
+    client = _Client(resp=_Resp(429, None, "slow down"))
+    out = asyncio.run(get_signal(client, "AAPL", date(2025, 1, 1)))
+    assert out["error"] is True and "429" in out["reasoning"]
+    assert client.calls == 1 + len(decision_client.RETRY_DELAYS)
+
+
+def test_a_422_is_not_retried():
+    client = _Client(resp=_Resp(422, None, "not enough price history"))
+    asyncio.run(get_signal(client, "AAPL", date(2025, 1, 1)))
+    assert client.calls == 1

@@ -250,3 +250,11 @@ def test_failed_decisions_are_counted():
     res, _ = _run(_prices([100, 101, 102]), failing)
     assert res["decision_errors"] == 3
     assert res["signals"]["HOLD"] == 3
+
+
+def test_decisions_without_news_are_counted():
+    signals = [{"action": "HOLD", "confidence": 0.0, "sentiment": "unavailable"},
+               {"action": "HOLD", "confidence": 0.0, "sentiment": "bullish"},
+               {"action": "HOLD", "confidence": 0.0, "error": True}]  # a failure is counted as an error, not here
+    res, _ = _run(_prices([100, 101, 102]), _scripted(signals))
+    assert res["no_news_decisions"] == 1

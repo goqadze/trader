@@ -68,6 +68,7 @@ export interface Result {
   unrealized_pnl?: number;
   signals?: Record<"BUY" | "SELL" | "HOLD", number>;
   decision_errors?: number;
+  no_news_decisions?: number;
 }
 
 // --- WebSocket events (discriminated union on `type`) ---

@@ -34,6 +34,7 @@ class SimplePortfolioEngine(BacktestEngine):
         last_signal = {"action": "HOLD", "confidence": 0.0, "reasoning": "", "steps": []}
         signals = {"BUY": 0, "SELL": 0, "HOLD": 0}  # what the strategy said on decision days (before the confidence filter)
         decision_errors = 0  # decision days where decision-service failed (counted as HOLD)
+        no_news = 0  # decision days decided without news sentiment (news off, or its LLM call failed)
 
         async def close_position(i, day, price, reason: str) -> None:
             """Sell the whole position at today's close (with slippage + fee) and record why.
@@ -75,6 +76,7 @@ class SimplePortfolioEngine(BacktestEngine):
                 last_signal = await decide(cfg.symbol, day)
                 signals[last_signal["action"]] = signals.get(last_signal["action"], 0) + 1
                 decision_errors += bool(last_signal.get("error"))
+                no_news += not last_signal.get("error") and last_signal.get("sentiment") == "unavailable"
             action = last_signal["action"] if is_decision_day else "HOLD"
             conf = float(last_signal.get("confidence", 0.0))
 
@@ -119,6 +121,7 @@ class SimplePortfolioEngine(BacktestEngine):
         result = self._metrics(cfg, prices, cash, position, cost_basis, trades, equity_curve)
         result["signals"] = signals
         result["decision_errors"] = decision_errors
+        result["no_news_decisions"] = no_news
         await emit({"type": "done", "result": result})
         return result
 

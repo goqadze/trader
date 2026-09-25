@@ -1,6 +1,6 @@
 import { Form, Input, InputNumber, DatePicker, Select, Button, Card } from "antd";
 import dayjs, { Dayjs } from "dayjs";
-import { DEFAULT_STRATEGY, STRATEGY_OPTIONS, type StrategyId } from "../strategies";
+import { DEFAULT_STRATEGY, STRATEGY_OPTIONS, strategyInfo, type StrategyId, type StrategyInfo } from "../strategies";
 import type { RunConfig } from "../types";
 import StrategyHelp from "./StrategyHelp";
 
@@ -27,6 +27,9 @@ interface Props {
 export default function ConfigForm({ onRun, running }: Props) {
   const [form] = Form.useForm<FormValues>();
   const strategy = Form.useWatch("strategy", form);
+  // The form shows percents; the catalog stores fractions
+  const applySuggested = (g: StrategyInfo["suggested"]) =>
+    form.setFieldsValue({ rebalance_days: g.rebalance_days, stop_pct: +(g.stop_pct * 100).toFixed(2), target_pct: +(g.target_pct * 100).toFixed(2) });
 
   const submit = (v: FormValues) => {
     onRun({
@@ -49,6 +52,11 @@ export default function ConfigForm({ onRun, running }: Props) {
         form={form}
         layout="vertical"
         onFinish={submit}
+        // Picking a strategy loads its suggested rebalance, stop and take-profit; edit them afterwards if you like
+        onValuesChange={(changed: Partial<FormValues>) => {
+          const s = changed.strategy && strategyInfo(changed.strategy);
+          if (s) applySuggested(s.suggested);
+        }}
         initialValues={{
           symbol: "AAPL",
           // The last 2 months up to today. Today's bar only counts once the market has closed (backtest-service drops it before)
@@ -65,10 +73,7 @@ export default function ConfigForm({ onRun, running }: Props) {
         <Form.Item name="strategy" label="Strategy">
           <Select options={STRATEGY_OPTIONS} popupMatchSelectWidth={false} listHeight={420} />
         </Form.Item>
-        <StrategyHelp
-          id={strategy}
-          onApply={(g) => form.setFieldsValue({ rebalance_days: g.rebalance_days, stop_pct: g.stop_pct * 100, target_pct: g.target_pct * 100 })}
-        />
+        <StrategyHelp id={strategy} onApply={applySuggested} />
         <Form.Item name="symbol" label="Symbol" rules={[{ required: true }]}>
           <Input />
         </Form.Item>

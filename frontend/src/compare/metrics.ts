@@ -136,6 +136,11 @@ export const METRICS: Metric[] = [
     help: "Decision days where decision-service failed (counted as a hold). Anything above 0 makes the result less trustworthy.",
     value: (r) => r.decision_errors ?? 0, format: (v) => num(v, 0),
   },
+  {
+    key: "no_news_decisions", title: "Decided without news", better: "low",
+    help: "Decision days without a news sentiment: news is switched off, or its LLM call failed (e.g. the OpenAI rate limit). Those days had no news tilt; the news catalyst strategy can't buy or sell on them.",
+    value: (r) => r.no_news_decisions ?? 0, format: (v) => num(v, 0),
+  },
 ];
 
 /** Direction-aware comparison: is a better than b? */

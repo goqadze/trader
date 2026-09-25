@@ -1,3 +1,4 @@
+import logging
 import os
 import threading
 from collections import OrderedDict
@@ -12,6 +13,8 @@ from .observability import trace_config
 from .risk import position_size
 from .strategies import DEFAULT_STRATEGY, STRATEGIES, NewsView, format_facts
 from .tools import get_prices, project_partial_volume
+
+logger = logging.getLogger("decision-service")
 
 
 class State(TypedDict, total=False):
@@ -49,6 +52,18 @@ def fetch_data(state: State) -> State:
         steps.append(note)
     facts = strat.analyze(df)
     return {"indicators": facts, "steps": steps + [f"Indicators: {format_facts(facts)}"]}
+
+
+# The OpenAI account has a tokens-per-minute cap; a strategy comparison sends many calls at once and hits it
+# (429). The OpenAI client retries with backoff, honoring the "try again in Xms" the 429 carries.
+SENTIMENT_RETRIES = 6  # the sentiment feeds the decision: keep trying through a short rate-limit burst
+EXPLAIN_RETRIES = 1  # the explanation is only prose: give up fast and use the rule text instead
+
+
+def _chat(**kw):
+    from langchain_openai import ChatOpenAI
+
+    return ChatOpenAI(model=os.getenv("LLM_MODEL", "gpt-4.1-nano"), **kw)
 
 
 class Sentiment(BaseModel):
@@ -96,17 +111,20 @@ def _analyze_news(state: State) -> dict:
         return {"headlines": [], "catalysts": [], "sentiment": "neutral", "steps": [f"Ingested {report}, none relevant"], "cacheable": complete}
     heads = [i["text"] for i in items]
     events = catalysts(items)
-    from langchain_openai import ChatOpenAI
-
     # with_structured_output forces the LLM to answer in the Sentiment schema (label + rationale).
     # temperature=0 so the same headlines classify the same way every run -> reproducible backtests.
-    llm = ChatOpenAI(model=os.getenv("LLM_MODEL", "gpt-4.1-nano"), temperature=0).with_structured_output(Sentiment)
-    out = llm.invoke(
-        f"Classify overall sentiment for {state['symbol']} from these headlines as bullish, bearish or neutral, "
-        "with a one-sentence rationale. Each headline is tagged with its age: weight recent items most; "
-        "only earnings/guidance/M&A news stays relevant beyond a couple of days:\n- " + "\n- ".join(heads),
-        config=trace_config(),
-    )
+    llm = _chat(temperature=0, max_retries=SENTIMENT_RETRIES).with_structured_output(Sentiment)
+    try:
+        out = llm.invoke(
+            f"Classify overall sentiment for {state['symbol']} from these headlines as bullish, bearish or neutral, "
+            "with a one-sentence rationale. Each headline is tagged with its age: weight recent items most; "
+            "only earnings/guidance/M&A news stays relevant beyond a couple of days:\n- " + "\n- ".join(heads),
+            config=trace_config(),
+        )
+    except Exception as e:  # e.g. still rate-limited after the retries: decide on the technicals alone
+        logger.warning("news sentiment failed for %s as_of=%s: %s", state["symbol"], state["as_of"], type(e).__name__)
+        return {"headlines": heads, "catalysts": events, "sentiment": "unavailable",
+                "steps": [f"News sentiment failed ({type(e).__name__}): decided without news"], "cacheable": False}
     label = out.label.lower()
     steps = [f"Sources ingested (news up to {cutoff_label} New York): {report}",
              f"News ({len(heads)} retrieved): {label} - {out.rationale}"]
@@ -146,13 +164,16 @@ def _cached_news(key: tuple, compute: Callable[[], dict]) -> dict:
         with _news_lock:
             if key in _news_cache:  # computed by the caller we waited for
                 return _news_cache[key]
-        out = compute()
-        with _news_lock:
-            if out["cacheable"]:
+        try:
+            out = compute()
+        finally:
+            with _news_lock:
+                _news_inflight.pop(key, None)
+        if out["cacheable"]:
+            with _news_lock:
                 _news_cache[key] = out
                 while len(_news_cache) > NEWS_CACHE_SIZE:
                     _news_cache.popitem(last=False)
-            _news_inflight.pop(key, None)
     return out
 
 
@@ -210,16 +231,16 @@ def explain(state: State) -> State:
     """Node 5: write a short human-readable explanation of the decision."""
     facts = "; ".join(state["steps"])
     if os.getenv("OPENAI_API_KEY"):
-        from langchain_openai import ChatOpenAI
-
-        llm = ChatOpenAI(model=os.getenv("LLM_MODEL", "gpt-4.1-nano"))
-        msg = llm.invoke(
-            f"In 2 sentences, explain this trading signal for a human trader: name the rule that fired and the "
-            f"deciding numbers. Signal: {state['action']} {state['symbol']}. Facts: {facts}. Not financial advice.",
-            config=trace_config(),
-        )
-        return {"reasoning": msg.content}
-    # Fallback without an LLM: just join the steps
+        try:
+            msg = _chat(max_retries=EXPLAIN_RETRIES).invoke(
+                f"In 2 sentences, explain this trading signal for a human trader: name the rule that fired and the "
+                f"deciding numbers. Signal: {state['action']} {state['symbol']}. Facts: {facts}. Not financial advice.",
+                config=trace_config(),
+            )
+            return {"reasoning": msg.content}
+        except Exception as e:  # the explanation is optional: a failure (e.g. rate limit) must not cost the decision
+            logger.warning("explanation failed for %s as_of=%s: %s", state["symbol"], state.get("as_of"), type(e).__name__)
+    # Fallback without an LLM (or when it fails): just join the steps
     return {"reasoning": f"{state['action']} {state['symbol']}: {facts}"}
 
 
