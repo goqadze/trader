@@ -12,6 +12,7 @@ An AI decision-support tool plus a backtesting app that measures it.
 | `frontend/` | 8080 | React + TypeScript + Ant Design dashboard (Vite build, served by nginx). Sign-in, backtests, live trading pages. |
 | Langfuse | 3000 | LLM tracing UI (self-hosted, free). See every prompt/response/cost. |
 | GlitchTip | 8082 | Error tracking (self-hosted, free, Sentry-compatible). |
+| pgAdmin | 5050 | Browse the databases' tables and data (trading-db and news-db, already connected). |
 
 ## Monitoring (local & free)
 
@@ -26,8 +27,8 @@ An AI decision-support tool plus a backtesting app that measures it.
 
   Errors then appear in GlitchTip automatically (the code already returns the real error text too).
 
-The backtest service has a pluggable engine: `simple` (built-in portfolio simulator, works now) and
-`nautilus` (scaffold for NautilusTrader — see `backtest-service/app/engines/nautilus.py`).
+Backtests run on a built-in portfolio simulator (`backtest-service/app/engines/simple.py`). The **strategy**
+picker chooses how BUY/SELL is decided; the simulator only replays those decisions with fills, fees and stops.
 
 ## Strategies
 
@@ -129,6 +130,7 @@ Safety built in:
 
 | What | How |
 |---|---|
+| Browse tables and data | pgAdmin at http://localhost:5050 (Resources → Databases): Servers → trading-db → trading → Schemas → public → Tables, then right-click a table → View/Edit Data. No login, no password prompt |
 | Connect with any SQL client | `localhost:5433`, database `trading`, user/password `trading` (localhost only) |
 | Quick look from the terminal | `docker compose exec trading-db psql -U trading trading` |
 | Back up | `make backup-trading-db` → `backups/trading-<timestamp>.sql.gz` (git-ignored; keeps 30 days) |
@@ -138,10 +140,15 @@ Safety built in:
 ### News store (RAG)
 
 decision-service keeps fetched headlines and their OpenAI embeddings in `news-db` (Postgres + pgvector,
-`localhost:5434`, `news`/`news`). Each search filters to one symbol and the 7 days before the decision
+`localhost:5434`, `news`/`news`, also in pgAdmin). Each search filters to one symbol and the 7 days before the decision
 cutoff, then ranks by exact cosine similarity × recency. Articles are embedded once; re-fetching a
 window costs no extra OpenAI calls. It's a cache: deleting the `news-db` volume only means news is
 re-downloaded on the next decision, so it needs no backups.
+
+pgAdmin can edit and delete rows too, so be careful with anything that writes (it has no undo). Its connections
+come from `pgadmin/servers.json`, re-read at every start. The passwords in `pgadmin/pgpass` are only copied in on
+pgAdmin's first start; after changing them, recreate it with `docker compose rm -sf pgadmin && docker volume rm
+trading_pgadmin && docker compose up -d pgadmin` (that only resets pgAdmin's own settings, never your data).
 
 `docker compose down` keeps the data; `docker compose down -v` **deletes it** (volumes included).
 Tests use a separate `trading_test` database and refuse to run against any database not named `*_test`.

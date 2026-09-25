@@ -1,0 +1,2 @@
+trading-db:5432:*:trading:trading
+news-db:5432:*:news:news

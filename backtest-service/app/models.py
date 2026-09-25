@@ -25,7 +25,6 @@ class RunConfig(BaseModel):
     # --- Risk levels for each entry (None = decision-service's STOP_PCT / TARGET_PCT defaults) ---
     stop_pct: float | None = Field(None, gt=0, le=0.5)  # stop-loss this far below the entry (0.04 = 4%)
     target_pct: float | None = Field(None, gt=0, le=2)  # take profit this far above the entry
-    engine: str = "simple"  # "simple" (built-in simulator) or "nautilus"
     strategy: Strategy = "sma_rsi"  # which decision-service strategy decides (sma_rsi = the original simple one)
 
 

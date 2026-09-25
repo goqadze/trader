@@ -134,11 +134,11 @@ The server accepts nothing from the internet except SSH. Pick one of two private
 **SSH tunnel.** Nothing to install:
 
 ```bash
-ssh -N -L 8080:localhost:8080 -L 3000:localhost:3000 -L 8082:localhost:8082 trader@SERVER_IP
+ssh -N -L 8080:localhost:8080 -L 3000:localhost:3000 -L 8082:localhost:8082 -L 5050:localhost:5050 trader@SERVER_IP
 ```
 
-While that runs, http://localhost:8080 on your laptop *is* the server's dashboard. The Langfuse and
-GlitchTip links in the Resources menu work too. Ctrl+C closes it. If the laptop's own stack is
+While that runs, http://localhost:8080 on your laptop *is* the server's dashboard. The Langfuse,
+GlitchTip and pgAdmin links in the Resources menu work too. Ctrl+C closes it. If the laptop's own stack is
 running, stop it first (`docker compose stop`), or the ports clash.
 
 **Tailscale.** Also works from your phone, and is free for personal use:
@@ -157,7 +157,8 @@ running, stop it first (`docker compose stop`), or the ports clash.
    tunnel is plain `http://localhost`, where that setting must stay `false`.)
 
 Use `tailscale serve`, never `tailscale funnel`: funnel publishes to the whole internet. The Resources
-links to Langfuse and GlitchTip point at `localhost`, so use the SSH tunnel for those.
+links to Langfuse, GlitchTip and pgAdmin point at `localhost`, so use the SSH tunnel for those. pgAdmin has
+no login of its own, so never `tailscale serve` it.
 
 ### 8. Daily backups
 

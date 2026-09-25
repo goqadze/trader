@@ -1,7 +1,7 @@
 import { Form, Input, InputNumber, DatePicker, Select, Button, Card } from "antd";
 import dayjs, { Dayjs } from "dayjs";
 import { DEFAULT_STRATEGY, STRATEGY_OPTIONS, type StrategyId } from "../strategies";
-import type { RunConfig, Engine } from "../types";
+import type { RunConfig } from "../types";
 import StrategyHelp from "./StrategyHelp";
 
 // antd form values (dates are dayjs objects; we format them on submit).
@@ -14,7 +14,6 @@ interface FormValues {
   position_pct: number;
   stop_pct: number; // percent in the form; sent as a fraction
   target_pct: number;
-  engine: Engine;
   strategy: StrategyId;
 }
 
@@ -40,7 +39,6 @@ export default function ConfigForm({ onRun, running }: Props) {
       position_pct: v.position_pct,
       stop_pct: v.stop_pct / 100,
       target_pct: v.target_pct / 100,
-      engine: v.engine,
       strategy: v.strategy,
     });
   };
@@ -53,14 +51,13 @@ export default function ConfigForm({ onRun, running }: Props) {
         onFinish={submit}
         initialValues={{
           symbol: "AAPL",
-          range: [dayjs("2024-01-01"), dayjs("2024-12-31")],
+          range: [dayjs().subtract(2, "month"), dayjs()], // the last 2 months, up to today
           initial_cash: 10000,
           min_confidence: 0.6,
           rebalance_days: 5,
           position_pct: 1.0,
           stop_pct: 4, // same defaults as decision-service (STOP_PCT / TARGET_PCT)
           target_pct: 8,
-          engine: "simple",
           strategy: DEFAULT_STRATEGY,
         }}
       >
@@ -94,14 +91,6 @@ export default function ConfigForm({ onRun, running }: Props) {
         </Form.Item>
         <Form.Item name="target_pct" label="Take-profit (% above entry)">
           <InputNumber min={0.1} max={200} step={0.5} addonAfter="%" style={{ width: "100%" }} />
-        </Form.Item>
-        <Form.Item name="engine" label="Engine">
-          <Select
-            options={[
-              { value: "simple", label: "simple" },
-              { value: "nautilus", label: "nautilus (scaffold)" },
-            ]}
-          />
         </Form.Item>
         <Button type="primary" htmlType="submit" block loading={running}>
           Run backtest

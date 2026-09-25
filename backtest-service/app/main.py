@@ -4,7 +4,6 @@ import os
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
-from .engines import ENGINES
 from .models import RunConfig, RunSummary
 from .runner import RUNS, start_run
 
@@ -26,7 +25,7 @@ app = FastAPI(title="Backtest Service")
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "engines": list(ENGINES)}
+    return {"status": "ok"}
 
 
 @app.post("/runs")
@@ -35,8 +34,6 @@ async def create_run(cfg: RunConfig):
     Must be async: start_run() schedules an asyncio task, which needs a running event loop."""
     if cfg.end <= cfg.start:
         raise HTTPException(422, "end must be after start")
-    if cfg.engine not in ENGINES:
-        raise HTTPException(422, f"engine must be one of {list(ENGINES)}")
     run = start_run(cfg)
     return {"run_id": run.id}
 

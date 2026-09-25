@@ -1,0 +1,28 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "trading-db",
+      "Group": "Servers",
+      "Comment": "Bots, decisions, orders, equity, audit log (events), users",
+      "Host": "trading-db",
+      "Port": 5432,
+      "MaintenanceDB": "trading",
+      "Username": "trading",
+      "PassFile": "/var/lib/pgadmin/.pgpass",
+      "DBRestriction": "trading",
+      "SSLMode": "disable"
+    },
+    "2": {
+      "Name": "news-db",
+      "Group": "Servers",
+      "Comment": "News RAG cache: headlines + pgvector embeddings (safe to delete, re-fetched on demand)",
+      "Host": "news-db",
+      "Port": 5432,
+      "MaintenanceDB": "news",
+      "Username": "news",
+      "PassFile": "/var/lib/pgadmin/.pgpass",
+      "DBRestriction": "news",
+      "SSLMode": "disable"
+    }
+  }
+}

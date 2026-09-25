@@ -1,18 +1,10 @@
-"""Tests for the engine registry and the Run pub/sub bookkeeping."""
+"""Tests for the Run pub/sub bookkeeping."""
 
 import asyncio
 from datetime import date
 
-from app.engines import ENGINES
-from app.engines.simple import SimplePortfolioEngine
 from app.models import RunConfig
 from app.runner import Run
-
-
-def test_simple_engine_is_registered():
-    assert "simple" in ENGINES
-    assert ENGINES["simple"] is SimplePortfolioEngine
-    assert SimplePortfolioEngine.name == "simple"
 
 
 def test_emit_numbers_events_and_fans_out():

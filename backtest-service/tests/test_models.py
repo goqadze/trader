@@ -20,8 +20,12 @@ def test_sensible_defaults():
     assert c.initial_cash == 10_000.0
     assert c.fee_pct == 0.0
     assert c.slippage_pct == 0.0005
-    assert c.engine == "simple"
     assert c.strategy == "sma_rsi"
+
+
+def test_old_clients_that_still_send_an_engine_are_accepted():
+    """The engine choice was removed (there is only one simulator); an old request's `engine` is ignored."""
+    assert "engine" not in _cfg(engine="simple").model_dump()
 
 
 def test_unknown_strategy_rejected():

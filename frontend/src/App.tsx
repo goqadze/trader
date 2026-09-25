@@ -10,7 +10,7 @@ import GuidePage from "./pages/GuidePage";
 import BotPage from "./trading/BotPage";
 import TradingPage from "./trading/TradingPage";
 
-// External dashboards for observability + API docs (localhost ports from docker-compose).
+// External dashboards for observability, API docs and the database browser (localhost ports from docker-compose).
 const MONITORING = [
   { label: "Langfuse (LLM traces)", href: "http://localhost:3000" },
   { label: "GlitchTip (errors)", href: "http://localhost:8082" },
@@ -20,6 +20,7 @@ const API_DOCS = [
   { label: "Decision API", href: "http://localhost:8000/docs" },
   { label: "Trading API", href: "http://localhost:8002/docs" },
 ];
+const DATABASES = [{ label: "pgAdmin (tables & data)", href: "http://localhost:5050" }];
 
 const external = (l: { label: string; href: string }) => ({
   key: l.href,
@@ -49,6 +50,7 @@ const resources = (admin: boolean): MenuProps["items"] =>
         ...GUIDES,
         { type: "group", label: "Monitoring", children: MONITORING.map(external) },
         { type: "group", label: "API docs", children: API_DOCS.map(external) },
+        { type: "group", label: "Databases", children: DATABASES.map(external) },
       ]
     : GUIDES;
 

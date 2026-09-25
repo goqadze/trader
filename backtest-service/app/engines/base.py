@@ -13,8 +13,7 @@ EmitFn = Callable[[dict], Awaitable[None]]
 
 
 class BacktestEngine(ABC):
-    """Interface every backtest engine implements, so the simple simulator and a real
-    NautilusTrader engine are interchangeable behind the same API."""
+    """What the runner needs from a backtest simulator. SimplePortfolioEngine is the one in use."""
 
     name: str = "base"
 

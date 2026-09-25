@@ -7,7 +7,7 @@ import pandas as pd
 import yfinance as yf
 
 from .decision_client import get_signal
-from .engines import ENGINES
+from .engines import SimplePortfolioEngine
 from .models import RunConfig
 
 
@@ -61,10 +61,6 @@ async def _execute(run: Run) -> None:
     cfg = run.cfg
     run.status = "running"
     try:
-        engine_cls = ENGINES.get(cfg.engine)
-        if engine_cls is None:
-            raise ValueError(f"Unknown engine '{cfg.engine}'. Available: {list(ENGINES)}")
-
         # 1) Load prices for the window (blocking call offloaded to a thread)
         prices = await asyncio.to_thread(_fetch_prices, cfg.symbol, cfg.start, cfg.end)
         if prices is None or len(prices) < 2:
@@ -75,8 +71,7 @@ async def _execute(run: Run) -> None:
             async def decide(symbol: str, as_of: date) -> dict:
                 return await get_signal(client, symbol, as_of, cfg.strategy, cfg.stop_pct, cfg.target_pct)
 
-            engine = engine_cls()
-            run.result = await engine.run(cfg, prices, decide, run.emit)
+            run.result = await SimplePortfolioEngine().run(cfg, prices, decide, run.emit)
         run.status = "done"
     except Exception as e:
         run.status = "error"

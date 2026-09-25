@@ -4,7 +4,6 @@
 import type { StrategyId } from "./strategies";
 
 export type Action = "BUY" | "SELL" | "HOLD" | "hold"; // "hold" = carry day (non-decision)
-export type Engine = "simple" | "nautilus";
 export type RunStatus = "idle" | "starting" | "running" | "done" | "error";
 
 /** Config sent to POST /runs (matches backtest-service RunConfig). */
@@ -18,7 +17,6 @@ export interface RunConfig {
   position_pct: number;
   stop_pct?: number; // stop-loss distance below entry as a fraction (0.04 = 4%); omitted = server default
   target_pct?: number; // take-profit distance above entry as a fraction
-  engine: Engine;
   strategy: StrategyId;
 }
 
