@@ -1,38 +1,14 @@
-// Typed client for trading-service. Same-origin: nginx (docker) or the Vite dev proxy forwards
-// /api/trading/* to trading-service with the prefix stripped.
+// Typed client for trading-service. nginx (docker) or the Vite dev proxy forwards /api/trading/* to
+// trading-service with the prefix stripped.
 
+import { request as http } from "../http";
 import type { Bot, BotCreate, BotUpdate, Decision, Order, Snapshot, TradingEvent, TradingStatus } from "./types";
+
+export { ApiError } from "../http";
 
 const BASE = "/api/trading";
 
-/** Error carrying the server's explanation (FastAPI puts it in `detail`). */
-export class ApiError extends Error {
-  constructor(public status: number, message: string) {
-    super(message);
-  }
-}
-
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) {
-    let msg = `${res.status} ${res.statusText}`;
-    try {
-      const data = await res.json();
-      // 422 validation errors come as a list of {loc, msg}; everything else as a string
-      msg = Array.isArray(data.detail)
-        ? data.detail.map((d: { loc: string[]; msg: string }) => `${d.loc[d.loc.length - 1]}: ${d.msg}`).join("; ")
-        : data.detail ?? msg;
-    } catch {
-      /* non-JSON error body: keep the status text */
-    }
-    throw new ApiError(res.status, msg);
-  }
-  return res.json() as Promise<T>;
-}
+const request = <T>(method: string, path: string, body?: unknown) => http<T>(method, `${BASE}${path}`, body);
 
 export const tradingApi = {
   status: () => request<TradingStatus>("GET", "/status"),

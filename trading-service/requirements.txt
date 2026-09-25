@@ -8,3 +8,5 @@ exchange_calendars     # NYSE trading days, holidays and early closes
 yfinance               # live quotes for the built-in paper broker
 pandas
 sentry-sdk[fastapi]
+pyjwt>=2.8             # signed session tokens (sign-in, see auth.py)
+argon2-cffi>=23.1      # password hashing (Argon2id)

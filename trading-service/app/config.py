@@ -30,5 +30,11 @@ class Settings:
     alpaca_live_key_id: str = os.getenv("ALPACA_LIVE_KEY_ID", "")
     alpaca_live_secret_key: str = os.getenv("ALPACA_LIVE_SECRET_KEY", "")
 
+    # Sign-in (see auth.py). JWT_SECRET signs the session tokens; changing it signs everyone out.
+    jwt_secret: str = os.getenv("JWT_SECRET", "")
+    session_days: int = int(os.getenv("SESSION_DAYS", "30"))  # how long "Keep me signed in" lasts
+    # true once the dashboard is served over HTTPS: the browser then never sends the session cookie over plain HTTP
+    cookie_secure: bool = _bool("COOKIE_SECURE", False)
+
 
 settings = Settings()

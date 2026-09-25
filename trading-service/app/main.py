@@ -1,6 +1,7 @@
 """Trading API: create bots (one symbol + one parameter set each), control them, read their history.
 
-The React dashboard reaches this through nginx at /api/trading/* (see frontend/nginx.conf).
+The React dashboard reaches this through nginx at /api/trading/* (see frontend/nginx.conf), and nginx only
+lets signed-in users through. Sign-in and accounts are in auth.py (/auth/*).
 Interactive docs: http://localhost:8002/docs
 """
 
@@ -13,7 +14,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import scheduler
+from . import auth, scheduler
 from .brokers import SHARED_ACCOUNT_BROKERS, BrokerError, catalog, get_broker
 from .config import settings
 from .db import get_session, init_db, utcnow
@@ -35,6 +36,7 @@ if os.getenv("SENTRY_DSN"):
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    auth.startup_checks()
     task = None
     if settings.scheduler_enabled:
         task = asyncio.create_task(scheduler.run_forever())
@@ -44,6 +46,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Trading Service", lifespan=lifespan)
+app.include_router(auth.router)
 
 
 # ---------------------------------------------------------------------------

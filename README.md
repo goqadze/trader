@@ -9,7 +9,7 @@ An AI decision-support tool plus a backtesting app that measures it.
 | `decision-service/` | 8000 | FastAPI + LangGraph agent. Runs one of 11 strategies on daily prices, tilts it with news (RAG), returns BUY/SELL/HOLD with reasoning. |
 | `backtest-service/` | 8001 | FastAPI + WebSocket API. Replays history, calls decision-service each step, streams progress. |
 | `trading-service/` | 8002 | Live/paper trading bots: scheduler, broker adapters, trading history database. |
-| `frontend/` | 8080 | React + TypeScript + Ant Design dashboard (Vite build, served by nginx). Backtests + live trading pages. |
+| `frontend/` | 8080 | React + TypeScript + Ant Design dashboard (Vite build, served by nginx). Sign-in, backtests, live trading pages. |
 | Langfuse | 3000 | LLM tracing UI (self-hosted, free). See every prompt/response/cost. |
 | GlitchTip | 8082 | Error tracking (self-hosted, free, Sentry-compatible). |
 
@@ -120,7 +120,7 @@ Safety built in:
   check (and never skips the afternoon one because the morning one ran).
 - **History is never deleted**: bots are archived, not removed. Data lives in its own Postgres container
   (`trading-db`, Docker volume `trading-db`), separate from Langfuse's database.
-- **Every port listens on localhost only**: nothing here has a login, and the dashboard can place orders.
+- **Every port listens on localhost only**: only the dashboard has a sign-in (see below), and it can place orders.
   To reach a server, see [DEPLOY.md](DEPLOY.md) (SSH tunnel or Tailscale).
 - **Comes back by itself**: every container is `restart: unless-stopped`, so a crash, a Docker restart or a
   reboot doesn't leave bots without their decision-service.
@@ -146,11 +146,35 @@ re-downloaded on the next decision, so it needs no backups.
 `docker compose down` keeps the data; `docker compose down -v` **deletes it** (volumes included).
 Tests use a separate `trading_test` database and refuse to run against any database not named `*_test`.
 
+## Sign-in and users
+
+The dashboard needs a sign-in. Anyone can **sign up**, but the account can't sign in until an admin approves it on
+the **Users** page (in the header for admins; a badge counts sign-ups waiting). Admins can also reject, disable and
+re-enable, promote, or delete accounts there. An approved user can use the whole dashboard; admins also manage users
+and see the Monitoring and API docs links.
+
+- **The first admin** comes from the command line (it asks for the password):
+  `docker compose exec trading-service python -m app.manage create-admin <username>`.
+  Forgot a password? `docker compose exec trading-service python -m app.manage set-password <username>`.
+- **Staying signed in**: signing in stores a JWT, signed with `JWT_SECRET` from `trading-service/.env`, in an
+  HttpOnly cookie that page scripts can't read. With **Keep me signed in** it lasts `SESSION_DAYS` (30) and every
+  visit renews it; without, it ends when the browser closes. Disabling an account or changing a password signs it
+  out everywhere at once.
+- **How it's enforced**: before passing on any API or WebSocket call, nginx asks trading-service `GET /auth/check`
+  (`auth_request` in `frontend/nginx.conf`), so the backtest API is covered too. The service ports (8000–8002)
+  skip nginx and stay localhost-only.
+- 5 wrong passwords for one username from one address lock that pair out for 15 minutes.
+- Served over HTTPS? Set `COOKIE_SECURE=true` in `trading-service/.env`.
+
+Code: `trading-service/app/auth.py` (API, tokens), `app/manage.py` (command line), `frontend/src/auth/` (pages).
+
 ## Run
 
 ```bash
 docker compose up --build
 ```
+
+On a fresh database, create the admin (see [Sign-in and users](#sign-in-and-users)) and sign in at http://localhost:8080.
 
 **Laptop or server?** Either one works. Bots only decide while the stack is running, so for real money use an
 always-on server. [DEPLOY.md](DEPLOY.md) covers both: keeping a Mac awake during market hours, and a
@@ -178,6 +202,7 @@ Alpaca / Polygon / Finnhub optional for news RAG). Without news keys the agent u
 
 ```
 Browser ──► frontend :8080 (React + antd, nginx)
+                │  every API / WebSocket call: signed in?  ──► trading-service GET /auth/check (auth_request)
                 │  POST /runs  +  WebSocket /ws/{id}   (proxied by nginx)
                 ▼
         backtest-service :8001 ──(loops over dates)──► decision-service :8000

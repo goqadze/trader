@@ -4,7 +4,7 @@ a negative position size) is rejected with a clear 422 before it can reach a bot
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # decision-service's strategies (its GET /strategies describes each). Keep in sync with
 # decision-service/app/strategies.py STRATEGIES.
@@ -169,3 +169,59 @@ class StatusOut(BaseModel):
     scheduler_last_tick: datetime | None
     live_trading_allowed: bool
     brokers: list[BrokerInfo]
+
+
+# ---------------------------------------------------------------------------
+# Users and sign-in (auth.py)
+# ---------------------------------------------------------------------------
+
+class Credentials(BaseModel):
+    # Lowercased before the pattern check, so "Alice" and "alice" are the same account
+    username: str = Field(..., pattern=r"^[a-z0-9._-]{3,32}$")
+    # 128 max: a sanity cap on what the (deliberately slow) password hash is asked to chew on
+    password: str = Field(..., min_length=1, max_length=128)
+
+    @field_validator("username", mode="before")
+    @classmethod
+    def _normalize(cls, v):
+        return v.strip().lower() if isinstance(v, str) else v
+
+
+class LoginIn(Credentials):
+    remember: bool = True  # "Keep me signed in": a cookie that survives closing the browser
+
+
+class SignupIn(Credentials):
+    name: str = Field(..., min_length=1, max_length=80)
+    password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _strip(cls, v):
+        return v.strip() if isinstance(v, str) else v
+
+
+class PasswordChange(BaseModel):
+    current_password: str = Field(..., max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
+class UserOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    username: str
+    name: str
+    role: str
+    status: str
+    created_at: datetime
+    approved_at: datetime | None
+    approved_by: str | None
+    last_login_at: datetime | None
+
+
+class UserUpdate(BaseModel):
+    """An admin's decision about someone else's account. Only the fields sent are changed."""
+
+    status: Literal["active", "rejected", "disabled"] | None = None
+    role: Literal["admin", "user"] | None = None

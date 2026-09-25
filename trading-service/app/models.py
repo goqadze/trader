@@ -5,6 +5,7 @@
     Order          every order sent to a broker (write-ahead: saved BEFORE it is sent, see trader.submit_order)
     EquitySnapshot one row per bot per trading day, for the equity chart
     Event          audit log: created, paused, parameters changed, stop-loss hit, errors, ...
+    User           who may sign in to the dashboard (see auth.py)
 
 Money is stored as float and rounded to cents at each step, same as the backtest engine. That keeps the
 two in agreement; switch to Decimal (Numeric columns) if you ever do real accounting on top of this.
@@ -175,3 +176,29 @@ class Event(Base):
     level: Mapped[str] = mapped_column(String(8), default="info")  # info | warning | error
     kind: Mapped[str] = mapped_column(String(24))  # created | paused | resumed | params | order | risk | reconcile | error | halt
     message: Mapped[str] = mapped_column(Text)
+
+
+# User lifecycle:
+#   pending  -> signed up, waiting for an admin; can't sign in yet
+#   active   -> approved by an admin; can sign in
+#   rejected -> an admin said no; the username stays taken so the same person can't just sign up again
+#   disabled -> was active, switched off by an admin; signed out everywhere at once
+USER_STATUSES = ("pending", "active", "rejected", "disabled")
+USER_ROLES = ("admin", "user")  # admin = everything a user can do + approve and manage users
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(32), unique=True)  # stored lowercase, so sign-in ignores case
+    name: Mapped[str] = mapped_column(String(80))  # so the admin knows who is asking to join
+    password_hash: Mapped[str] = mapped_column(String(255))  # Argon2id, never the password itself
+    role: Mapped[str] = mapped_column(String(8), default="user")
+    status: Mapped[str] = mapped_column(String(12), default="pending", index=True)
+    # Copied into every session token. Bumping it (password change, disable) makes all earlier tokens invalid.
+    token_version: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    approved_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(String(32), nullable=True)  # the admin's username
+    last_login_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)

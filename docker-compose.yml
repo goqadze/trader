@@ -1,5 +1,6 @@
 # Every published port is bound to 127.0.0.1, so only this machine can reach it. That matters most on a
-# server: Docker's published ports bypass the Linux firewall (ufw), and nothing here has a login.
+# server: Docker's published ports bypass the Linux firewall (ufw), and only the dashboard (8080) has a sign-in;
+# the APIs, databases and monitoring tools behind it have none of their own.
 # From another machine, use an SSH tunnel or Tailscale (see DEPLOY.md).
 # `restart: unless-stopped` everywhere: after a crash, a Docker restart or a reboot, the stack comes back
 # by itself (unless you stopped it with `docker compose stop/down`).

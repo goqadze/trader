@@ -67,8 +67,9 @@ If not, set `PasswordAuthentication no` and `PermitRootLogin no` in `/etc/ssh/ss
 file in `/etc/ssh/sshd_config.d/` that says otherwise), then run `sudo systemctl restart ssh`.
 
 Why the firewall alone isn't enough: Docker's published ports bypass `ufw`. That's why
-`docker-compose.yml` binds **every** port to `127.0.0.1`. Nothing in this stack has a login, so none of
-it may face the internet. Don't change those bindings to `0.0.0.0`.
+`docker-compose.yml` binds **every** port to `127.0.0.1`. Only the dashboard has a sign-in; the APIs,
+databases and monitoring tools have none, so none of them may face the internet. Don't change those
+bindings to `0.0.0.0`.
 
 ### 3. Install Docker
 
@@ -120,6 +121,12 @@ docker compose ps                  # everything "Up" (glitchtip-migrate exits on
 curl -s localhost:8002/status      # "scheduler_running": true, and a recent "scheduler_last_tick"
 ```
 
+If you restored your history in step 5, your accounts came with it. On a fresh database, create the admin:
+
+```bash
+docker compose exec trading-service python -m app.manage create-admin <username>
+```
+
 ### 7. Open the dashboard from your laptop
 
 The server accepts nothing from the internet except SSH. Pick one of two private ways in.
@@ -145,6 +152,9 @@ running, stop it first (`docker compose stop`), or the ports clash.
    ```
 3. The dashboard is at `https://<server-name>.<your-tailnet>.ts.net`, reachable only from **your**
    Tailscale devices.
+4. It's HTTPS now, so tell the browser to send the sign-in cookie over HTTPS only: set
+   `COOKIE_SECURE=true` in `trading-service/.env`, then `docker compose up -d trading-service`. (The SSH
+   tunnel is plain `http://localhost`, where that setting must stay `false`.)
 
 Use `tailscale serve`, never `tailscale funnel`: funnel publishes to the whole internet. The Resources
 links to Langfuse and GlitchTip point at `localhost`, so use the SSH tunnel for those.
