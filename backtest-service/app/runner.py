@@ -45,22 +45,23 @@ NEW_YORK = "America/New_York"
 CLOSE_HOUR = 16  # regular close, New York time (half days close earlier; waiting until 16:00 is still safe)
 
 
-def _fetch_prices(symbol: str, start: date, end: date, now: pd.Timestamp | None = None) -> pd.Series:
-    """Download daily closes for the backtest window (runs in a thread — yfinance is blocking)."""
+def _fetch_prices(symbol: str, start: date, end: date, now: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Download daily bars (Open, High, Low, Close) for the backtest window (runs in a thread: yfinance blocks).
+    Decisions and equity use the close; the high and low tell whether a stop or target was hit during the day."""
     df = yf.download(symbol, start=start, end=end + timedelta(days=1), progress=False, auto_adjust=True)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    close = df["Close"]
-    close.index = [d.date() for d in close.index]  # use plain dates as the index
-    return _finished_sessions(close, now or pd.Timestamp.now(tz=NEW_YORK))
+    bars = df[["Open", "High", "Low", "Close"]].dropna()
+    bars.index = [d.date() for d in bars.index]  # use plain dates as the index
+    return _finished_sessions(bars, now or pd.Timestamp.now(tz=NEW_YORK))
 
 
-def _finished_sessions(close: pd.Series, now: pd.Timestamp) -> pd.Series:
+def _finished_sessions(close: pd.Series | pd.DataFrame, now: pd.Timestamp) -> pd.Series | pd.DataFrame:
     """Drop today's bar while the market is still open: yfinance returns the latest intraday price as today's
     "close", so a backtest ending today would decide and mark equity on a price that isn't a close yet."""
     now = now.tz_convert(NEW_YORK)
     if now.hour < CLOSE_HOUR:
-        close = close[[d < now.date() for d in close.index]]
+        close = close.loc[[d < now.date() for d in close.index]]
     return close
 
 
@@ -71,11 +72,11 @@ _slots = asyncio.Semaphore(MAX_PARALLEL_RUNS)
 
 # Runs of one comparison ask for the same symbol and window: download it once and share it for a while.
 PRICE_TTL_S = 600
-_price_cache: dict[tuple, tuple[float, pd.Series]] = {}
+_price_cache: dict[tuple, tuple[float, pd.DataFrame]] = {}
 _price_locks: dict[tuple, asyncio.Lock] = {}
 
 
-async def _load_prices(symbol: str, start: date, end: date) -> pd.Series:
+async def _load_prices(symbol: str, start: date, end: date) -> pd.DataFrame:
     """_fetch_prices through a short-lived cache. The per-key lock makes simultaneous runs wait for the
     first download instead of each hitting Yahoo (which rate-limits bursts)."""
     key = (symbol.upper(), start, end)
@@ -106,8 +107,8 @@ async def _execute(run: Run) -> None:
         run.status = "running"
         try:
             # 1) Load prices for the window (the download runs in a thread)
-            prices = await _load_prices(cfg.symbol, cfg.start, cfg.end)
-            if prices is None or len(prices) < 2:
+            bars = await _load_prices(cfg.symbol, cfg.start, cfg.end)
+            if bars is None or len(bars) < 2:
                 raise ValueError(f"No price data for {cfg.symbol} in {cfg.start}..{cfg.end}")
 
             # 2) One shared HTTP client for all decision-service calls during this run
@@ -115,7 +116,7 @@ async def _execute(run: Run) -> None:
                 async def decide(symbol: str, as_of: date) -> dict:
                     return await get_signal(client, symbol, as_of, cfg.strategy, cfg.stop_pct, cfg.target_pct)
 
-                run.result = await SimplePortfolioEngine().run(cfg, prices, decide, run.emit)
+                run.result = await SimplePortfolioEngine().run(cfg, bars["Close"], decide, run.emit, bars=bars)
             run.status = "done"
         except Exception as e:
             run.status = "error"

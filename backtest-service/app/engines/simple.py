@@ -15,12 +15,15 @@ class SimplePortfolioEngine(BacktestEngine):
       - BUY  (confidence >= min_confidence) and currently flat  -> buy with position_pct of cash.
       - SELL (confidence >= min_confidence) and currently long  -> sell the whole position.
       - Otherwise hold.
-    All fills happen at that day's closing price. No leverage, no shorting, no fees/slippage
-    (add those later for realism)."""
+      - Every day while holding: the stop-loss and take-profit are checked against the day's range, like the
+        live bots (Alpaca holds the stop at the broker; targets are checked every few minutes).
+    Signal trades fill at that day's close; stop/target exits at their level, or at the open when the price
+    gaps past it overnight. Slippage and fees apply to every fill. No leverage, no shorting."""
 
     name = "simple"
 
-    async def run(self, cfg: RunConfig, prices: pd.Series, decide: DecideFn, emit: EmitFn) -> dict:
+    async def run(self, cfg: RunConfig, prices: pd.Series, decide: DecideFn, emit: EmitFn,
+                  bars: pd.DataFrame | None = None) -> dict:
         days: list[date] = list(prices.index)
         cash = cfg.initial_cash
         position = 0.0  # shares held
@@ -65,10 +68,13 @@ class SimplePortfolioEngine(BacktestEngine):
             price = float(prices.iloc[i])
 
             # --- Risk exits run EVERY day, before any new signal, while we hold a position ---
-            # We only have daily closes, so a stop/target is checked at each day's close (the honest
-            # limit of daily-bar data). This is what actually enforces the risk plan the agent sized.
-            if position > 0 and (price <= stop_price or price >= target_price):
-                await close_position(i, day, price, "stop-loss" if price <= stop_price else "target")
+            # This is what actually enforces the risk plan the agent sized. Without bars (closes only), the
+            # day's range is just its close.
+            if position > 0:
+                o, h, lo = (float(bars.iloc[i][k]) for k in ("Open", "High", "Low")) if bars is not None else (price,) * 3
+                hit = _risk_exit(o, h, lo, price, stop_price, target_price)
+                if hit:
+                    await close_position(i, day, hit[1], hit[0])
 
             # Only spend an LLM call every rebalance_days; other days we simply carry the position.
             is_decision_day = i % cfg.rebalance_days == 0
@@ -187,6 +193,21 @@ class SimplePortfolioEngine(BacktestEngine):
 
 
 TRADING_DAYS = 252
+
+
+def _risk_exit(open_: float, high: float, low: float, close: float, stop: float, target: float) -> tuple[str, float] | None:
+    """Did the day's range hit the stop or the target, and at what price does the exit fill?
+    A gap past a level fills at the open (a stop order becomes a market order there). When the day touched both
+    levels, daily bars can't tell which came first: assume the stop, the cautious answer."""
+    if open_ <= stop:
+        return "stop-loss", open_
+    if open_ >= target:
+        return "target", open_
+    if min(low, close) <= stop:
+        return "stop-loss", stop
+    if max(high, close) >= target:
+        return "target", target
+    return None
 
 
 def _mean(xs: list[float]) -> float | None:

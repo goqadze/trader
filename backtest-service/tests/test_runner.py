@@ -83,7 +83,7 @@ def test_only_max_parallel_runs_execute_at_once(monkeypatch):
     active = {"now": 0, "peak": 0}
 
     class FakeEngine:
-        async def run(self, cfg, prices, decide, emit):
+        async def run(self, cfg, prices, decide, emit, bars=None):
             active["now"] += 1
             active["peak"] = max(active["peak"], active["now"])
             await asyncio.sleep(0.01)
@@ -91,7 +91,7 @@ def test_only_max_parallel_runs_execute_at_once(monkeypatch):
             return {}
 
     async def fake_load(symbol, start, end):
-        return _closes()
+        return _closes().to_frame("Close")
 
     monkeypatch.setattr(runner, "SimplePortfolioEngine", FakeEngine)
     monkeypatch.setattr(runner, "_load_prices", fake_load)
@@ -108,3 +108,10 @@ def test_only_max_parallel_runs_execute_at_once(monkeypatch):
     assert all(r.status == "done" for r in runs)
     for r in runs:
         runner.RUNS.pop(r.id, None)
+
+
+
+def test_finished_sessions_also_trims_ohlc_bars():
+    bars = pd.DataFrame({"Open": [1.0, 2.0, 3.0], "Close": [1.0, 2.0, 3.0]}, index=_closes().index)
+    during = pd.Timestamp("2026-09-25 11:00", tz="America/New_York")
+    assert list(_finished_sessions(bars, during).index) == [date(2026, 9, 23), date(2026, 9, 24)]

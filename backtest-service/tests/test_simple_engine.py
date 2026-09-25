@@ -23,7 +23,7 @@ def _prices(values, start=date(2025, 1, 6)):
     return pd.Series([float(v) for v in values], index=idx)
 
 
-def _run(prices, decide, **overrides):
+def _run(prices, decide, bars=None, **overrides):
     cfg_args = dict(
         symbol="TEST", start=prices.index[0], end=prices.index[-1],
         initial_cash=10_000, min_confidence=0.6, rebalance_days=1,
@@ -36,8 +36,15 @@ def _run(prices, decide, **overrides):
     async def emit(ev):
         events.append(ev)
 
-    result = asyncio.run(SimplePortfolioEngine().run(cfg, prices, decide, emit))
+    result = asyncio.run(SimplePortfolioEngine().run(cfg, prices, decide, emit, bars=bars))
     return result, events
+
+
+def _bars(rows, start=date(2025, 1, 6)):
+    """(open, high, low, close) per day -> (close Series, OHLC bars), as the runner passes them."""
+    idx = [start + timedelta(days=i) for i in range(len(rows))]
+    bars = pd.DataFrame([[float(x) for x in r] for r in rows], index=idx, columns=["Open", "High", "Low", "Close"])
+    return bars["Close"], bars
 
 
 def _const(signal):
@@ -258,3 +265,59 @@ def test_decisions_without_news_are_counted():
                {"action": "HOLD", "confidence": 0.0, "error": True}]  # a failure is counted as an error, not here
     res, _ = _run(_prices([100, 101, 102]), _scripted(signals))
     assert res["no_news_decisions"] == 1
+
+
+
+# --- stops and targets during the day (OHLC bars) ---------------------------
+
+BUY_96_108 = {"action": "BUY", "confidence": 0.9, "position": {"stop_loss": 96.0, "target": 108.0}}
+
+
+def _only_sell(res):
+    sells = [t for t in res["trades"] if t["side"] == "SELL"]
+    assert len(sells) == 1
+    return sells[0]
+
+
+def test_stop_fills_at_its_level_when_touched_during_the_day():
+    # Day 2 dips to 95 (through the 96 stop) but closes back at 99: a live stop order sells at ~96, not the close
+    closes, bars = _bars([(100, 100, 100, 100), (99, 100, 95, 99), (99, 101, 98, 100)])
+    sell = _only_sell(_run(closes, _const(BUY_96_108), bars=bars, rebalance_days=100)[0])
+    assert (sell["reason"], sell["price"], sell["date"]) == ("stop-loss", 96.0, "2025-01-07")
+
+
+def test_a_gap_below_the_stop_fills_at_the_open():
+    closes, bars = _bars([(100, 100, 100, 100), (93, 94, 90, 91)])  # opens under the stop
+    sell = _only_sell(_run(closes, _const(BUY_96_108), bars=bars, rebalance_days=100)[0])
+    assert (sell["reason"], sell["price"]) == ("stop-loss", 93.0)
+
+
+def test_target_fills_at_its_level_when_touched_during_the_day():
+    closes, bars = _bars([(100, 100, 100, 100), (101, 109, 100, 102)])  # spikes through 108, closes at 102
+    sell = _only_sell(_run(closes, _const(BUY_96_108), bars=bars, rebalance_days=100)[0])
+    assert (sell["reason"], sell["price"]) == ("target", 108.0)
+
+
+def test_a_gap_above_the_target_fills_at_the_open():
+    closes, bars = _bars([(100, 100, 100, 100), (112, 115, 110, 111)])
+    sell = _only_sell(_run(closes, _const(BUY_96_108), bars=bars, rebalance_days=100)[0])
+    assert (sell["reason"], sell["price"]) == ("target", 112.0)
+
+
+def test_a_day_touching_both_levels_counts_as_the_stop():
+    closes, bars = _bars([(100, 100, 100, 100), (100, 110, 94, 100)])
+    sell = _only_sell(_run(closes, _const(BUY_96_108), bars=bars, rebalance_days=100)[0])
+    assert (sell["reason"], sell["price"]) == ("stop-loss", 96.0)
+
+
+def test_the_entry_day_range_does_not_trigger_the_stop():
+    # Bought at day 1's close; day 1's own low happened before the entry
+    closes, bars = _bars([(100, 101, 90, 100), (100, 101, 99, 100)])
+    res, _ = _run(closes, _const(BUY_96_108), bars=bars, rebalance_days=100)
+    assert res["num_trades"] == 0 and res["open_position"] > 0
+
+
+def test_stop_fill_still_pays_slippage():
+    closes, bars = _bars([(100, 100, 100, 100), (99, 100, 95, 99)])
+    sell = _only_sell(_run(closes, _const(BUY_96_108), bars=bars, rebalance_days=100, slippage_pct=0.01)[0])
+    assert sell["price"] == round(96.0 * 0.99, 4)
