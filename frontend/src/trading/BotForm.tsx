@@ -1,7 +1,7 @@
 import { Alert, Checkbox, Col, Divider, Form, Input, InputNumber, Modal, Radio, Row, Select, Tooltip } from "antd";
 import { useEffect, useRef, useState } from "react";
 import StrategyHelp from "../components/StrategyHelp";
-import { DEFAULT_STRATEGY, STRATEGY_OPTIONS, type StrategyId } from "../strategies";
+import { DEFAULT_STRATEGY, STRATEGY_OPTIONS, strategyInfo, type StrategyId, type StrategyInfo } from "../strategies";
 import { slotTimes } from "./format";
 import type { BotCreate, BotUpdate, BrokerInfo, DecideAt, StrategyParams } from "./types";
 
@@ -73,6 +73,15 @@ export default function BotForm({ open, editing, initial, brokers, times = slotT
   const broker = Form.useWatch("broker", form);
   const strategy = Form.useWatch("strategy", form);
   const isLive = brokers.find((b) => b.name === broker)?.live ?? false;
+  // A strategy's suggested rebalance, check time, stop and take-profit (percents on screen, fractions in the catalog).
+  // Strategies without a suggested check time use the default, before the close.
+  const applySuggested = (g: StrategyInfo["suggested"]) =>
+    form.setFieldsValue({
+      rebalance_days: g.rebalance_days,
+      decide_at: g.decide_at ?? DEFAULT_PARAMS.decide_at,
+      stop_pct: +(g.stop_pct * 100).toFixed(2),
+      target_pct: +(g.target_pct * 100).toFixed(2),
+    });
 
   // Load values only when the modal OPENS. `initial` is often the live bot object, which the page
   // re-polls every 15s; reacting to it would wipe whatever the user is in the middle of typing.
@@ -121,7 +130,17 @@ export default function BotForm({ open, editing, initial, brokers, times = slotT
       width={640}
       destroyOnClose
     >
-      <Form<FormValues> form={form} layout="vertical" requiredMark={false}>
+      <Form<FormValues>
+        form={form}
+        layout="vertical"
+        requiredMark={false}
+        // Picking a strategy loads its suggested settings. Only a user's pick triggers this, not the values a
+        // "Trade this strategy" prefill or an edited bot opens with, so those stay as they were.
+        onValuesChange={(changed: Partial<FormValues>) => {
+          const s = changed.strategy && strategyInfo(changed.strategy);
+          if (s) applySuggested(s.suggested);
+        }}
+      >
         {!editing && (
           <>
             <Row gutter={12}>
@@ -162,15 +181,7 @@ export default function BotForm({ open, editing, initial, brokers, times = slotT
         <Form.Item name="strategy" label="Strategy">
           <Select options={STRATEGY_OPTIONS} popupMatchSelectWidth={false} listHeight={420} />
         </Form.Item>
-        <StrategyHelp
-          id={strategy}
-          onApply={(g) =>
-            form.setFieldsValue({
-              rebalance_days: g.rebalance_days, stop_pct: g.stop_pct * 100, target_pct: g.target_pct * 100,
-              ...(g.decide_at && { decide_at: g.decide_at }),
-            })
-          }
-        />
+        <StrategyHelp id={strategy} onApply={applySuggested} />
         <Row gutter={12}>
           <Col span={12}>
             <Form.Item name="min_confidence" label="Min confidence" tooltip="Signals weaker than this are ignored">
