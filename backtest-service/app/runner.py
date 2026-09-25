@@ -39,13 +39,26 @@ class Run:
 RUNS: dict[str, Run] = {}
 
 
-def _fetch_prices(symbol: str, start: date, end: date) -> pd.Series:
+NEW_YORK = "America/New_York"
+CLOSE_HOUR = 16  # regular close, New York time (half days close earlier; waiting until 16:00 is still safe)
+
+
+def _fetch_prices(symbol: str, start: date, end: date, now: pd.Timestamp | None = None) -> pd.Series:
     """Download daily closes for the backtest window (runs in a thread — yfinance is blocking)."""
     df = yf.download(symbol, start=start, end=end + timedelta(days=1), progress=False, auto_adjust=True)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     close = df["Close"]
     close.index = [d.date() for d in close.index]  # use plain dates as the index
+    return _finished_sessions(close, now or pd.Timestamp.now(tz=NEW_YORK))
+
+
+def _finished_sessions(close: pd.Series, now: pd.Timestamp) -> pd.Series:
+    """Drop today's bar while the market is still open: yfinance returns the latest intraday price as today's
+    "close", so a backtest ending today would decide and mark equity on a price that isn't a close yet."""
+    now = now.tz_convert(NEW_YORK)
+    if now.hour < CLOSE_HOUR:
+        close = close[[d < now.date() for d in close.index]]
     return close
 
 

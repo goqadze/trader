@@ -12,7 +12,7 @@ An AI decision-support tool plus a backtesting app that measures it.
 | `frontend/` | 8080 | React + TypeScript + Ant Design dashboard (Vite build, served by nginx). Sign-in, backtests, live trading pages. |
 | Langfuse | 3000 | LLM tracing UI (self-hosted, free). See every prompt/response/cost. |
 | GlitchTip | 8082 | Error tracking (self-hosted, free, Sentry-compatible). |
-| pgAdmin | 5050 | Browse the databases' tables and data (trading-db and news-db, already connected). |
+| pgAdmin | 5050 | Browse the databases' tables and data (trading-db and news-db, already connected). Login `admin@local.dev` + `PGADMIN_PASSWORD` from `.env`. |
 
 ## Monitoring (local & free)
 
@@ -130,7 +130,7 @@ Safety built in:
 
 | What | How |
 |---|---|
-| Browse tables and data | pgAdmin at http://localhost:5050 (Resources → Databases): Servers → trading-db → trading → Schemas → public → Tables, then right-click a table → View/Edit Data. No login, no password prompt |
+| Browse tables and data | pgAdmin at http://localhost:5050 (Resources → Databases): Servers → trading-db → trading → Schemas → public → Tables, then right-click a table → View/Edit Data. Sign in as `admin@local.dev` with `PGADMIN_PASSWORD` from the project's `.env` (copy `.env.example`); the databases then open without a password |
 | Connect with any SQL client | `localhost:5433`, database `trading`, user/password `trading` (localhost only) |
 | Quick look from the terminal | `docker compose exec trading-db psql -U trading trading` |
 | Back up | `make backup-trading-db` → `backups/trading-<timestamp>.sql.gz` (git-ignored; keeps 30 days) |
@@ -146,9 +146,10 @@ window costs no extra OpenAI calls. It's a cache: deleting the `news-db` volume 
 re-downloaded on the next decision, so it needs no backups.
 
 pgAdmin can edit and delete rows too, so be careful with anything that writes (it has no undo). Its connections
-come from `pgadmin/servers.json`, re-read at every start. The passwords in `pgadmin/pgpass` are only copied in on
-pgAdmin's first start; after changing them, recreate it with `docker compose rm -sf pgadmin && docker volume rm
-trading_pgadmin && docker compose up -d pgadmin` (that only resets pgAdmin's own settings, never your data).
+come from `pgadmin/servers.json`, re-read at every start. Its login password (`PGADMIN_PASSWORD` in `.env`) and the
+database passwords in `pgadmin/pgpass` are only read on pgAdmin's first start; after changing them, reset it with
+`docker compose rm -sf pgadmin && docker volume rm trading_pgadmin && docker compose up -d pgadmin` (that only
+resets pgAdmin's own settings and query history, never your data).
 
 `docker compose down` keeps the data; `docker compose down -v` **deletes it** (volumes included).
 Tests use a separate `trading_test` database and refuse to run against any database not named `*_test`.

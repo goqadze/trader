@@ -51,7 +51,8 @@ export default function ConfigForm({ onRun, running }: Props) {
         onFinish={submit}
         initialValues={{
           symbol: "AAPL",
-          range: [dayjs().subtract(2, "month"), dayjs()], // the last 2 months, up to today
+          // The last 2 months up to today. Today's bar only counts once the market has closed (backtest-service drops it before)
+          range: [dayjs().subtract(2, "month"), dayjs()],
           initial_cash: 10000,
           min_confidence: 0.6,
           rebalance_days: 5,

@@ -4,8 +4,6 @@
 import { request as http } from "../http";
 import type { Bot, BotCreate, BotUpdate, Decision, Order, Snapshot, TradingEvent, TradingStatus } from "./types";
 
-export { ApiError } from "../http";
-
 const BASE = "/api/trading";
 
 const request = <T>(method: string, path: string, body?: unknown) => http<T>(method, `${BASE}${path}`, body);

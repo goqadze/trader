@@ -197,20 +197,21 @@ services:
   # Database browser
   # ------------------------------------------------------------------
 
-  # pgAdmin: browse tables and data at http://localhost:5050 (no login: localhost only, like the databases).
+  # pgAdmin: browse tables and data at http://localhost:5050, login admin@local.dev + PGADMIN_PASSWORD from ./.env.
+  # It has its own login even though it's localhost-only: it can read and change every table (users included),
+  # so a web page or program that reaches localhost:5050 must not get in for free.
   # trading-db and news-db are already connected (pgadmin/servers.json, passwords from pgadmin/pgpass).
-  # It can also change and delete data, so look before you run anything that writes.
   pgadmin:
     image: dpage/pgadmin4:9
     ports:
       - "127.0.0.1:5050:80"
     environment:
-      PGADMIN_CONFIG_SERVER_MODE: "False"               # desktop mode: no pgAdmin login of its own
-      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"  # don't ask for a master password to use saved passwords
-      PGADMIN_DEFAULT_EMAIL: admin@local.dev            # required by the image even in desktop mode; unused
-      PGADMIN_DEFAULT_PASSWORD: pgadmin
+      PGADMIN_DEFAULT_EMAIL: admin@local.dev
+      # From ./.env (git-ignored, see .env.example). Used when pgAdmin first starts; pgAdmin refuses to start without it.
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-}
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"  # no second password on top of the login
       PGADMIN_REPLACE_SERVERS_ON_STARTUP: "True"        # re-read servers.json at every start, so edits apply
-      PGPASS_FILE: /pgadmin4/pgpass                     # copied into place on first start (see servers.json PassFile)
+      PGPASS_FILE: /pgadmin4/pgpass                     # copied into the login's storage on first start
       PGADMIN_DISABLE_POSTFIX: "true"                   # no password-reset emails needed
     volumes:
       - ./pgadmin/servers.json:/pgadmin4/servers.json:ro

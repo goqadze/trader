@@ -90,7 +90,7 @@ From your laptop. This also copies the `.env` files with your API keys: they're 
 ```bash
 rsync -av --exclude node_modules --exclude .venv --exclude __pycache__ --exclude dist --exclude backups \
   ~/ClaudeProjects/Trading/ trader@SERVER_IP:trading/
-ssh trader@SERVER_IP 'chmod 600 trading/*/.env'   # only your user can read the keys
+ssh trader@SERVER_IP 'chmod 600 trading/.env trading/*/.env'   # only your user can read the keys
 ```
 
 ### 5. Bring your history along (optional)
@@ -157,8 +157,8 @@ running, stop it first (`docker compose stop`), or the ports clash.
    tunnel is plain `http://localhost`, where that setting must stay `false`.)
 
 Use `tailscale serve`, never `tailscale funnel`: funnel publishes to the whole internet. The Resources
-links to Langfuse, GlitchTip and pgAdmin point at `localhost`, so use the SSH tunnel for those. pgAdmin has
-no login of its own, so never `tailscale serve` it.
+links to Langfuse, GlitchTip and pgAdmin point at `localhost`, so use the SSH tunnel for those. pgAdmin can
+change every table, so keep it on the tunnel too: never `tailscale serve` it.
 
 ### 8. Daily backups
 

@@ -1,6 +1,7 @@
 """Sign-in: sign-ups wait for an admin, session cookies, the nginx check, and managing accounts."""
 
 import logging
+import threading
 from datetime import timedelta
 
 import jwt
@@ -10,7 +11,8 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app import auth, main, manage
-from app.db import utcnow
+from app.db import SessionLocal, utcnow
+from app.models import User
 
 ADMIN_PW = "admin-pass-123"
 
@@ -19,9 +21,11 @@ ADMIN_PW = "admin-pass-123"
 def fast_hashing(monkeypatch):
     """Real Argon2id, but cheap settings: the default ones are slow on purpose, which only slows tests down."""
     monkeypatch.setattr(auth, "_hasher", PasswordHasher(time_cost=1, memory_cost=1024, parallelism=1))
-    auth.throttle.reset()
+    auth.login_attempts.reset()
+    auth.signups.reset()
     yield
-    auth.throttle.reset()
+    auth.login_attempts.reset()
+    auth.signups.reset()
 
 
 def browser() -> TestClient:
@@ -90,7 +94,8 @@ def test_a_sign_up_can_sign_in_only_after_an_admin_approves_it(admin):
 
 
 def test_wrong_password_and_unknown_user_get_the_same_answer(admin):
-    for username in ("boss", "nobody"):
+    # "jo" and "has space" could never be sign-up names; signing in doesn't care, it's just a wrong username
+    for username in ("boss", "nobody", "jo", "has space"):
         r = login(browser(), username, "not-the-password")
         assert r.status_code == 401 and r.json()["detail"] == "wrong username or password"
 
@@ -208,19 +213,84 @@ def test_repeated_wrong_passwords_are_throttled(admin):
     assert login(browser(), "erin").status_code == 403  # other usernames aren't affected
 
 
-def test_throttle_forgets_failures_after_the_window():
+def test_signing_in_clears_earlier_failures(admin):
+    for _ in range(4):
+        login(browser(), "boss", "guess")
+    assert login(browser(), "boss", ADMIN_PW).status_code == 200
+    for _ in range(4):  # a fresh allowance, not 1 left
+        assert login(browser(), "boss", "guess").status_code == 401
+
+
+def test_throttle_counts_parallel_attempts_before_any_finishes():
+    """The check and the count are one step: 40 guesses arriving together get exactly `limit` through."""
+    t = auth.Throttle(limit=5, window=60)
+    start = threading.Barrier(40)
+    allowed = []
+
+    def guess():
+        start.wait()
+        allowed.append(t.attempt(("1.2.3.4", "boss")))
+
+    threads = [threading.Thread(target=guess) for _ in range(40)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert allowed.count(True) == 5
+
+
+def test_throttle_forgets_attempts_after_the_window():
     now = {"t": 0.0}
-    t = auth.LoginThrottle(limit=2, window=60, clock=lambda: now["t"])
+    t = auth.Throttle(limit=2, window=60, clock=lambda: now["t"])
     key = ("1.2.3.4", "boss")
-    t.failed(key)
-    t.failed(key)
-    assert t.blocked(key) and not t.blocked(("5.6.7.8", "boss"))
+    assert t.attempt(key) and t.attempt(key)
+    assert not t.attempt(key) and t.attempt(("5.6.7.8", "boss"))
     now["t"] = 61
-    assert not t.blocked(key)
-    t.failed(key)
-    t.failed(key)
-    t.succeeded(key)
-    assert not t.blocked(key)
+    assert t.attempt(key)
+    t.forget(key)
+    assert t.attempt(key) and t.attempt(key)
+
+
+def test_throttle_drops_keys_that_have_aged_out():
+    now = {"t": 0.0}
+    t = auth.Throttle(limit=5, window=60, clock=lambda: now["t"])
+    for i in range(100):
+        t.attempt(("1.2.3.4", f"user{i}"))
+    now["t"] = 120  # all aged out, and a minute since the last clean-up
+    t.attempt(("1.2.3.4", "new"))
+    assert list(t._hits) == [("1.2.3.4", "new")]
+
+
+def test_sign_ups_are_limited_per_address():
+    for i in range(10):
+        assert signup(browser(), f"user{i}").status_code == 201
+    r = signup(browser(), "user10")
+    assert r.status_code == 429 and "too many sign-ups" in r.text
+
+
+def test_password_hashing_waits_its_turn_then_gives_up(admin, monkeypatch):
+    """At most 2 hashes run at once; a sign-in that can't get a turn in time is told to retry (503)."""
+    monkeypatch.setattr(auth, "HASH_WAIT_SECONDS", 0.05)
+    assert auth._hash_slots.acquire() and auth._hash_slots.acquire()  # both slots busy
+    try:
+        r = login(browser(), "boss", ADMIN_PW)
+        assert r.status_code == 503 and "try again" in r.text
+    finally:
+        auth._hash_slots.release()
+        auth._hash_slots.release()
+    assert login(browser(), "boss", ADMIN_PW).status_code == 200
+
+
+def test_sign_in_upgrades_a_password_hashed_with_older_settings(admin):
+    old = PasswordHasher(time_cost=1, memory_cost=2048, parallelism=2).hash(ADMIN_PW)
+    with SessionLocal() as s:
+        s.get(User, 1).password_hash = old
+        s.commit()
+    assert login(browser(), "boss", ADMIN_PW).status_code == 200
+    with SessionLocal() as s:
+        new = s.get(User, 1).password_hash
+    assert new != old and not auth._hasher.check_needs_rehash(new)
+    assert login(browser(), "boss", ADMIN_PW).status_code == 200
 
 
 # --- Admin ---
@@ -241,6 +311,33 @@ def test_a_role_change_works_without_signing_in_again(admin):
     assert alice.get("/auth/users").status_code == 200
     assert admin.patch(f"/auth/users/{alice_id}", json={"role": "user"}).status_code == 200
     assert alice.get("/auth/users").status_code == 403
+
+
+def test_an_admin_demoted_mid_request_can_no_longer_change_others(admin):
+    """Two admins demoting each other at once: the second must fail, or no admin would be left.
+    Simulated by demoting the caller between its sign-in check and the change itself."""
+    boss = admin.get("/auth/me").json()
+    other = approved(admin, "carol")
+    carol_id = other.get("/auth/me").json()["id"]
+    assert admin.patch(f"/auth/users/{carol_id}", json={"role": "admin"}).status_code == 200
+
+    real = auth.admin_user
+
+    def demoted_right_after_the_check(user=auth.Depends(auth.current_user)):
+        real(user)
+        with SessionLocal() as s:  # carol's request lands first and demotes boss
+            s.get(User, boss["id"]).role = "user"
+            s.commit()
+        return user
+
+    main.app.dependency_overrides[auth.admin_user] = demoted_right_after_the_check
+    try:
+        assert admin.patch(f"/auth/users/{carol_id}", json={"role": "user"}).status_code == 403
+        assert admin.delete(f"/auth/users/{carol_id}").status_code == 403
+    finally:
+        main.app.dependency_overrides.clear()
+    with SessionLocal() as s:
+        assert s.get(User, carol_id).role == "admin"  # carol is still an admin: one is always left
 
 
 def test_admins_cannot_lock_themselves_out(admin):

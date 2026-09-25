@@ -176,14 +176,15 @@ class StatusOut(BaseModel):
 # ---------------------------------------------------------------------------
 
 class Credentials(BaseModel):
-    # Lowercased before the pattern check, so "Alice" and "alice" are the same account
-    username: str = Field(..., pattern=r"^[a-z0-9._-]{3,32}$")
+    # Signing in checks no format: a mistyped username is just "wrong username or password" (401)
+    username: str = Field(..., min_length=1, max_length=64)
     # 128 max: a sanity cap on what the (deliberately slow) password hash is asked to chew on
     password: str = Field(..., min_length=1, max_length=128)
 
     @field_validator("username", mode="before")
     @classmethod
     def _normalize(cls, v):
+        # Lowercased, so "Alice" and "alice" are the same account
         return v.strip().lower() if isinstance(v, str) else v
 
 
@@ -192,6 +193,7 @@ class LoginIn(Credentials):
 
 
 class SignupIn(Credentials):
+    username: str = Field(..., pattern=r"^[a-z0-9._-]{3,32}$")  # checked after lowercasing
     name: str = Field(..., min_length=1, max_length=80)
     password: str = Field(..., min_length=8, max_length=128)
 

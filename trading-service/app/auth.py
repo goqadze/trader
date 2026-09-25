@@ -20,6 +20,7 @@ import secrets
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager
 from datetime import timedelta
 from functools import cache
 
@@ -49,8 +50,15 @@ NOT_ACTIVE = {
     "disabled": "this account is disabled; ask an admin",
 }
 
-_hasher = PasswordHasher()  # Argon2id with the library's recommended cost settings
+# Argon2id at OWASP's recommended minimum (19 MiB, 2 passes, 1 lane). The library default takes 64 MiB per
+# hash, a lot to spend per sign-in inside the process that also runs the bots.
+_hasher = PasswordHasher(time_cost=2, memory_cost=19 * 1024, parallelism=1)
 _fallback_secret = secrets.token_hex(32)  # only if JWT_SECRET is missing: sessions then end at every restart
+
+# At most 2 password hashes at a time: a burst of sign-ins or sign-ups waits its turn instead of piling up
+# memory. The scheduler runs on its own threads, so waiting sign-ins never hold up the bots.
+_hash_slots = threading.BoundedSemaphore(2)
+HASH_WAIT_SECONDS = 10.0
 
 
 def _secret() -> str:
@@ -61,62 +69,81 @@ def _secret() -> str:
 # Passwords
 # ---------------------------------------------------------------------------
 
+@contextmanager
+def _hash_slot():
+    if not _hash_slots.acquire(timeout=HASH_WAIT_SECONDS):
+        raise HTTPException(503, "too many sign-ins at once; try again in a moment")
+    try:
+        yield
+    finally:
+        _hash_slots.release()
+
+
 def hash_password(password: str) -> str:
-    return _hasher.hash(password)
+    with _hash_slot():
+        return _hasher.hash(password)
 
 
 def verify_password(password_hash: str, password: str) -> bool:
-    try:
-        return _hasher.verify(password_hash, password)
-    except (VerificationError, InvalidHashError):
-        return False
+    with _hash_slot():
+        try:
+            return _hasher.verify(password_hash, password)
+        except (VerificationError, InvalidHashError):
+            return False
 
 
 @cache
 def _dummy_hash() -> str:
     """Checked against when the username doesn't exist, so a wrong username takes as long as a wrong
     password and the response time doesn't reveal which usernames are real."""
-    return _hasher.hash(secrets.token_hex(16))
+    return hash_password(secrets.token_hex(16))
 
 
-class LoginThrottle:
-    """Slows down password guessing: after `limit` failed sign-ins for one username from one address within
-    `window` seconds, more tries are refused until the oldest failure ages out. Keyed by address AND username,
-    so someone guessing can't lock the real user out. In memory: fine for this single-process service."""
+class Throttle:
+    """At most `limit` attempts per key within `window` seconds; more are refused until the oldest ages out.
+    Checking and counting are one step under a lock, so parallel requests can't all slip past the limit.
+    In memory: fine for this single-process service (a restart forgets it)."""
 
-    def __init__(self, limit: int = 5, window: float = 15 * 60, clock=time.monotonic):
+    def __init__(self, limit: int, window: float, clock=time.monotonic):
         self.limit, self.window, self.clock = limit, window, clock
-        self._fails: dict[tuple[str, str], deque[float]] = {}
+        self._hits: dict[tuple[str, str], deque[float]] = {}
+        self._next_prune = 0.0
         self._lock = threading.Lock()
 
     def _recent(self, key: tuple[str, str], now: float) -> deque[float]:
-        fails = self._fails.get(key, deque())
-        while fails and fails[0] <= now - self.window:
-            fails.popleft()
-        return fails
+        hits = self._hits.get(key, deque())
+        while hits and hits[0] <= now - self.window:
+            hits.popleft()
+        return hits
 
-    def blocked(self, key: tuple[str, str]) -> bool:
-        with self._lock:
-            return len(self._recent(key, self.clock())) >= self.limit
-
-    def failed(self, key: tuple[str, str]) -> None:
+    def attempt(self, key: tuple[str, str]) -> bool:
+        """Count one attempt; False (and not counted) if the key is already at its limit."""
         with self._lock:
             now = self.clock()
-            self._fails[key] = self._recent(key, now)
-            self._fails[key].append(now)
-            if len(self._fails) > 10_000:  # don't grow forever: drop everything that has aged out
-                self._fails = {k: q for k, q in self._fails.items() if self._recent(k, now)}
+            if now >= self._next_prune:  # at most once a minute: forget keys whose attempts have all aged out
+                self._hits = {k: q for k, q in self._hits.items() if self._recent(k, now)}
+                self._next_prune = now + 60
+            hits = self._recent(key, now)
+            if len(hits) >= self.limit:
+                return False
+            hits.append(now)
+            self._hits[key] = hits
+            return True
 
-    def succeeded(self, key: tuple[str, str]) -> None:
+    def forget(self, key: tuple[str, str]) -> None:
         with self._lock:
-            self._fails.pop(key, None)
+            self._hits.pop(key, None)
 
     def reset(self) -> None:
         with self._lock:
-            self._fails.clear()
+            self._hits.clear()
 
 
-throttle = LoginThrottle()
+# Password guessing: 5 tries per username per address in 15 minutes; signing in successfully clears them.
+# Keyed by address AND username, so someone guessing can't lock the real user out.
+login_attempts = Throttle(limit=5, window=15 * 60)
+# Sign-ups: 10 per address per hour, so nobody can flood the admin's approval list
+signups = Throttle(limit=10, window=60 * 60)
 
 
 def _client_ip(request: Request) -> str:
@@ -197,8 +224,10 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/signup", response_model=UserOut, status_code=201)
-def signup(body: SignupIn, session: Session = Depends(get_session)):
+def signup(body: SignupIn, request: Request, session: Session = Depends(get_session)):
     """Ask for an account. It can sign in once an admin approves it."""
+    if not signups.attempt((_client_ip(request), "")):
+        raise HTTPException(429, "too many sign-ups from here; try again later")
     if session.scalar(select(User.id).where(User.username == body.username)) is not None:
         raise HTTPException(409, "that username is taken")
     user = User(username=body.username, name=body.name, password_hash=hash_password(body.password),
@@ -216,16 +245,17 @@ def signup(body: SignupIn, session: Session = Depends(get_session)):
 @router.post("/login", response_model=UserOut)
 def login(body: LoginIn, request: Request, response: Response, session: Session = Depends(get_session)):
     key = (_client_ip(request), body.username)
-    if throttle.blocked(key):
+    if not login_attempts.attempt(key):
         raise HTTPException(429, "too many failed sign-ins; wait 15 minutes and try again")
     user = session.scalar(select(User).where(User.username == body.username))
     password_ok = verify_password(user.password_hash if user else _dummy_hash(), body.password)
     if user is None or not password_ok:
-        throttle.failed(key)
         raise HTTPException(401, "wrong username or password")
-    throttle.succeeded(key)
+    login_attempts.forget(key)
     if user.status != "active":  # only said to someone who knows the password
         raise HTTPException(403, NOT_ACTIVE[user.status])
+    if _hasher.check_needs_rehash(user.password_hash):  # e.g. hashed with older, costlier settings
+        user.password_hash = hash_password(body.password)
     user.last_login_at = utcnow()
     session.commit()
     issue_session(response, user, body.remember)
@@ -274,6 +304,17 @@ def _get_user(session: Session, user_id: int) -> User:
     return user
 
 
+def _still_admin(session: Session, admin: User) -> None:
+    """Lock the active admins (in id order, so two requests can't deadlock) and check the caller is still one.
+    Admins can't change themselves, so the caller is always an admin left over after the change. The lock makes
+    that hold under races too: two admins demoting each other at the same moment would otherwise both succeed
+    (each saw the other as an admin), leaving none. Here the second waits, then finds it's no longer an admin."""
+    ids = session.scalars(select(User.id).where(User.role == "admin", User.status == "active")
+                          .order_by(User.id).with_for_update()).all()
+    if admin.id not in ids:
+        raise HTTPException(403, "admins only")
+
+
 @router.get("/users", response_model=list[UserOut])
 def list_users(_admin: User = Depends(admin_user), session: Session = Depends(get_session)):
     """Every account, sign-ups waiting for approval first."""
@@ -286,8 +327,9 @@ def update_user(user_id: int, body: UserUpdate, admin: User = Depends(admin_user
                 session: Session = Depends(get_session)):
     """Approve, reject, disable, re-enable, or change someone's role."""
     user = _get_user(session, user_id)
-    if user.id == admin.id:  # also guarantees there is always an active admin left
+    if user.id == admin.id:  # with _still_admin, guarantees there is always an active admin left
         raise HTTPException(409, "you can't change your own account")
+    _still_admin(session, admin)
     status, role = body.status, body.role
     if status and status != user.status:
         if status == "rejected" and user.status != "pending":
@@ -311,6 +353,7 @@ def delete_user(user_id: int, admin: User = Depends(admin_user), session: Sessio
     user = _get_user(session, user_id)
     if user.id == admin.id:
         raise HTTPException(409, "you can't delete your own account")
+    _still_admin(session, admin)
     session.delete(user)
     session.commit()
     logger.info("auth: %s deleted the account %s", admin.username, user.username)
