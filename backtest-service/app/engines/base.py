@@ -19,11 +19,11 @@ class BacktestEngine(ABC):
 
     @abstractmethod
     async def run(self, cfg: RunConfig, prices: pd.Series, decide: DecideFn, emit: EmitFn,
-                  bars: pd.DataFrame | None = None, open_slots: pd.DataFrame | None = None) -> dict:
+                  bars: pd.DataFrame | None = None, slots: pd.DataFrame | None = None) -> dict:
         """Run the backtest and return a result dict:
         {metrics: {...}, trades: [...], equity_curve: [{date, equity, price}]}.
         `prices` is a close-price Series indexed by trading day for the whole window. `bars` (optional, same
-        index) adds each day's Open/High/Low, so stops and targets can trigger during the day. `open_slots`
-        (needed when cfg.decide_at is "open" or "both") gives each day's 10:00 price and the range before and
-        after it."""
+        index) adds each day's Open/High/Low, so stops and targets can trigger during the day. `slots` gives each
+        day's prices at the decision moments (10:00 and 15:30) and the ranges between them (see runner._fetch_slots);
+        a day without it is decided on its close."""
         raise NotImplementedError

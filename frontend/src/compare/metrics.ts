@@ -135,6 +135,13 @@ export const METRICS: Metric[] = [
     help: "Commissions paid (slippage is already in the fill prices).", value: (r) => r.total_fees, format: money,
   },
   {
+    key: "breaker", title: "Drawdown breaker",
+    help: "Like a live bot: once equity fell the set % below its peak, the run stopped deciding (stops and targets still worked).",
+    value: (r) => (r.breaker_tripped_on ? 1 : 0),
+    format: (_v, r) => (r.breaker_tripped_on ? `tripped ${r.breaker_tripped_on}` : "not tripped"),
+    warn: (r) => (r.breaker_tripped_on ? `Paused on ${r.breaker_tripped_on}: no decisions after that day` : null),
+  },
+  {
     key: "decision_errors", title: "Failed decisions", better: "low",
     help: "Decision days where decision-service failed (counted as a hold). Anything above 0 makes the result less trustworthy.",
     value: (r) => r.decision_errors ?? 0, format: (v) => num(v, 0),

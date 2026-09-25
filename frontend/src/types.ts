@@ -20,6 +20,7 @@ export interface RunConfig {
   target_pct?: number; // take-profit distance above entry as a fraction
   strategy: StrategyId;
   decide_at?: DecideAt; // when a decision day decides, like a bot's "Check at"; omitted = before the close
+  max_drawdown_pct?: number; // the bots' drawdown breaker: stop deciding after this drop from the peak (0 = off)
 }
 
 export interface Trade {
@@ -71,6 +72,7 @@ export interface Result {
   signals?: Record<"BUY" | "SELL" | "HOLD", number>;
   decision_errors?: number;
   no_news_decisions?: number;
+  breaker_tripped_on?: string | null; // the day the drawdown breaker paused the run, if it did
 }
 
 // --- WebSocket events (discriminated union on `type`) ---

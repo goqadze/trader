@@ -21,6 +21,7 @@ interface FormValues {
   stop_pct: number;
   target_pct: number;
   decide_at: DecideAt | "suggested";
+  max_drawdown_pct: number; // percent in the form
 }
 
 // "Each strategy's suggested time" first: it's the default, and how each strategy is meant to trade
@@ -51,6 +52,7 @@ function toConfigs(v: FormValues): RunConfig[] {
       target_pct: own ? g.target_pct : v.target_pct / 100,
       strategy: id,
       decide_at: checkAt(id, v),
+      max_drawdown_pct: v.max_drawdown_pct / 100,
     };
   });
 }
@@ -96,6 +98,7 @@ export default function CompareForm({ onRun, running }: Props) {
           stop_pct: 4,
           target_pct: 8,
           decide_at: "suggested",
+          max_drawdown_pct: 20, // the bots' default
         }}
       >
         <Form.Item
@@ -149,6 +152,9 @@ export default function CompareForm({ onRun, running }: Props) {
         </Form.Item>
         <Form.Item name="position_pct" label="Position size (fraction of cash)">
           <InputNumber min={0.1} max={1} step={0.1} style={{ width: "100%" }} />
+        </Form.Item>
+        <Form.Item name="max_drawdown_pct" label="Drawdown breaker" tooltip="Like a trading bot: once equity falls this far below its peak, stop deciding (the stop-loss and target still guard an open position). 0 = off.">
+          <InputNumber min={0} max={99} step={5} addonAfter="%" style={{ width: "100%" }} />
         </Form.Item>
         <Form.Item
           name="settings"

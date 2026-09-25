@@ -83,14 +83,14 @@ def test_only_max_parallel_runs_execute_at_once(monkeypatch):
     active = {"now": 0, "peak": 0}
 
     class FakeEngine:
-        async def run(self, cfg, prices, decide, emit, bars=None, open_slots=None):
+        async def run(self, cfg, prices, decide, emit, bars=None, slots=None):
             active["now"] += 1
             active["peak"] = max(active["peak"], active["now"])
             await asyncio.sleep(0.01)
             active["now"] -= 1
             return {}
 
-    async def fake_load(symbol, start, end):
+    async def fake_load(symbol, start, end, fetch=None):
         return _closes().to_frame("Close")
 
     monkeypatch.setattr(runner, "SimplePortfolioEngine", FakeEngine)
@@ -117,29 +117,43 @@ def test_finished_sessions_also_trims_ohlc_bars():
     assert list(_finished_sessions(bars, during).index) == [date(2026, 9, 23), date(2026, 9, 24)]
 
 
-def test_open_slots_split_each_day_at_10am(monkeypatch):
+def _half_hours(day: str, last_start: str = "15:30"):
+    """A regular session of 30-minute bars (indexed by start) from 9:30 to last_start; close = 100 + bar number."""
+    start = pd.Timestamp(f"{day} 09:30", tz="America/New_York")
+    n = int((pd.Timestamp(f"{day} {last_start}", tz="America/New_York") - start) / pd.Timedelta(minutes=30)) + 1
+    idx = pd.DatetimeIndex([start + pd.Timedelta(minutes=30 * k) for k in range(n)])
+    close = [100.0 + k for k in range(n)]
+    return pd.DataFrame({"Open": close, "High": [c + 0.5 for c in close], "Low": [c - 0.5 for c in close], "Close": close}, index=idx)
+
+
+def test_slots_are_the_bots_two_decision_moments(monkeypatch):
     from app import runner
 
-    start = pd.Timestamp("2026-09-24 09:30", tz="America/New_York")
-    idx = pd.DatetimeIndex([start + pd.Timedelta(minutes=30 * k) for k in range(4)])
-    half_hours = pd.DataFrame({"Open": [100.0, 102.0, 103.0, 101.0], "High": [103.0, 110.0, 104.0, 102.0],
-                               "Low": [99.0, 101.0, 97.0, 100.0], "Close": [102.0, 103.0, 101.0, 101.5]}, index=idx)
-    monkeypatch.setattr(runner, "_intraday_bars", lambda *a: half_hours)
-    slots = runner._fetch_open_slots("AAPL", date(2026, 9, 24), date(2026, 9, 24))
-    row = slots.loc[date(2026, 9, 24)]
-    assert row["price"] == 102.0  # the 9:30 bar's close = the price at 10:00
-    assert (row["high_before"], row["low_before"]) == (103.0, 99.0)
-    assert (row["high_after"], row["low_after"]) == (110.0, 97.0)  # 10:00 to the close
+    monkeypatch.setattr(runner, "_intraday_bars", lambda *a: _half_hours("2026-09-24"))
+    row = runner._fetch_slots("AAPL", date(2026, 9, 24), date(2026, 9, 24)).loc[date(2026, 9, 24)]
+    assert row["open_price"] == 100.0  # the 9:30 bar's close = the price at 10:00
+    assert (row["a_high"], row["a_low"]) == (100.5, 99.5)
+    assert (row["close_at"], row["close_price"]) == ("15:30", 111.0)  # the 15:00 bar (#11) closes at 15:30
+    assert (row["b_high"], row["b_low"]) == (111.5, 100.5)  # 10:00 to 15:30
+    assert (row["c_high"], row["c_low"]) == (112.5, 111.5)  # 15:30 to the close
 
 
-def test_open_slots_without_data_are_a_clear_error(monkeypatch):
+def test_a_half_day_closes_its_slot_30_minutes_before_the_early_close(monkeypatch):
+    from app import runner
+
+    monkeypatch.setattr(runner, "_intraday_bars", lambda *a: _half_hours("2026-11-27", last_start="12:30"))  # 13:00 close
+    row = runner._fetch_slots("AAPL", date(2026, 11, 27), date(2026, 11, 27)).loc[date(2026, 11, 27)]
+    assert (row["close_at"], row["close_price"]) == ("12:30", 105.0)
+
+
+def test_slots_without_data_are_a_clear_error(monkeypatch):
     import pytest
 
     from app import runner
 
     monkeypatch.setattr(runner, "_intraday_bars", lambda *a: pd.DataFrame(columns=["Open", "High", "Low", "Close"]))
     with pytest.raises(ValueError, match="No 30-minute prices"):
-        runner._fetch_open_slots("AAPL", date(2025, 1, 1), date(2025, 2, 1))
+        runner._fetch_slots("AAPL", date(2025, 1, 1), date(2025, 2, 1))
 
 
 def test_intraday_bars_come_from_decision_service(monkeypatch):

@@ -26,7 +26,7 @@ class SimplePortfolioEngine(BacktestEngine):
     name = "simple"
 
     async def run(self, cfg: RunConfig, prices: pd.Series, decide: DecideFn, emit: EmitFn,
-                  bars: pd.DataFrame | None = None, open_slots: pd.DataFrame | None = None) -> dict:
+                  bars: pd.DataFrame | None = None, slots: pd.DataFrame | None = None) -> dict:
         days: list[date] = list(prices.index)
         cash = cfg.initial_cash
         position = 0.0  # shares held
@@ -39,6 +39,8 @@ class SimplePortfolioEngine(BacktestEngine):
         signals = {"BUY": 0, "SELL": 0, "HOLD": 0}  # what the strategy said, before the confidence filter
         decision_errors = 0  # decisions where decision-service failed (counted as HOLD)
         no_news = 0  # decisions made without news sentiment (news off, or its LLM call failed)
+        peak = cfg.initial_cash  # highest equity so far, for the drawdown breaker
+        paused_on: date | None = None  # when the breaker tripped: no decisions after it, like a paused bot
 
         async def close_position(i, day, price, reason: str) -> None:
             """Sell the whole position at `price` (with slippage + fee) and record why.
@@ -89,11 +91,7 @@ class SimplePortfolioEngine(BacktestEngine):
                     position = shares
                     entry_i = i
                     cost_basis = cost + fee  # what it truly cost us to get in
-                    # Enforce the stop/target the agent sized for THIS entry (from decision-service).
-                    # Falls back to no stop / no target if the signal didn't include a position block.
-                    pos = sig.get("position") or {}
-                    stop_price = float(pos.get("stop_loss") or 0.0)
-                    target_price = float(pos.get("target") or math.inf)
+                    stop_price, target_price = _exit_levels(cfg, sig.get("position") or {}, fill)
                     rec = {"side": "BUY", "date": day.isoformat(), "price": round(fill, 4), "shares": shares, "fee": round(fee, 2)}
                     trades.append(rec)
                     await emit({"type": "trade", **rec})
@@ -106,34 +104,55 @@ class SimplePortfolioEngine(BacktestEngine):
         await emit({"type": "start", "symbol": cfg.symbol, "total": len(days),
                     "initial_cash": cfg.initial_cash, "first_price": float(prices.iloc[0])})
 
+        def breaker(day, price: float) -> dict | None:
+            """Mark equity at `price`; trip the drawdown breaker like a live bot (which checks every few minutes)."""
+            nonlocal peak, paused_on
+            equity = cash + position * price
+            peak = max(peak, equity)
+            if paused_on is None and cfg.max_drawdown_pct > 0 and equity < peak * (1 - cfg.max_drawdown_pct):
+                paused_on = day
+                return {"slot": "close", "action": "HOLD", "confidence": 0.0, "price": price, "equity": equity, "sentiment": "",
+                        "reasoning": f"Drawdown breaker: equity ${equity:,.2f} is more than {cfg.max_drawdown_pct:.0%} below its "
+                                     f"peak ${peak:,.2f}. Paused like a live bot: no more decisions; the stop-loss and "
+                                     "target still guard an open position."}
+            return None
+
         for i, day in enumerate(days):
             price = float(prices.iloc[i])
             # The day's range; without bars (closes only) it's just the close
             o, h, lo = (float(bars.iloc[i][k]) for k in ("Open", "High", "Low")) if bars is not None else (price,) * 3
-            # Only spend an LLM call every rebalance_days; other days we simply carry the position.
-            is_decision_day = i % cfg.rebalance_days == 0
+            # Only spend an LLM call every rebalance_days; other days we simply carry the position. A tripped
+            # breaker stops decisions for good, as it pauses a live bot.
+            is_decision_day = i % cfg.rebalance_days == 0 and paused_on is None
             decisions: list[dict] = []
+            slot = slots.loc[day] if slots is not None and day in slots.index else None
 
-            if cfg.decide_at == "close":
-                await risk_check(i, day, o, h, lo, price)  # the whole day passes before the close decision
+            async def stretch(open_, high, low, last):
+                """Stop/target over one stretch of the day, then the breaker at its end."""
+                await risk_check(i, day, open_, high, low, last)
+                if note := breaker(day, last):
+                    decisions.append(note)
+
+            if slot is not None:
+                # The day as a bot lives it: 9:30-10:00, the 10:00 slot, 10:00-15:30, the 15:30 slot, 15:30-16:00
+                await stretch(o, slot["a_high"], slot["a_low"], slot["open_price"])
+                if cfg.decide_at in ("open", "both") and is_decision_day and paused_on is None:
+                    decisions.append(await decide_and_trade(i, day, "open", float(slot["open_price"])))
+                await stretch(slot["open_price"], slot["b_high"], slot["b_low"], slot["close_price"])
+                if cfg.decide_at in ("close", "both") and is_decision_day and paused_on is None:
+                    decisions.append(await decide_and_trade(i, day, "close", float(slot["close_price"])))
+                await stretch(slot["close_price"], slot["c_high"], slot["c_low"], price)
             else:
-                slot = open_slots.loc[day] if open_slots is not None and day in open_slots.index else None
-                if slot is None:  # no 30-minute prices for this day: the 10:00 decision can't be replayed
-                    await risk_check(i, day, o, h, lo, price)
-                    if is_decision_day:
-                        signals["HOLD"] += 1
-                        decision_errors += 1
-                        decisions.append({"slot": "open", "action": "HOLD", "confidence": 0.0, "price": price,
-                                          "equity": cash + position * price, "sentiment": "",
-                                          "reasoning": "No 10:00 price for this day (30-minute data missing): no decision"})
-                else:
-                    await risk_check(i, day, o, slot["high_before"], slot["low_before"], slot["price"])  # 9:30-10:00
-                    if is_decision_day:
-                        decisions.append(await decide_and_trade(i, day, "open", float(slot["price"])))
-                    # 10:00 to the close: also covers a position bought at 10:00
-                    await risk_check(i, day, slot["price"], slot["high_after"], slot["low_after"], price)
-            if is_decision_day and cfg.decide_at in ("close", "both"):
-                decisions.append(await decide_and_trade(i, day, "close", price))
+                # No 30-minute prices for this day: the whole day passes, then a close decision on the day's close
+                await stretch(o, h, lo, price)
+                if cfg.decide_at in ("open", "both") and is_decision_day:
+                    signals["HOLD"] += 1
+                    decision_errors += 1
+                    decisions.append({"slot": "open", "action": "HOLD", "confidence": 0.0, "price": price,
+                                      "equity": cash + position * price, "sentiment": "",
+                                      "reasoning": "No 10:00 price for this day (30-minute data missing): no decision"})
+                if cfg.decide_at in ("close", "both") and is_decision_day and paused_on is None:
+                    decisions.append(await decide_and_trade(i, day, "close", price))
 
             # Mark-to-market equity for every day so the chart is smooth
             equity = cash + position * price
@@ -151,6 +170,7 @@ class SimplePortfolioEngine(BacktestEngine):
         result["signals"] = signals
         result["decision_errors"] = decision_errors
         result["no_news_decisions"] = no_news
+        result["breaker_tripped_on"] = paused_on.isoformat() if paused_on else None
         await emit({"type": "done", "result": result})
         return result
 
@@ -216,6 +236,24 @@ class SimplePortfolioEngine(BacktestEngine):
 
 
 TRADING_DAYS = 252
+
+
+def _exit_levels(cfg: RunConfig, pos: dict, fill: float) -> tuple[float, float]:
+    """The stop-loss and target for a new position, from the ACTUAL fill (slippage included) and rounded to the cent,
+    exactly as a live bot sets them. The distances are the run's stop_pct / target_pct, or else the ones
+    decision-service sized from its entry price. No position block from the signal = no stop, no target."""
+    entry = float(pos.get("entry") or 0)
+    stop_pct = cfg.stop_pct if cfg.stop_pct is not None else (1 - float(pos["stop_loss"]) / entry if entry and pos.get("stop_loss") else None)
+    target_pct = cfg.target_pct if cfg.target_pct is not None else (float(pos["target"]) / entry - 1 if entry and pos.get("target") else None)
+    if stop_pct is None and pos.get("stop_loss"):  # a signal with levels but no entry price: take them as they are
+        stop = float(pos["stop_loss"])
+    else:
+        stop = round(fill * (1 - stop_pct), 2) if stop_pct is not None else 0.0
+    if target_pct is None and pos.get("target"):
+        target = float(pos["target"])
+    else:
+        target = round(fill * (1 + target_pct), 2) if target_pct is not None else math.inf
+    return stop, target
 
 
 def _risk_exit(open_: float, high: float, low: float, close: float, stop: float, target: float) -> tuple[str, float] | None:

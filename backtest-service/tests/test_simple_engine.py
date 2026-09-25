@@ -12,7 +12,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-from app.engines.simple import SimplePortfolioEngine
+from app.engines.simple import SimplePortfolioEngine, _exit_levels
 from app.models import RunConfig
 
 
@@ -23,7 +23,7 @@ def _prices(values, start=date(2025, 1, 6)):
     return pd.Series([float(v) for v in values], index=idx)
 
 
-def _run(prices, decide, bars=None, open_slots=None, **overrides):
+def _run(prices, decide, bars=None, slots=None, **overrides):
     cfg_args = dict(
         symbol="TEST", start=prices.index[0], end=prices.index[-1],
         initial_cash=10_000, min_confidence=0.6, rebalance_days=1,
@@ -36,7 +36,7 @@ def _run(prices, decide, bars=None, open_slots=None, **overrides):
     async def emit(ev):
         events.append(ev)
 
-    result = asyncio.run(SimplePortfolioEngine().run(cfg, prices, decide, emit, bars=bars, open_slots=open_slots))
+    result = asyncio.run(SimplePortfolioEngine().run(cfg, prices, decide, emit, bars=bars, slots=slots))
     return result, events
 
 
@@ -324,13 +324,20 @@ def test_stop_fill_still_pays_slippage():
 
 
 
-# --- deciding after the open (10:00) and at both times ---------------------
+# --- deciding at the bots' moments: 10:00, 15:30, or both --------------------------------------------------
 
 def _slots(rows, start=date(2025, 1, 6)):
-    """(price at 10:00, high before, low before, high after, low after) per day, as the runner builds them."""
-    idx = [start + timedelta(days=i) for i in range(len(rows))]
-    cols = ["price", "high_before", "low_before", "high_after", "low_after"]
-    return pd.DataFrame([[float(x) for x in r] for r in rows], index=idx, columns=cols)
+    """Per day: (10:00 price, 9:30-10:00 high/low, 15:30 price, 10:00-15:30 high/low, 15:30-16:00 high/low),
+    as runner._fetch_slots builds them. Each high/low is a (high, low) pair."""
+    out = {}
+    for k, (p10, a, p1530, b, c) in enumerate(rows):
+        out[start + timedelta(days=k)] = {"open_price": float(p10), "close_price": float(p1530), "close_at": "15:30",
+                                          "a_high": a[0], "a_low": a[1], "b_high": b[0], "b_low": b[1],
+                                          "c_high": c[0], "c_low": c[1]}
+    return pd.DataFrame.from_dict(out, orient="index")
+
+
+FLAT = (100, 100)  # a stretch that stayed at 100
 
 
 def _recording(signal):
@@ -345,18 +352,37 @@ def _recording(signal):
 
 def test_an_open_decision_fills_at_the_10am_price():
     closes, bars = _bars([(100, 106, 99, 105), (105, 106, 104, 105)])
-    slots = _slots([(102, 103, 99, 106, 101), (105, 105, 104, 106, 104)])
+    slots = _slots([(102, (103, 99), 104, (106, 101), (105, 104)), (105, (105, 104), 105, (106, 104), (106, 104))])
     decide, asked = _recording({"action": "BUY", "confidence": 0.9})
-    res, _ = _run(closes, decide, bars=bars, open_slots=slots, decide_at="open", rebalance_days=100)
+    res, _ = _run(closes, decide, bars=bars, slots=slots, decide_at="open", rebalance_days=100)
     assert asked == [("2025-01-06", "open")]  # only the open slot, never the close
     assert res["trades"][0]["price"] == 102.0  # the 10:00 price, not the 105 close
+
+
+def test_a_close_decision_fills_at_the_1530_price_like_a_bot():
+    # A live bot decides and buys at 15:30, not on the 16:00 close
+    closes, bars = _bars([(100, 106, 99, 105)])
+    slots = _slots([(101, (102, 99), 103, (104, 100), (106, 102))])
+    decide, asked = _recording({"action": "BUY", "confidence": 0.9})
+    res, _ = _run(closes, decide, bars=bars, slots=slots, rebalance_days=100)
+    assert asked == [("2025-01-06", "close")]
+    assert res["trades"][0]["price"] == 103.0
+
+
+def test_a_1530_entry_is_protected_for_the_last_half_hour():
+    # Bought at 15:30 for 100 (stop 96); the last 30 minutes drop to 95
+    closes, bars = _bars([(100, 101, 95, 96)])
+    slots = _slots([(100, FLAT, 100, FLAT, (100, 95))])
+    res, _ = _run(closes, _const(BUY_96_108), bars=bars, slots=slots, rebalance_days=100)
+    sell = _only_sell(res)
+    assert (sell["reason"], sell["price"], sell["hold_days"]) == ("stop-loss", 96.0, 0)
 
 
 def test_a_10am_entry_is_protected_for_the_rest_of_that_day():
     # Bought at 10:00 for 100; the afternoon drops to 94, through the 96 stop
     closes, bars = _bars([(101, 101, 94, 95)])
-    slots = _slots([(100, 101, 99, 100, 94)])
-    res, _ = _run(closes, _const(BUY_96_108), bars=bars, open_slots=slots, decide_at="open", rebalance_days=100)
+    slots = _slots([(100, (101, 99), 97, (100, 94), (97, 95))])
+    res, _ = _run(closes, _const(BUY_96_108), bars=bars, slots=slots, decide_at="open", rebalance_days=100)
     sell = _only_sell(res)
     assert (sell["reason"], sell["price"], sell["hold_days"]) == ("stop-loss", 96.0, 0)
 
@@ -364,38 +390,39 @@ def test_a_10am_entry_is_protected_for_the_rest_of_that_day():
 def test_the_morning_before_10am_is_checked_before_deciding():
     # Holding from day 1; day 2 dips to 95 before 10:00: stopped out at 96 before the 10:00 decision
     closes, bars = _bars([(100, 100, 100, 100), (99, 100, 95, 99)])
-    slots = _slots([(100, 100, 100, 100, 100), (97, 99, 95, 100, 97)])
+    slots = _slots([(100, FLAT, 100, FLAT, FLAT), (97, (99, 95), 99, (100, 97), (99, 99))])
     decide, asked = _recording(BUY_96_108)
-    res, _ = _run(closes, decide, bars=bars, open_slots=slots, decide_at="open")
+    res, _ = _run(closes, decide, bars=bars, slots=slots, decide_at="open")
     buys = [t for t in res["trades"] if t["side"] == "BUY"]
     assert _only_sell(res)["price"] == 96.0
     assert len(buys) == 2 and buys[1]["price"] == 97.0  # flat again at 10:00, so the BUY signal re-enters
 
 
 def test_both_decides_twice_on_a_decision_day():
-    closes, bars = _bars([(100, 101, 99, 100), (100, 101, 99, 100), (100, 101, 99, 100)])
-    slots = _slots([(100, 101, 99, 101, 99)] * 3)
+    closes, bars = _bars([(100, 101, 99, 100)] * 3)
+    slots = _slots([(100, (101, 99), 100, (101, 99), (101, 99))] * 3)
     decide, asked = _recording({"action": "HOLD", "confidence": 0.0})
-    _, events = _run(closes, decide, bars=bars, open_slots=slots, decide_at="both", rebalance_days=2)
+    _, events = _run(closes, decide, bars=bars, slots=slots, decide_at="both", rebalance_days=2)
     assert asked == [("2025-01-06", "open"), ("2025-01-06", "close"), ("2025-01-08", "open"), ("2025-01-08", "close")]
     steps = [e for e in events if e["type"] == "step"]
     assert [[d["slot"] for d in s["decisions"]] for s in steps] == [["open", "close"], [], ["open", "close"]]
 
 
-def test_a_morning_buy_can_be_sold_at_the_close():
-    closes, bars = _bars([(100, 101, 99, 103)])
-    slots = _slots([(100, 101, 99, 103, 99)])
-    res, _ = _run(closes, _scripted([BUY, SELL]), bars=bars, open_slots=slots, decide_at="both")
+def test_a_morning_buy_can_be_sold_at_1530():
+    closes, bars = _bars([(100, 104, 99, 104)])
+    slots = _slots([(100, (101, 99), 103, (103, 99), (104, 103))])
+    res, _ = _run(closes, _scripted([BUY, SELL]), bars=bars, slots=slots, decide_at="both")
     sell = _only_sell(res)
-    assert (sell["reason"], sell["price"], sell["pnl"]) == ("signal", 103.0, 300.0)  # 100 shares, +$3
+    assert (sell["reason"], sell["price"], sell["pnl"]) == ("signal", 103.0, 300.0)  # 100 shares, +$3 at 15:30
 
 
-def test_a_day_without_30_minute_data_is_a_failed_decision():
-    closes, bars = _bars([(100, 101, 99, 100), (100, 101, 99, 100)])
-    slots = _slots([(100, 101, 99, 101, 99)])  # nothing for day 2
-    decide, asked = _recording({"action": "HOLD", "confidence": 0.0})
-    res, _ = _run(closes, decide, bars=bars, open_slots=slots, decide_at="open")
-    assert asked == [("2025-01-06", "open")]  # day 2 isn't asked: there's no 10:00 to replay
+def test_a_day_without_30_minute_data_falls_back_to_the_close():
+    closes, bars = _bars([(100, 101, 99, 100), (100, 101, 99, 102)])
+    slots = _slots([(100, (101, 99), 100, (101, 99), (101, 99))])  # nothing for day 2
+    decide, asked = _recording({"action": "BUY", "confidence": 0.9})
+    res, _ = _run(closes, decide, bars=bars, slots=slots, decide_at="both", position_pct=0.5)
+    # day 2: no 10:00 to replay (a failed decision), but the close decision still runs, on the close
+    assert asked == [("2025-01-06", "open"), ("2025-01-06", "close"), ("2025-01-07", "close")]
     assert res["decision_errors"] == 1
 
 
@@ -403,3 +430,38 @@ def test_close_decisions_are_logged_with_their_slot():
     _, events = _run(_prices([100, 101]), _const({"action": "HOLD", "confidence": 0.0}))
     steps = [e for e in events if e["type"] == "step"]
     assert [d["slot"] for d in steps[0]["decisions"]] == ["close"]
+
+
+# --- the same exits and safety net as a live bot -----------------------------------------------------------
+
+def test_stop_and_target_come_from_the_actual_fill_like_a_bot():
+    # With 1% slippage the fill is 101; a bot sets its levels from that fill (not the 100 signal price), to the cent
+    cfg = RunConfig(start=date(2025, 1, 1), end=date(2025, 2, 1), stop_pct=0.04, target_pct=0.08)
+    assert _exit_levels(cfg, {"entry": 100, "stop_loss": 96, "target": 108}, 101.0) == (96.96, 109.08)
+    # ... and the engine really uses them: 96.96 is hit on day 2, not the signal's 96
+    closes, bars = _bars([(100, 100, 100, 100), (99, 99, 96.9, 98)])
+    sell = _only_sell(_run(closes, _const({"action": "BUY", "confidence": 0.9, "position": {"entry": 100, "stop_loss": 96, "target": 108}}),
+                           bars=bars, rebalance_days=100, slippage_pct=0.01, stop_pct=0.04, target_pct=0.08)[0])
+    assert (sell["reason"], sell["price"]) == ("stop-loss", round(96.96 * 0.99, 4))
+
+
+def test_without_run_levels_the_signals_distances_apply_to_the_fill():
+    cfg = RunConfig(start=date(2025, 1, 1), end=date(2025, 2, 1))  # stop_pct / target_pct not set
+    assert _exit_levels(cfg, {"entry": 100, "stop_loss": 95, "target": 110}, 102.0) == (96.9, 112.2)
+    assert _exit_levels(cfg, {}, 102.0) == (0.0, math.inf)  # no position block: no stop, no target
+
+
+def test_the_drawdown_breaker_stops_decisions_like_a_paused_bot():
+    # Bought at 100 with no stop; the price falls 25%: the 20% breaker trips during day 3, before its decision
+    # (a live bot's 5-minute check would pause it then too), and no decision follows
+    decide, asked = _recording({"action": "BUY", "confidence": 0.9})
+    res, events = _run(_prices([100, 90, 75, 70, 80]), decide)
+    assert res["breaker_tripped_on"] == "2025-01-08"
+    assert [a[0] for a in asked] == ["2025-01-06", "2025-01-07"]
+    notes = [d for e in events if e["type"] == "step" for d in e["decisions"] if "Drawdown breaker" in d["reasoning"]]
+    assert len(notes) == 1
+
+
+def test_the_breaker_can_be_turned_off():
+    res, _ = _run(_prices([100, 90, 75, 70]), _const(BUY), max_drawdown_pct=0)
+    assert res["breaker_tripped_on"] is None

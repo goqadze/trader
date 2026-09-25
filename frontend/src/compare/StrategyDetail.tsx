@@ -47,7 +47,8 @@ export default function StrategyDetail({ run }: { run: BacktestState }) {
             <div>
               Ran with: every {cfg.rebalance_days} day{cfg.rebalance_days === 1 ? "" : "s"} · check{" "}
               {checkAtText(cfg.decide_at)} · stop {pct(cfg.stop_pct)} · target{" "}
-              {pct(cfg.target_pct)} · min confidence {cfg.min_confidence} ·{" "}
+              {pct(cfg.target_pct)} · min confidence {cfg.min_confidence} · breaker{" "}
+              {cfg.max_drawdown_pct ? pct(cfg.max_drawdown_pct) : "off"} ·{" "}
               <a href={`/guides/trading-strategies.html#${info.id}`} target="_blank" rel="noreferrer">
                 chart &amp; details
               </a>
@@ -73,7 +74,7 @@ export default function StrategyDetail({ run }: { run: BacktestState }) {
                   }
                 >
                   <Space size={6}>
-                    <span>{m.format(m.value(r), r)}</span>
+                    <span style={m.warn?.(r) ? { color: "#faad14" } : undefined}>{m.format(m.value(r), r)}</span>
                     {m.buyHold && <span style={{ color: MUTED, fontSize: 12 }}>B&amp;H {m.format(bh, r)}</span>}
                   </Space>
                 </Descriptions.Item>

@@ -47,6 +47,7 @@ NY = ZoneInfo(NEW_YORK)
 CLOSE_HOUR = 16  # regular close, New York time (half days close earlier; waiting until 16:00 is still safe)
 # The "after the open" decision moment, as trading-service's default (DECISION_MINUTES_AFTER_OPEN = 30)
 OPEN_SLOT = dtime(10, 0)
+CLOSE_SLOT = dtime(15, 30)  # DECISION_MINUTES_BEFORE_CLOSE = 30
 HALF_HOUR = pd.Timedelta(minutes=30)
 
 
@@ -75,23 +76,33 @@ def _intraday_bars(symbol: str, start: date, end: date) -> pd.DataFrame:
     return df[["Open", "High", "Low", "Close"]]
 
 
-def _fetch_open_slots(symbol: str, start: date, end: date) -> pd.DataFrame:
-    """Per trading day, from 30-minute bars: the 10:00 New York price, the range before it (9:30-10:00) and the
-    range after it (10:00 to the close). The engine decides at 10:00 on that price, then checks the stop and
-    target on the rest of the day. A day missing here becomes a failed 10:00 decision in the engine."""
+def _fetch_slots(symbol: str, start: date, end: date) -> pd.DataFrame:
+    """Per trading day, from 30-minute bars, what a trading bot sees at its two decision moments: 10:00 ("after the
+    open") and the close slot (15:30; 30 minutes before an early close), with the price ranges in between:
+    a = 9:30 to 10:00, b = 10:00 to the close slot, c = the close slot to the close. The engine decides at a slot
+    on that moment's price and checks the stop and target on each stretch, in order. A day missing here (no
+    30-minute prices) falls back to deciding on the day's close."""
     df = _intraday_bars(symbol, start, end)
     if df.empty:
         raise ValueError(f"No 30-minute prices for {symbol} in {start}..{end} (without Alpaca keys, Yahoo keeps only 60 days)")
     rows = {}
     for day, g in df.groupby(df.index.date):
-        slot = pd.Timestamp(datetime.combine(day, OPEN_SLOT), tz=NY)
-        before, after = g[g.index + HALF_HOUR <= slot], g[g.index >= slot]  # bars are indexed by their start
-        if before.empty:
+        open_at = pd.Timestamp(datetime.combine(day, OPEN_SLOT), tz=NY)
+        # The last 30 minutes before the close: 15:30, or 12:30 on a half day (whose last bar starts then)
+        close_at = min(pd.Timestamp(datetime.combine(day, CLOSE_SLOT), tz=NY), g.index.max())
+        done = g.index + HALF_HOUR  # when each bar finished (bars are indexed by their start)
+        a, b, c = g[done <= open_at], g[(g.index >= open_at) & (done <= close_at)], g[g.index >= close_at]
+        if a.empty:
             continue
-        price = float(before["Close"].iloc[-1])
-        rows[day] = {"price": price, "high_before": float(before["High"].max()), "low_before": float(before["Low"].min()),
-                     "high_after": float(after["High"].max()) if len(after) else price,
-                     "low_after": float(after["Low"].min()) if len(after) else price}
+        at_open = float(a["Close"].iloc[-1])
+        at_close = float(b["Close"].iloc[-1]) if len(b) else at_open
+
+        def span(part, fallback):
+            return (float(part["High"].max()), float(part["Low"].min())) if len(part) else (fallback, fallback)
+
+        (a_high, a_low), (b_high, b_low), (c_high, c_low) = span(a, at_open), span(b, at_close), span(c, at_close)
+        rows[day] = {"open_price": at_open, "close_price": at_close, "close_at": close_at.strftime("%H:%M"),
+                     "a_high": a_high, "a_low": a_low, "b_high": b_high, "b_low": b_low, "c_high": c_high, "c_low": c_low}
     return pd.DataFrame.from_dict(rows, orient="index")
 
 
@@ -150,17 +161,28 @@ async def _execute(run: Run) -> None:
             bars = await _load_prices(cfg.symbol, cfg.start, cfg.end)
             if bars is None or len(bars) < 2:
                 raise ValueError(f"No price data for {cfg.symbol} in {cfg.start}..{cfg.end}")
-            open_slots = await _load_prices(cfg.symbol, cfg.start, cfg.end, _fetch_open_slots) if cfg.decide_at != "close" else None
+            # Each decision moment as the bot sees it (10:00 / 15:30). Without them a close decision falls back to the
+            # finished day; a 10:00 decision can't be replayed at all
+            try:
+                slots = await _load_prices(cfg.symbol, cfg.start, cfg.end, _fetch_slots)
+            except ValueError:
+                if cfg.decide_at != "close":
+                    raise
+                slots = pd.DataFrame()
 
             # 2) One shared HTTP client for all decision-service calls during this run
             async with httpx.AsyncClient() as client:
                 async def decide(symbol: str, as_of: date, slot: str = "close") -> dict:
-                    # The close decision uses the finished day (news up to 15:30), as before; the open one
-                    # replays 10:00 (prices and news as they stood then)
-                    at = datetime.combine(as_of, OPEN_SLOT, tzinfo=NY) if slot == "open" else None
+                    # Replay the slot's moment: prices and news as they stood then, like a live bot
+                    if slot == "open":
+                        at = datetime.combine(as_of, OPEN_SLOT, tzinfo=NY)
+                    elif as_of in slots.index:
+                        at = datetime.combine(as_of, dtime.fromisoformat(slots.loc[as_of, "close_at"]), tzinfo=NY)
+                    else:
+                        at = None  # no 30-minute prices for this day: the finished day, news up to 15:30
                     return await get_signal(client, symbol, as_of, cfg.strategy, cfg.stop_pct, cfg.target_pct, at)
 
-                run.result = await SimplePortfolioEngine().run(cfg, bars["Close"], decide, run.emit, bars=bars, open_slots=open_slots)
+                run.result = await SimplePortfolioEngine().run(cfg, bars["Close"], decide, run.emit, bars=bars, slots=slots)
             run.status = "done"
         except Exception as e:
             run.status = "error"

@@ -29,6 +29,9 @@ class RunConfig(BaseModel):
     # When a decision day decides, like a trading bot's "Check at": before the close (on the day's close),
     # after the open (10:00 New York, replayed from 30-minute bars), or both
     decide_at: Literal["close", "open", "both"] = "close"
+    # Like a trading bot's drawdown breaker: once equity falls this far below its peak, stop making decisions
+    # (the stop-loss and target still guard an open position). 0 = off. Same default as the bots.
+    max_drawdown_pct: float = Field(0.2, ge=0, lt=1)
 
 
 class RunSummary(BaseModel):

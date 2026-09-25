@@ -79,15 +79,18 @@ every order, and an audit log of every change.
 How a bot runs (`trading-service/app/scheduler.py`):
 
 - **Decides every `rebalance_days` trading days, at the time(s) set per bot in "Check at"**:
-  - **Before the close** (default): 15:30 New York, earlier on half days. That matches the backtest
-    (which fills at the close) and the news cutoff.
+  - **Before the close** (default): 15:30 New York, earlier on half days.
   - **After the open**: 10:00 New York, skipping the jumpy first 30 minutes.
   - **Both**: 10:00 and 15:30 on each decision day.
 
   Every check uses the same daily indicators, with that moment's price. News only counts up to the
-  decision moment. Backtests test all three: "After the open" replays 10:00 from 30-minute prices
-  (Alpaca's, years back, with the same keys as the news; Yahoo's last 60 days without them). Holidays and early closes
-  come from the NYSE calendar.
+  decision moment. Holidays and early closes come from the NYSE calendar.
+- **Backtests replay the same moments**: the day as it stood at 10:00 or 15:30 (rebuilt from Alpaca's
+  30-minute prices, years back, with the same keys as the news; Yahoo's last 60 days without them),
+  filled at that moment's price, stop and target from the fill, the same position sizing and the same
+  drawdown breaker. Each moment's news is judged once and saved in news-db (a live bot's judgment
+  included), so a backtest, a comparison and a rerun see the same news. What can still differ from a
+  live bot: its real fill prices, and today's price bar, which comes from Yahoo live.
 - **Same rules as the backtest**: BUY when flat and confidence ≥ minimum, spending `position_pct`
   of the bot's cash; SELL the whole position on a SELL signal, the stop-loss, or the take-profit.
 - **Stops and targets during the day**: checked every 5 minutes during market hours (the backtest

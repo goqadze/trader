@@ -18,6 +18,7 @@ interface FormValues {
   target_pct: number;
   strategy: StrategyId;
   decide_at: DecideAt;
+  max_drawdown_pct: number; // percent in the form
 }
 
 interface Props {
@@ -52,6 +53,7 @@ export default function ConfigForm({ onRun, running }: Props) {
       target_pct: v.target_pct / 100,
       strategy: v.strategy,
       decide_at: v.decide_at,
+      max_drawdown_pct: v.max_drawdown_pct / 100,
     });
   };
 
@@ -78,6 +80,7 @@ export default function ConfigForm({ onRun, running }: Props) {
           target_pct: 8,
           strategy: DEFAULT_STRATEGY,
           decide_at: "close",
+          max_drawdown_pct: 20, // the bots' default
         }}
       >
         <Form.Item name="strategy" label="Strategy">
@@ -90,7 +93,7 @@ export default function ConfigForm({ onRun, running }: Props) {
         <Form.Item name="range" label="Date range" rules={[{ required: true }]}>
           <DatePicker.RangePicker style={{ width: "100%" }} />
         </Form.Item>
-        <Form.Item name="decide_at" label="Check at (New York time)" tooltip="When a decision day decides, like a trading bot's “Check at”. Before the close decides on the day's close; after the open decides at 10:00 on that moment's price, then the stop and target guard the rest of the day; both does the two.">
+        <Form.Item name="decide_at" label="Check at (New York time)" tooltip="When a decision day decides, exactly like a trading bot's “Check at”: the day as it stood at 15:30 or 10:00, filled at that moment's price, then the stop and target guard the rest of the day. Both does the two.">
           <Select options={CHECK_AT_OPTIONS} />
         </Form.Item>
         <Form.Item name="initial_cash" label="Initial cash ($)">
@@ -110,6 +113,9 @@ export default function ConfigForm({ onRun, running }: Props) {
         </Form.Item>
         <Form.Item name="target_pct" label="Take-profit (% above entry)">
           <InputNumber min={0.1} max={200} step={0.5} addonAfter="%" style={{ width: "100%" }} />
+        </Form.Item>
+        <Form.Item name="max_drawdown_pct" label="Drawdown breaker" tooltip="Like a trading bot: once equity falls this far below its peak, stop deciding (the stop-loss and target still guard an open position). 0 = off.">
+          <InputNumber min={0} max={99} step={5} addonAfter="%" style={{ width: "100%" }} />
         </Form.Item>
         <Button type="primary" htmlType="submit" block loading={running}>
           Run backtest
