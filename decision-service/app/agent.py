@@ -1,6 +1,8 @@
 import os
+import threading
+from collections import OrderedDict
 from datetime import date, datetime
-from typing import TypedDict
+from typing import Callable, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
@@ -69,6 +71,15 @@ def news_rag(state: State) -> State:
     # No keys configured: skip gracefully so the service still works with technicals only
     if not _news_enabled():
         return {"headlines": [], "sentiment": "unavailable", "steps": state["steps"] + ["News RAG skipped (need OPENAI_API_KEY and at least one news source key)"]}
+    key = _news_cache_key(state)
+    news = _cached_news(key, lambda: _analyze_news(state)) if key else _analyze_news(state)
+    return {"headlines": news["headlines"], "catalysts": news["catalysts"], "sentiment": news["sentiment"],
+            "steps": state["steps"] + news["steps"]}
+
+
+def _analyze_news(state: State) -> dict:
+    """The news half of news_rag, independent of the strategy: {headlines, catalysts, sentiment, steps, cacheable}.
+    cacheable is False when a source or the whole step failed, so a retry can still get the full picture."""
     from .news import MARKET_TZ, catalysts, ingest_news, search_news
 
     # A live bot passes its decision moment (e.g. 10:00): only news published before then counts, and
@@ -79,9 +90,10 @@ def news_rag(state: State) -> State:
         report = ingest_news(state["symbol"], state["as_of"], cutoff=cutoff)  # pull from Alpaca/Polygon/Finnhub into Postgres/pgvector
         items = search_news(state["symbol"], state["as_of"], cutoff=cutoff)  # semantic search for the most relevant items
     except Exception as e:  # news failure must not break the signal
-        return {"headlines": [], "sentiment": "unavailable", "steps": state["steps"] + [f"News RAG failed: {e}"]}
+        return {"headlines": [], "catalysts": [], "sentiment": "unavailable", "steps": [f"News RAG failed: {e}"], "cacheable": False}
+    complete = not any(str(v).startswith("failed") for v in report.values())
     if not items:
-        return {"headlines": [], "sentiment": "neutral", "steps": state["steps"] + [f"Ingested {report}, none relevant"]}
+        return {"headlines": [], "catalysts": [], "sentiment": "neutral", "steps": [f"Ingested {report}, none relevant"], "cacheable": complete}
     heads = [i["text"] for i in items]
     events = catalysts(items)
     from langchain_openai import ChatOpenAI
@@ -100,7 +112,48 @@ def news_rag(state: State) -> State:
              f"News ({len(heads)} retrieved): {label} - {out.rationale}"]
     if events:
         steps.append(f"Fresh catalysts (< 48h): {len(events)} - " + " | ".join(e if len(e) <= 160 else e[:157] + "..." for e in events[:3]))
-    return {"headlines": heads, "catalysts": events, "sentiment": label, "steps": state["steps"] + steps}
+    return {"headlines": heads, "catalysts": events, "sentiment": label, "steps": steps, "cacheable": complete}
+
+
+# Comparing strategies replays the same symbol and days once per strategy, and the news step doesn't depend
+# on the strategy. A finished past day's result is kept here, so the news APIs, embeddings and the sentiment
+# LLM run once per (symbol, day) instead of once per strategy. In memory only: a restart clears it.
+NEWS_CACHE_SIZE = 4096
+_news_cache: OrderedDict[tuple, dict] = OrderedDict()
+_news_inflight: dict[tuple, threading.Lock] = {}
+_news_lock = threading.Lock()
+
+
+def _news_cache_key(state: State) -> tuple | None:
+    """Only backtest days that are over (a past as_of, the default 15:30 cutoff) are cached: a live bot's
+    news can still change, and it decides once per slot anyway."""
+    from .news import MARKET_TZ
+
+    if state.get("decided_at") or state["as_of"] >= datetime.now(MARKET_TZ).date():
+        return None
+    return state["symbol"], state["as_of"]
+
+
+def _cached_news(key: tuple, compute: Callable[[], dict]) -> dict:
+    """compute() once per key; callers asking for the same key at the same time wait for that one result.
+    /signal runs in FastAPI's thread pool, so this uses thread locks."""
+    with _news_lock:
+        if key in _news_cache:
+            _news_cache.move_to_end(key)
+            return _news_cache[key]
+        key_lock = _news_inflight.setdefault(key, threading.Lock())
+    with key_lock:
+        with _news_lock:
+            if key in _news_cache:  # computed by the caller we waited for
+                return _news_cache[key]
+        out = compute()
+        with _news_lock:
+            if out["cacheable"]:
+                _news_cache[key] = out
+                while len(_news_cache) > NEWS_CACHE_SIZE:
+                    _news_cache.popitem(last=False)
+            _news_inflight.pop(key, None)
+    return out
 
 
 def decide(state: State) -> State:

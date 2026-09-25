@@ -6,6 +6,7 @@ import { AuthProvider, RequireAuth, useAuth } from "./auth/AuthContext";
 import { LoginPage, SignupPage } from "./auth/AuthPages";
 import UsersPage from "./auth/UsersPage";
 import BacktestPage from "./pages/BacktestPage";
+import ComparePage from "./pages/ComparePage";
 import GuidePage from "./pages/GuidePage";
 import BotPage from "./trading/BotPage";
 import TradingPage from "./trading/TradingPage";
@@ -58,7 +59,15 @@ const resources = (admin: boolean): MenuProps["items"] =>
 function Header() {
   const { pathname } = useLocation();
   const admin = useAuth().user?.role === "admin";
-  const current = pathname.startsWith("/trading") ? "trading" : pathname.startsWith("/admin/users") ? "users" : pathname === "/" ? "backtest" : "";
+  const current = pathname.startsWith("/trading")
+    ? "trading"
+    : pathname.startsWith("/admin/users")
+      ? "users"
+      : pathname === "/compare"
+        ? "compare"
+        : pathname === "/"
+          ? "backtest"
+          : "";
   return (
     <Layout.Header style={{ display: "flex", alignItems: "center", gap: 16 }}>
       <span style={{ fontWeight: 600, fontSize: 18, whiteSpace: "nowrap" }}>📈 Trading</span>
@@ -69,6 +78,7 @@ function Header() {
         style={{ flex: "1 1 auto", minWidth: 0, background: "transparent", borderBottom: "none" }}
         items={[
           { key: "backtest", label: <Link to="/">Backtest</Link> },
+          { key: "compare", label: <Link to="/compare">Compare strategies</Link> },
           { key: "trading", label: <Link to="/trading">Live trading</Link> },
           ...(admin ? [{ key: "users", label: <Link to="/admin/users"><UsersNavLabel /></Link> }] : []),
         ]}
@@ -108,6 +118,7 @@ export default function App() {
               {/* Everything else needs a signed-in user */}
               <Route element={<RequireAuth><Shell /></RequireAuth>}>
                 <Route path="/" element={<BacktestPage />} />
+                <Route path="/compare" element={<ComparePage />} />
                 <Route path="/trading" element={<TradingPage />} />
                 <Route path="/trading/:id" element={<BotPage />} />
                 <Route path="/guide" element={<GuidePage guide="lifecycle" />} />

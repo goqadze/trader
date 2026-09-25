@@ -125,3 +125,6 @@ export const STRATEGY_OPTIONS = (["trend", "momentum", "breakout", "mean reversi
   label: style,
   options: STRATEGIES.filter((s) => s.style === style).map((s) => ({ value: s.id, label: s.name })),
 }));
+
+/** The name without its parenthesized detail ("Breakout (20-day high + volume)" -> "Breakout"), for tabs and tables. */
+export const strategyShortName = (id: string) => strategyName(id).replace(/\s*\(.*\)\s*$/, "");

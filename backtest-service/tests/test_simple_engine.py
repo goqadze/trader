@@ -176,7 +176,7 @@ def test_equity_curve_has_a_point_per_day_with_expected_keys():
     prices = _prices([100, 101, 102, 103])
     res, _ = _run(prices, _const(BUY), rebalance_days=100)
     assert len(res["equity_curve"]) == len(prices)
-    assert set(res["equity_curve"][0]) == {"date", "equity", "price"}
+    assert set(res["equity_curve"][0]) == {"date", "equity", "price", "position"}
 
 
 def test_rebalance_days_limits_decision_calls():
@@ -189,3 +189,64 @@ def test_rebalance_days_limits_decision_calls():
     _run(_prices(list(range(100, 110))), counting_decide, rebalance_days=5)
     # 10 days, decide every 5 -> days 0 and 5 -> 2 calls
     assert calls["n"] == 2
+
+
+# --- comparison metrics ----------------------------------------------------
+
+def test_trade_stats_for_one_win_and_one_loss():
+    # +10% round trip (100 -> 110), then -10% (100 -> 90); each held one day
+    res, _ = _run(_prices([100, 110, 100, 90]), _scripted([BUY, SELL, BUY, SELL]))
+    sells = [t for t in res["trades"] if t["side"] == "SELL"]
+    assert [t["pnl_pct"] for t in sells] == [10.0, -10.0]
+    assert [t["hold_days"] for t in sells] == [1, 1]
+    assert res["win_rate_pct"] == 50.0
+    assert res["profit_factor"] == round(1000 / 1100, 2)  # +$1000 on 100 shares, -$1100 on 110
+    assert res["avg_trade_pct"] == 0.0
+    assert (res["avg_win_pct"], res["avg_loss_pct"]) == (10.0, -10.0)
+    assert (res["best_trade_pct"], res["worst_trade_pct"]) == (10.0, -10.0)
+    assert res["avg_hold_days"] == 1.0
+    assert res["exposure_pct"] == 50.0  # holding at the end of days 1 and 3 of 4
+    assert res["signals"] == {"BUY": 2, "SELL": 2, "HOLD": 0}
+
+
+def test_open_position_at_the_end_is_reported_separately():
+    res, _ = _run(_prices([100, 105]), _const(BUY))
+    assert res["num_trades"] == 0  # nothing closed
+    assert res["open_position"] == 100
+    assert res["unrealized_pnl"] == 500.0
+    assert res["total_return_pct"] == 5.0  # but it is in the return
+    assert res["profit_factor"] is None and res["best_trade_pct"] is None
+
+
+def test_no_losing_trades_has_no_profit_factor():
+    res, _ = _run(_prices([100, 110]), _scripted([BUY, SELL]))
+    assert res["profit_factor"] is None  # nothing to divide by; the UI shows it as infinite
+
+
+def test_ratios_of_a_flat_run_are_undefined():
+    res, _ = _run(_prices([100, 101, 99, 102]), _const({"action": "HOLD", "confidence": 0.0}))
+    assert res["volatility_pct"] == 0.0
+    assert res["sharpe"] is None and res["sortino"] is None
+    assert res["buy_hold_sharpe"] is not None  # the benchmark still moved
+
+
+def test_a_steady_rise_has_no_downside_so_no_sortino():
+    res, _ = _run(_prices([100, 101, 103, 106]), _const(BUY))
+    assert res["sharpe"] > 0
+    assert res["sortino"] is None
+
+
+def test_buy_and_hold_drawdown_is_measured_on_the_price():
+    res, _ = _run(_prices([100, 120, 90, 110]), _const({"action": "HOLD", "confidence": 0.0}))
+    assert res["buy_hold_max_drawdown_pct"] == -25.0  # 120 -> 90
+    assert res["max_drawdown_pct"] == 0.0  # stayed in cash
+    assert res["return_over_drawdown"] is None
+
+
+def test_failed_decisions_are_counted():
+    async def failing(symbol, as_of):
+        return {"action": "HOLD", "confidence": 0.0, "reasoning": "decision-service 500", "error": True}
+
+    res, _ = _run(_prices([100, 101, 102]), failing)
+    assert res["decision_errors"] == 3
+    assert res["signals"]["HOLD"] == 3

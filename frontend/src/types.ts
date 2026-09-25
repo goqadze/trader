@@ -25,7 +25,11 @@ export interface Trade {
   date: string;
   price: number;
   shares: number;
-  pnl?: number;
+  fee?: number;
+  pnl?: number; // SELLs only: round-trip profit net of fees and slippage
+  pnl_pct?: number; // ... as a % of what the entry cost
+  hold_days?: number; // trading days between entry and exit
+  reason?: "signal" | "stop-loss" | "target";
 }
 
 /** Final result payload carried by the "done" event. */
@@ -34,11 +38,36 @@ export interface Result {
   total_return_pct: number;
   buy_hold_return_pct: number;
   alpha_vs_buy_hold_pct?: number; // strategy return minus buy & hold
+  beat_buy_hold?: boolean;
   max_drawdown_pct: number;
   num_trades: number;
   win_rate_pct: number;
   trades: Trade[];
-  equity_curve: { date: string; equity: number; price: number }[];
+  equity_curve: { date: string; equity: number; price: number; position?: number }[];
+  // Comparison metrics (backtest-service's engine). null = not computable (no trades, no movement, ...).
+  buy_hold_max_drawdown_pct?: number;
+  volatility_pct?: number | null; // annualized
+  sharpe?: number | null; // annualized, risk-free rate 0
+  sortino?: number | null;
+  buy_hold_volatility_pct?: number | null;
+  buy_hold_sharpe?: number | null;
+  buy_hold_sortino?: number | null;
+  return_over_drawdown?: number | null;
+  profit_factor?: number | null; // null with winning trades = no losses (infinite)
+  avg_trade_pct?: number | null;
+  avg_win_pct?: number | null;
+  avg_loss_pct?: number | null;
+  best_trade_pct?: number | null;
+  worst_trade_pct?: number | null;
+  avg_hold_days?: number | null;
+  exposure_pct?: number;
+  stop_exits?: number;
+  target_exits?: number;
+  total_fees?: number;
+  open_position?: number;
+  unrealized_pnl?: number;
+  signals?: Record<"BUY" | "SELL" | "HOLD", number>;
+  decision_errors?: number;
 }
 
 // --- WebSocket events (discriminated union on `type`) ---
@@ -120,4 +149,6 @@ export interface BacktestState {
   result: Result | null;
   error: string | null;
   config: RunConfig | null; // what was run, so a good result can be deployed as a trading bot
+  initialCash: number; // from the start event: return % and the buy & hold line are derived from these
+  bhShares: number;
 }

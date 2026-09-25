@@ -54,3 +54,57 @@ def test_todays_bar_counts_once_the_market_has_closed():
 def test_past_windows_are_untouched():
     later = pd.Timestamp("2026-10-01 10:00", tz="America/New_York")
     assert len(_finished_sessions(_closes(), later)) == 3
+
+
+def test_simultaneous_runs_share_one_price_download(monkeypatch):
+    from app import runner
+
+    calls = []
+
+    def fake_fetch(symbol, start, end):
+        calls.append(symbol)
+        return _closes()
+
+    monkeypatch.setattr(runner, "_fetch_prices", fake_fetch)
+    runner._price_cache.clear()
+
+    async def scenario():
+        return await asyncio.gather(*[runner._load_prices("aapl", date(2026, 9, 1), date(2026, 9, 25)) for _ in range(5)])
+
+    out = asyncio.run(scenario())
+    assert len(calls) == 1
+    assert all(s.equals(out[0]) for s in out)
+    runner._price_cache.clear()
+
+
+def test_only_max_parallel_runs_execute_at_once(monkeypatch):
+    from app import runner
+
+    active = {"now": 0, "peak": 0}
+
+    class FakeEngine:
+        async def run(self, cfg, prices, decide, emit):
+            active["now"] += 1
+            active["peak"] = max(active["peak"], active["now"])
+            await asyncio.sleep(0.01)
+            active["now"] -= 1
+            return {}
+
+    async def fake_load(symbol, start, end):
+        return _closes()
+
+    monkeypatch.setattr(runner, "SimplePortfolioEngine", FakeEngine)
+    monkeypatch.setattr(runner, "_load_prices", fake_load)
+
+    async def scenario():
+        monkeypatch.setattr(runner, "_slots", asyncio.Semaphore(2))
+        runs = [runner.start_run(RunConfig(start=date(2026, 9, 1), end=date(2026, 9, 25))) for _ in range(5)]
+        while any(r.status in ("pending", "running") for r in runs):
+            await asyncio.sleep(0.005)
+        return runs
+
+    runs = asyncio.run(scenario())
+    assert active["peak"] == 2
+    assert all(r.status == "done" for r in runs)
+    for r in runs:
+        runner.RUNS.pop(r.id, None)

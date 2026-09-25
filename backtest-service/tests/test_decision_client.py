@@ -43,6 +43,7 @@ def test_request_exception_returns_hold():
     assert out["action"] == "HOLD"
     assert out["confidence"] == 0.0
     assert "connection refused" in out["reasoning"]
+    assert out["error"] is True  # counted as a failed decision, not a real HOLD
 
 
 def test_non_200_returns_hold_with_status_in_reason():
@@ -50,6 +51,7 @@ def test_non_200_returns_hold_with_status_in_reason():
     out = asyncio.run(get_signal(client, "AAPL", date(2025, 1, 1)))
     assert out["action"] == "HOLD"
     assert "422" in out["reasoning"]
+    assert out["error"] is True
 
 
 def test_stop_and_target_are_sent_only_when_set():

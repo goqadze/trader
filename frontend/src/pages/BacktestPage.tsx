@@ -1,14 +1,11 @@
-import { RocketOutlined } from "@ant-design/icons";
-import { Alert, Button, Card, Col, Row, Space, Tag } from "antd";
-import { useNavigate } from "react-router-dom";
+import { Alert, Card, Col, Row, Space, Tag } from "antd";
 import ActivityLog from "../components/ActivityLog";
 import ConfigForm from "../components/ConfigForm";
 import EquityChart from "../components/EquityChart";
 import StatTiles from "../components/StatTiles";
+import TradeThisButton from "../components/TradeThisButton";
 import { useBacktest } from "../hooks/useBacktest";
-import type { BotFormInitial } from "../trading/BotForm";
-import { strategyName } from "../strategies";
-import type { RunConfig, RunStatus } from "../types";
+import type { RunStatus } from "../types";
 
 const STATUS_COLOR: Record<RunStatus, string> = {
   idle: "default",
@@ -18,25 +15,9 @@ const STATUS_COLOR: Record<RunStatus, string> = {
   error: "error",
 };
 
-/** Backtest config -> trading bot form values. Same parameter names, so nothing is lost in between. */
-function toBotParams(cfg: RunConfig): BotFormInitial {
-  return {
-    symbol: cfg.symbol,
-    name: `${cfg.symbol} ${strategyName(cfg.strategy)} (backtest ${cfg.start}..${cfg.end})`.slice(0, 80),
-    allocated_cash: cfg.initial_cash,
-    strategy: cfg.strategy,
-    min_confidence: cfg.min_confidence,
-    rebalance_days: cfg.rebalance_days,
-    position_pct: cfg.position_pct,
-    ...(cfg.stop_pct != null && { stop_pct: cfg.stop_pct }),
-    ...(cfg.target_pct != null && { target_pct: cfg.target_pct }),
-  };
-}
-
 /** Configure a backtest on the left, watch it run live on the right. */
 export default function BacktestPage() {
   const { state, start } = useBacktest();
-  const navigate = useNavigate();
   const running = state.status === "starting" || state.status === "running";
   const r = state.result;
 
@@ -62,11 +43,7 @@ export default function BacktestPage() {
               ? "This setup lagged buy & hold. You can still paper-trade it, but test other parameters first."
               : "Happy with it? Paper-trade the exact same parameters on live prices before risking real money."
           }
-          action={
-            <Button type="primary" icon={<RocketOutlined />} onClick={() => navigate("/trading", { state: { prefill: toBotParams(state.config!) } })}>
-              Trade this strategy
-            </Button>
-          }
+          action={<TradeThisButton config={state.config} />}
         />
       )}
       <Row gutter={[16, 16]}>

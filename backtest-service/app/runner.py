@@ -1,4 +1,6 @@
 import asyncio
+import os
+import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
@@ -62,6 +64,34 @@ def _finished_sessions(close: pd.Series, now: pd.Timestamp) -> pd.Series:
     return close
 
 
+# A strategy comparison starts one run per strategy at once. Each decision day is a decision-service call
+# (news + LLM), so only this many runs execute together; the rest wait their turn as "pending".
+MAX_PARALLEL_RUNS = int(os.getenv("MAX_PARALLEL_RUNS", "4"))
+_slots = asyncio.Semaphore(MAX_PARALLEL_RUNS)
+
+# Runs of one comparison ask for the same symbol and window: download it once and share it for a while.
+PRICE_TTL_S = 600
+_price_cache: dict[tuple, tuple[float, pd.Series]] = {}
+_price_locks: dict[tuple, asyncio.Lock] = {}
+
+
+async def _load_prices(symbol: str, start: date, end: date) -> pd.Series:
+    """_fetch_prices through a short-lived cache. The per-key lock makes simultaneous runs wait for the
+    first download instead of each hitting Yahoo (which rate-limits bursts)."""
+    key = (symbol.upper(), start, end)
+    async with _price_locks.setdefault(key, asyncio.Lock()):
+        now = time.monotonic()
+        hit = _price_cache.get(key)
+        if hit and now - hit[0] < PRICE_TTL_S:
+            return hit[1]
+        prices = await asyncio.to_thread(_fetch_prices, symbol, start, end)
+        for k in [k for k, (t, _) in _price_cache.items() if now - t >= PRICE_TTL_S]:  # drop stale windows
+            del _price_cache[k]
+            _price_locks.pop(k, None)
+        _price_cache[key] = (now, prices)
+        return prices
+
+
 def start_run(cfg: RunConfig) -> Run:
     """Create a run and kick off its execution in the background."""
     run = Run(cfg)
@@ -72,20 +102,21 @@ def start_run(cfg: RunConfig) -> Run:
 
 async def _execute(run: Run) -> None:
     cfg = run.cfg
-    run.status = "running"
-    try:
-        # 1) Load prices for the window (blocking call offloaded to a thread)
-        prices = await asyncio.to_thread(_fetch_prices, cfg.symbol, cfg.start, cfg.end)
-        if prices is None or len(prices) < 2:
-            raise ValueError(f"No price data for {cfg.symbol} in {cfg.start}..{cfg.end}")
+    async with _slots:  # stays "pending" until a slot frees up
+        run.status = "running"
+        try:
+            # 1) Load prices for the window (the download runs in a thread)
+            prices = await _load_prices(cfg.symbol, cfg.start, cfg.end)
+            if prices is None or len(prices) < 2:
+                raise ValueError(f"No price data for {cfg.symbol} in {cfg.start}..{cfg.end}")
 
-        # 2) One shared HTTP client for all decision-service calls during this run
-        async with httpx.AsyncClient() as client:
-            async def decide(symbol: str, as_of: date) -> dict:
-                return await get_signal(client, symbol, as_of, cfg.strategy, cfg.stop_pct, cfg.target_pct)
+            # 2) One shared HTTP client for all decision-service calls during this run
+            async with httpx.AsyncClient() as client:
+                async def decide(symbol: str, as_of: date) -> dict:
+                    return await get_signal(client, symbol, as_of, cfg.strategy, cfg.stop_pct, cfg.target_pct)
 
-            run.result = await SimplePortfolioEngine().run(cfg, prices, decide, run.emit)
-        run.status = "done"
-    except Exception as e:
-        run.status = "error"
-        await run.emit({"type": "error", "message": str(e)})
+                run.result = await SimplePortfolioEngine().run(cfg, prices, decide, run.emit)
+            run.status = "done"
+        except Exception as e:
+            run.status = "error"
+            await run.emit({"type": "error", "message": str(e)})
