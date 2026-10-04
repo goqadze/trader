@@ -87,3 +87,18 @@ export const SYMBOL_GROUPS: SymbolGroup[] = [
     ],
   },
 ];
+
+/** ETFs that track the same (or almost the same) index and so trade almost identically. Scanning several of one
+ *  family repeats one result and makes one idea look like it worked on several symbols. The first of each is the
+ *  one to keep (the most traded). */
+export const TWINS: { label: string; symbols: string[] }[] = [
+  { label: "the S&P 500", symbols: ["SPY", "VOO", "IVV"] },
+  { label: "the Nasdaq-100", symbols: ["QQQ", "QQQM"] },
+  { label: "US large-cap growth", symbols: ["VUG", "IWF"] },
+  { label: "US tech", symbols: ["XLK", "VGT"] },
+  { label: "US mid caps", symbols: ["IJH", "VO"] },
+  { label: "US bonds", symbols: ["BND", "AGG"] },
+];
+
+/** The family a symbol belongs to (its twin group's first symbol), or the symbol itself. */
+export const familyOf = (symbol: string) => TWINS.find((t) => t.symbols.includes(symbol))?.symbols[0] ?? symbol;

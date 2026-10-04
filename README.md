@@ -72,7 +72,7 @@ weekly check would miss most setups.
 
 Every finished backtest ends with a **recommendation** from a checklist (`backtest-service/app/verdict.py`):
 must-haves are 10+ closed trades and making money; it also wants wins outweighing losses (profit factor ≥ 1.2),
-beating buy & hold on return or on a smoother ride (Sharpe), a worst drop shallower than 20% with the breaker never
+beating buy & hold on return or on a clearly smoother ride (Sharpe at least 0.2 higher), a worst drop shallower than 20% with the breaker never
 tripped, 6+ months tested and no failed decisions. Grades: **Worth paper trading**, **Not yet**, **Not
 recommended**. A backtest alone never earns "trade it with real money".
 

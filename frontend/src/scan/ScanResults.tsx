@@ -4,9 +4,10 @@ import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import { useState } from "react";
 import { VerdictTag } from "../components/VerdictView";
-import { strategyShortName, type StrategyId } from "../strategies";
+import { strategyShortName } from "../strategies";
 import { GRADE_LOOK } from "../verdict";
 import CellDetail from "./CellDetail";
+import { consistency } from "./consistency";
 import type { ScanCell, ScanRunView, ScanSummary, ScanView } from "./types";
 
 const MUTED = "#8b98b5";
@@ -53,18 +54,11 @@ function Numbers({ run }: { run: ScanRunView | null }) {
   );
 }
 
-/** Strategies that passed on more than one symbol: the "does it hold up elsewhere?" check, in one line. */
-function consistency(cells: ScanCell[], symbols: number, hasExam: boolean) {
-  const by = new Map<StrategyId, number>();
-  for (const c of cells) if (hasExam ? isFinalist(c) : passed(c.practice)) by.set(c.strategy, (by.get(c.strategy) ?? 0) + 1);
-  return [...by.entries()].sort((a, b) => b[1] - a[1]).map(([id, n]) => `${strategyShortName(id)} ${n} of ${symbols}`);
-}
-
 function Summary({ scan }: { scan: ScanView }) {
   const hasExam = !!scan.config.exam;
   const winners = scan.cells.filter((c) => (hasExam ? isFinalist(c) : passed(c.practice)));
   const done = scan.status !== "running";
-  const held = consistency(scan.cells, scan.config.symbols.length, hasExam);
+  const held = consistency(scan.cells, scan.config.symbols, hasExam);
   const what = hasExam ? "practice and the exam" : "practice";
   return (
     <Alert

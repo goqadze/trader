@@ -1,7 +1,7 @@
-import { Button, Card, Checkbox, DatePicker, Form, Select, Space, Switch, Typography } from "antd";
+import { Alert, Button, Card, Checkbox, DatePicker, Form, Select, Space, Switch, Typography } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
 import { STRATEGIES, strategyInfo, type StrategyId } from "../strategies";
-import { SYMBOL_GROUPS } from "../symbols";
+import { SYMBOL_GROUPS, TWINS } from "../symbols";
 import type { RunSettings, ScanConfig } from "./types";
 
 const MUTED = "#8b98b5";
@@ -67,6 +67,13 @@ function toConfig(v: FormValues): ScanConfig {
   };
 }
 
+/** The twin families with more than one member picked, e.g. [{label: "the S&P 500", picked: ["SPY", "VOO"]}]. */
+function pickedTwins(symbols: string[]) {
+  return TWINS.map((t) => ({ label: t.label, picked: t.symbols.filter((s) => symbols.includes(s)) })).filter((t) => t.picked.length > 1);
+}
+
+const andList = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
+
 interface Props {
   onRun: (cfg: ScanConfig) => void;
   starting: boolean;
@@ -80,6 +87,12 @@ export default function ScanForm({ onRun, starting }: Props) {
   const nStrategies = (v?.strategies ?? []).filter((id) => news || id !== NEEDS_NEWS).length;
   const combos = (v?.symbols?.length ?? 0) * nStrategies;
   const est = estimate(v ?? {}, combos);
+  const twins = pickedTwins(v?.symbols ?? []);
+  // Keep the first picked member of each family (the order in TWINS: the most traded first)
+  const keepOneOfEach = () => {
+    const extra = new Set(twins.flatMap((t) => t.picked.slice(1)));
+    form.setFieldValue("symbols", (form.getFieldValue("symbols") as string[]).filter((s) => !extra.has(s)));
+  };
   const addSymbols = (more: string[]) => form.setFieldValue("symbols", [...new Set([...(form.getFieldValue("symbols") ?? []), ...more])]);
   const today = dayjs();
 
@@ -124,6 +137,28 @@ export default function ScanForm({ onRun, starting }: Props) {
             <Select mode="tags" options={SYMBOL_OPTIONS} optionLabelProp="value" tokenSeparators={[",", " "]} placeholder="Pick or type tickers" />
           </Form.Item>
         </Form.Item>
+
+        {twins.length > 0 && (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginTop: -12, marginBottom: 16, fontSize: 12 }}
+            message="Twin ETFs"
+            description={
+              <>
+                {twins.map((t) => (
+                  <div key={t.label}>
+                    {andList(t.picked)} {t.picked.length === 2 ? "both" : "all"} track {t.label} and move almost the same.
+                  </div>
+                ))}
+                Scanning twins repeats one result and makes one idea look like it worked on several symbols.{" "}
+                <Button type="link" size="small" style={{ padding: 0, fontSize: 12 }} onClick={keepOneOfEach}>
+                  Keep one of each
+                </Button>
+              </>
+            }
+          />
+        )}
 
         <Form.Item
           label={

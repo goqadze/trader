@@ -28,7 +28,16 @@ def test_a_result_that_passes_everything_is_worth_paper_trading():
 def test_less_return_than_holding_passes_with_a_smoother_ride():
     v = judge(_result(total_return_pct=9.0, buy_hold_return_pct=25.0, beat_buy_hold=False, sharpe=1.3), YEAR)
     assert v["grade"] == "paper"
-    assert "smoother ride" in next(c["detail"] for c in v["checks"] if c["label"] == "Better than just holding")
+    assert "clearly smoother ride" in next(c["detail"] for c in v["checks"] if c["label"] == "Better than just holding")
+
+
+def test_a_barely_smoother_ride_is_not_better_than_holding():
+    """SPY Momentum 2020-23: less return, Sharpe 0.63 vs 0.58. That passed once, then lagged holding by 74 points."""
+    v = judge(_result(total_return_pct=18.0, buy_hold_return_pct=29.8, beat_buy_hold=False, sharpe=0.63, buy_hold_sharpe=0.58), YEAR)
+    assert v["grade"] == "weak" and _failed(v) == ["Better than just holding"]
+    assert "only a slightly smoother ride" in next(c["detail"] for c in v["checks"] if c["label"] == "Better than just holding")
+    # exactly the margin is enough
+    assert judge(_result(beat_buy_hold=False, sharpe=1.2, buy_hold_sharpe=1.0), YEAR)["grade"] == "paper"
 
 
 def test_lagging_holding_on_both_counts_is_not_yet():

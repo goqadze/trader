@@ -7,6 +7,9 @@ from .models import RunConfig
 
 MIN_TRADES = 10  # fewer closed trades and luck can explain the whole result (the frontend's FEW_TRADES)
 MIN_PROFIT_FACTOR = 1.2  # every $1 lost has to bring back at least $1.20
+# Less return than buy & hold only counts as better with a CLEARLY smoother ride: a Sharpe 0.05 higher is noise
+# (SPY Momentum 2020-23: 0.63 vs 0.58 "passed", then made +14% while holding made +88%)
+SHARPE_MARGIN = 0.2
 WORST_DRAWDOWN_PCT = -20.0  # like the bots' default breaker
 MIN_MONTHS = 6  # shorter tests see one market mood only
 
@@ -47,11 +50,15 @@ def judge(r: dict, cfg: RunConfig) -> dict:
 
     bh = r["buy_hold_return_pct"]
     sharpe, bh_sharpe = r.get("sharpe"), r.get("buy_hold_sharpe")
-    smoother = sharpe is not None and bh_sharpe is not None and sharpe > bh_sharpe
+    compared = sharpe is not None and bh_sharpe is not None
+    smoother = compared and sharpe >= bh_sharpe + SHARPE_MARGIN - 1e-9
+    slightly = compared and not smoother and sharpe > bh_sharpe
     beat = bool(r.get("beat_buy_hold"))
     check(beat or smoother, "Better than just holding",
           f"{_signed(r['total_return_pct'] - bh)} ahead of buy & hold ({_signed(bh)})" if beat
-          else f"Less return than buy & hold ({_signed(bh)}), but a smoother ride (Sharpe {sharpe} vs {bh_sharpe})" if smoother
+          else f"Less return than buy & hold ({_signed(bh)}), but a clearly smoother ride (Sharpe {sharpe} vs {bh_sharpe})" if smoother
+          else f"Less return than buy & hold ({_signed(bh)}) and only a slightly smoother ride (Sharpe {sharpe} vs "
+               f"{bh_sharpe}; at least {SHARPE_MARGIN} higher needed)" if slightly
           else f"Buy & hold made {_signed(bh)} with a smoother or equal ride: simply holding was better")
 
     tripped = r.get("breaker_tripped_on")
