@@ -8,7 +8,8 @@ import CompareTable from "../compare/CompareTable";
 import StrategyDetail from "../compare/StrategyDetail";
 import { useCompare } from "../hooks/useCompare";
 import { strategyShortName, type StrategyId } from "../strategies";
-import type { BacktestState, Result } from "../types";
+import type { BacktestState, Result, RunConfig } from "../types";
+import { judge } from "../verdict";
 
 const MUTED = "#8b98b5";
 const signed = (v: number) => `${v > 0 ? "+" : ""}${v.toFixed(2)}%`;
@@ -21,7 +22,7 @@ function tradeCount(r: Result) {
 
 /** The winners in words: best return, best risk-adjusted, smallest drawdown, who beat buy & hold, and whether the
  *  leader's result rests on enough trades to mean anything. */
-function Verdict({ done, total }: { done: [StrategyId, Result][]; total: number }) {
+function Verdict({ done, total, cfg }: { done: [StrategyId, Result][]; total: number; cfg?: RunConfig | null }) {
   if (done.length < 2) return null;
   const top = (f: (r: Result) => number | null | undefined) =>
     done.filter(([, r]) => f(r) != null).sort(([, a], [, b]) => f(b)! - f(a)!)[0];
@@ -33,9 +34,11 @@ function Verdict({ done, total }: { done: [StrategyId, Result][]; total: number 
   const finished = done.length === total;
   const leader = strategyShortName(byReturn[0]);
   const thin = byReturn[1].num_trades < FEW_TRADES;
+  // every run shares the symbol and window, which is all judge() reads from the config
+  const passed = done.filter(([, r]) => judge(r, cfg).grade === "paper").map(([id]) => strategyShortName(id));
   return (
     <Alert
-      type={beat > 0 && !thin ? "success" : "warning"}
+      type={passed.length ? "success" : "warning"}
       showIcon
       style={{ marginBottom: 16 }}
       message={
@@ -53,9 +56,23 @@ function Verdict({ done, total }: { done: [StrategyId, Result][]; total: number 
         </span>
       }
       description={
-        thin
-          ? `${leader}'s result comes from ${tradeCount(byReturn[1])}: too few to tell skill from luck. Prefer strategies with more trades, or test a longer window or other symbols.`
-          : `${leader} made ${tradeCount(byReturn[1])}. Past results on one symbol don't guarantee the future: check the leader on a different period, then paper-trade it before risking real money.`
+        <>
+          <div>
+            {passed.length ? (
+              <>
+                Recommended for paper trading: <b>{passed.join(", ")}</b>. It passed every check on this symbol and window;
+                its tab shows the checklist.
+              </>
+            ) : (
+              "No strategy passed every check, so none is recommended yet. Each tab shows what its result missed."
+            )}
+          </div>
+          <div>
+            {thin
+              ? `${leader}'s best return comes from ${tradeCount(byReturn[1])}: too few to tell skill from luck.`
+              : "Past results on one symbol don't guarantee the future: check a winner on another period, then paper-trade it before risking real money."}
+          </div>
+        </>
       }
     />
   );
@@ -107,7 +124,7 @@ export default function ComparePage() {
           </Card>
         ) : (
           <>
-            <Verdict done={done} total={order.length} />
+            <Verdict done={done} total={order.length} cfg={cfg} />
             <Card
               title={`${cfg?.symbol} · ${cfg?.start} → ${cfg?.end}`}
               size="small"

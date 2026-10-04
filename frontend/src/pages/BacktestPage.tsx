@@ -1,12 +1,13 @@
-import { Alert, Card, Col, Row, Space, Tag } from "antd";
-import { FEW_TRADES } from "../checkAt";
+import { Alert, Card, Col, Row, Tag } from "antd";
 import ActivityLog from "../components/ActivityLog";
 import ConfigForm from "../components/ConfigForm";
 import EquityChart from "../components/EquityChart";
 import StatTiles from "../components/StatTiles";
 import TradeThisButton from "../components/TradeThisButton";
+import { VerdictAlert } from "../components/VerdictView";
 import { useBacktest } from "../hooks/useBacktest";
 import type { RunStatus } from "../types";
+import { judge } from "../verdict";
 
 const STATUS_COLOR: Record<RunStatus, string> = {
   idle: "default",
@@ -21,32 +22,19 @@ export default function BacktestPage() {
   const { state, start } = useBacktest();
   const running = state.status === "starting" || state.status === "running";
   const r = state.result;
-  const lagged = r?.alpha_vs_buy_hold_pct != null && r.alpha_vs_buy_hold_pct < 0;
-  const thin = r != null && r.num_trades < FEW_TRADES; // too few trades for the numbers to mean much
 
   return (
     <>
       {state.error && <Alert type="error" message={state.error} showIcon style={{ marginBottom: 16 }} />}
       {r && state.config && (
-        <Alert
-          type={lagged || thin ? "warning" : "success"}
-          showIcon
-          style={{ marginBottom: 16 }}
-          message={
-            <Space wrap>
-              <Tag color={STATUS_COLOR[state.status]}>{state.status}</Tag>
-              <span>
-                Return {r.total_return_pct}% vs buy &amp; hold {r.buy_hold_return_pct}% · max drawdown {r.max_drawdown_pct}% ·
-                win rate {r.win_rate_pct}% over {r.num_trades} trades
-              </span>
-            </Space>
-          }
-          description={
-            thin
-              ? `Only ${r.num_trades} closed trade${r.num_trades === 1 ? "" : "s"}: too few to tell skill from luck. Test a longer window, or other symbols, before trusting this result.`
-              : lagged
-                ? "This setup lagged buy & hold. You can still paper-trade it, but test other parameters first."
-                : "Happy with it? Paper-trade the exact same parameters on live prices before risking real money."
+        <VerdictAlert
+          verdict={judge(r, state.config)}
+          extra={
+            <span style={{ fontWeight: 400 }}>
+              {" "}
+              · return {r.total_return_pct}% vs buy &amp; hold {r.buy_hold_return_pct}% · max drawdown {r.max_drawdown_pct}% ·
+              win rate {r.win_rate_pct}% over {r.num_trades} trades
+            </span>
           }
           action={<TradeThisButton config={state.config} />}
         />

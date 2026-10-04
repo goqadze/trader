@@ -2,7 +2,9 @@ import { InfoCircleOutlined, WarningOutlined } from "@ant-design/icons";
 import { Progress, Table, Tag, Tooltip } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { strategyShortName, type StrategyId } from "../strategies";
+import { VerdictTag } from "../components/VerdictView";
 import type { BacktestState, Result } from "../types";
+import { judge, type Grade } from "../verdict";
 import { METRICS, bestValues } from "./metrics";
 
 const MUTED = "#8b98b5";
@@ -16,6 +18,9 @@ interface Row {
 /** Sort key for a metric: runs without a value (still running, no trades) always sink to the bottom. */
 const sortValue = (v: number | null | undefined, order: "ascend" | "descend" | null | undefined) =>
   v == null || Number.isNaN(v) ? (order === "ascend" ? Infinity : -Infinity) : v;
+
+const GRADE_RANK: Record<Grade, number> = { paper: 3, weak: 2, no: 1 };
+const gradeRank = (run: BacktestState) => (run.result ? GRADE_RANK[judge(run.result, run.config).grade] : 0);
 
 function Status({ run }: { run: BacktestState }) {
   if (run.status === "error") {
@@ -69,6 +74,18 @@ export default function CompareTable({
       ),
     },
     { title: "Status", key: "status", width: 110, render: (_, { run }) => <Status run={run} /> },
+    {
+      title: (
+        <Tooltip title="Did this result pass the checks a strategy needs before paper trading? Open its tab for the checklist.">
+          Recommendation <InfoCircleOutlined style={{ fontSize: 11, color: MUTED }} />
+        </Tooltip>
+      ),
+      key: "verdict",
+      width: 170,
+      sorter: (a, b) => gradeRank(a.run) - gradeRank(b.run),
+      render: (_, { run }) =>
+        run.result ? <VerdictTag verdict={judge(run.result, run.config)} /> : <span style={{ color: MUTED }}>…</span>,
+    },
     ...metrics.map(
       (m): ColumnsType<Row>[number] => ({
         key: m.key,

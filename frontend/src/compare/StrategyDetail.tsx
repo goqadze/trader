@@ -5,8 +5,10 @@ import ActivityLog from "../components/ActivityLog";
 import EquityChart from "../components/EquityChart";
 import StatTiles from "../components/StatTiles";
 import TradeThisButton from "../components/TradeThisButton";
+import { VerdictAlert } from "../components/VerdictView";
 import { strategyInfo } from "../strategies";
 import type { BacktestState, Trade } from "../types";
+import { judge } from "../verdict";
 import { METRICS } from "./metrics";
 
 const MUTED = "#8b98b5";
@@ -58,6 +60,7 @@ export default function StrategyDetail({ run }: { run: BacktestState }) {
         </div>
       )}
       {run.error && <Alert type="error" showIcon message={run.error} style={{ marginBottom: 16 }} />}
+      {r && <VerdictAlert verdict={judge(r, cfg)} />}
       <StatTiles state={run} />
       {r && (
         <Card title="All measurements" size="small" style={{ marginTop: 16 }}>
