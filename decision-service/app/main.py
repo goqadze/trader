@@ -34,7 +34,7 @@ class Signal(BaseModel):
     strategy: str  # which strategy decided (see GET /strategies)
     action: str  # BUY | SELL | HOLD
     confidence: float  # 0..1
-    sentiment: str = "unavailable"  # bullish | bearish | neutral | unavailable (from the news layer)
+    sentiment: str = "unavailable"  # bullish | bearish | neutral | unavailable | off (from the news layer)
     reasoning: str  # human-readable explanation
     position: dict | None = None  # share count + stop/target for a BUY; None for SELL/HOLD
     steps: list[str]  # step-by-step trail of what the agent did ("show your work")
@@ -78,6 +78,7 @@ def signal(
     target_pct: float | None = Query(None, gt=0, le=2),
     decided_at: datetime | None = None,
     explain: bool = True,
+    news: bool = True,
 ):
     """as_of lets the backtester replay history without look-ahead.
     strategy = which decision strategy runs (GET /strategies lists them; default: the simple SMA/RSI one).
@@ -88,12 +89,14 @@ def signal(
     ignored. Without it the news cutoff is 15:30 New York on as_of. A past decided_at (a backtest replaying
     10:00) sees that day as it stood then, rebuilt from 30-minute bars.
     explain=false skips the LLM-written explanation (the reasoning is the rule text instead): backtests make
-    thousands of decisions, and the explanation doesn't change any of them."""
+    thousands of decisions, and the explanation doesn't change any of them.
+    news=false skips the news step (technical only): no news fetch, no sentiment LLM, no confidence nudge. Fast
+    and free, for screening many symbols and strategies; News catalyst has nothing to trade on then."""
     as_of = as_of or date.today()  # default to today for live use
     if strategy not in STRATEGIES:
         raise HTTPException(422, f"unknown strategy '{strategy}'; one of {list(STRATEGIES)}")
     state = {"symbol": symbol.upper(), "as_of": as_of, "strategy": strategy, "account_balance": account_balance,
-             "llm_explanation": explain}
+             "llm_explanation": explain, "use_news": news}
     if decided_at is not None:
         decided_at = decided_at if decided_at.tzinfo else decided_at.replace(tzinfo=timezone.utc)
         # Must fall on as_of's New York date, or a backtest could let tomorrow's news into today's decision

@@ -15,12 +15,13 @@ RETRY_DELAYS = (2.0, 5.0)
 
 async def get_signal(client: httpx.AsyncClient, symbol: str, as_of: date, strategy: str = "sma_rsi",
                      stop_pct: float | None = None, target_pct: float | None = None,
-                     decided_at: datetime | None = None) -> dict:
+                     decided_at: datetime | None = None, news: bool = True) -> dict:
     """Ask decision-service for a signal on a given date. Never raises: on any failure we
     return a safe HOLD so one bad day can't crash the whole backtest. The failure reason is
     put in `reasoning` so it shows up in the activity log, and `error` marks it so the run can count failures.
     stop_pct / target_pct are only sent when set, so decision-service's env defaults apply otherwise.
-    decided_at = a moment during as_of's session (10:00): decision-service replays the day as it stood then."""
+    decided_at = a moment during as_of's session (10:00): decision-service replays the day as it stood then.
+    news=False = technical only: decision-service skips the news step."""
     # explain=false: no LLM-written explanation (the rule text instead). A backtest makes thousands of decisions,
     # the explanation changes none of them, and it would use most of the OpenAI rate limit
     params = {"symbol": symbol, "as_of": as_of.isoformat(), "strategy": strategy, "explain": "false"}
@@ -30,6 +31,8 @@ async def get_signal(client: httpx.AsyncClient, symbol: str, as_of: date, strate
         params["target_pct"] = target_pct
     if decided_at is not None:
         params["decided_at"] = decided_at.isoformat()
+    if not news:
+        params["news"] = "false"
     for delay in (*RETRY_DELAYS, None):
         try:
             r, err = await client.post(f"{BASE}/signal", params=params, timeout=90), None

@@ -36,7 +36,7 @@ DEFAULT_STRATEGY = "sma_rsi"
 class NewsView:
     """What the news RAG found, in the form the strategies use."""
 
-    sentiment: str = "unavailable"  # bullish | bearish | neutral | unavailable
+    sentiment: str = "unavailable"  # bullish | bearish | neutral | unavailable | off (technical only)
     catalysts: tuple[str, ...] = ()  # fresh (<48h) company-specific events among the retrieved headlines
 
 

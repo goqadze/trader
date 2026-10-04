@@ -5,9 +5,9 @@ import EquityChart from "../components/EquityChart";
 import StatTiles from "../components/StatTiles";
 import TradeThisButton from "../components/TradeThisButton";
 import { VerdictAlert } from "../components/VerdictView";
+import { useLocation } from "react-router-dom";
 import { useBacktest } from "../hooks/useBacktest";
-import type { RunStatus } from "../types";
-import { judge } from "../verdict";
+import type { RunConfig, RunStatus } from "../types";
 
 const STATUS_COLOR: Record<RunStatus, string> = {
   idle: "default",
@@ -22,13 +22,14 @@ export default function BacktestPage() {
   const { state, start } = useBacktest();
   const running = state.status === "starting" || state.status === "running";
   const r = state.result;
+  const prefill = (useLocation().state as { prefill?: RunConfig } | null)?.prefill; // e.g. "Re-check with news" from a scan
 
   return (
     <>
       {state.error && <Alert type="error" message={state.error} showIcon style={{ marginBottom: 16 }} />}
-      {r && state.config && (
+      {r?.verdict && state.config && (
         <VerdictAlert
-          verdict={judge(r, state.config)}
+          verdict={r.verdict}
           extra={
             <span style={{ fontWeight: 400 }}>
               {" "}
@@ -41,7 +42,7 @@ export default function BacktestPage() {
       )}
       <Row gutter={[16, 16]}>
         <Col xs={24} md={7} lg={6}>
-          <ConfigForm onRun={start} running={running} />
+          <ConfigForm onRun={start} running={running} prefill={prefill} />
         </Col>
         <Col xs={24} md={17} lg={18}>
           {!r && state.status !== "idle" && (

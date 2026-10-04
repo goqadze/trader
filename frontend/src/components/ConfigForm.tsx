@@ -1,5 +1,6 @@
-import { Form, InputNumber, DatePicker, Select, Button, Card } from "antd";
-import { Dayjs } from "dayjs";
+import { Form, InputNumber, DatePicker, Select, Button, Card, Switch } from "antd";
+import dayjs, { Dayjs } from "dayjs";
+import { useEffect } from "react";
 import { CHECK_AT_OPTIONS, defaultRange } from "../checkAt";
 import { DEFAULT_STRATEGY, STRATEGY_OPTIONS, strategyInfo, type StrategyId, type StrategyInfo } from "../strategies";
 import type { DecideAt } from "../trading/types";
@@ -20,17 +21,41 @@ interface FormValues {
   strategy: StrategyId;
   decide_at: DecideAt;
   max_drawdown_pct: number; // percent in the form
+  news: boolean;
 }
 
 interface Props {
   onRun: (cfg: RunConfig) => void;
   running: boolean;
+  prefill?: RunConfig; // fill the form with this run's settings (e.g. "Re-check with news" from a scan)
+}
+
+/** A RunConfig back into the form's units (dates as dayjs, fractions as percents). */
+function toFormValues(c: RunConfig): Partial<FormValues> {
+  const pct = (v: number | undefined) => (v == null ? undefined : +(v * 100).toFixed(2));
+  return {
+    symbol: c.symbol,
+    range: [dayjs(c.start), dayjs(c.end)],
+    initial_cash: c.initial_cash,
+    min_confidence: c.min_confidence,
+    rebalance_days: c.rebalance_days,
+    position_pct: c.position_pct,
+    stop_pct: pct(c.stop_pct),
+    target_pct: pct(c.target_pct),
+    strategy: c.strategy,
+    decide_at: c.decide_at ?? "close",
+    max_drawdown_pct: pct(c.max_drawdown_pct),
+    news: c.news ?? true,
+  };
 }
 
 // Left-hand configuration panel. On submit it maps the antd form values to the
 // RunConfig shape backtest-service expects and calls onRun.
-export default function ConfigForm({ onRun, running }: Props) {
+export default function ConfigForm({ onRun, running, prefill }: Props) {
   const [form] = Form.useForm<FormValues>();
+  useEffect(() => {
+    if (prefill) form.setFieldsValue(toFormValues(prefill));
+  }, [prefill, form]);
   const strategy = Form.useWatch("strategy", form);
   // The form shows percents; the catalog stores fractions
   const applySuggested = (g: StrategyInfo["suggested"]) =>
@@ -55,6 +80,7 @@ export default function ConfigForm({ onRun, running }: Props) {
       strategy: v.strategy,
       decide_at: v.decide_at,
       max_drawdown_pct: v.max_drawdown_pct / 100,
+      news: v.news,
     });
   };
 
@@ -82,6 +108,7 @@ export default function ConfigForm({ onRun, running }: Props) {
           strategy: DEFAULT_STRATEGY,
           decide_at: "close",
           max_drawdown_pct: 20, // the bots' default
+          news: true,
         }}
       >
         <Form.Item name="strategy" label="Strategy">
@@ -96,6 +123,14 @@ export default function ConfigForm({ onRun, running }: Props) {
         </Form.Item>
         <Form.Item name="decide_at" label="Check at (New York time)" tooltip="When a decision day decides, exactly like a trading bot's “Check at”: the day as it stood at 15:30 or 10:00, filled at that moment's price, then the stop and target guard the rest of the day. Both does the two.">
           <Select options={CHECK_AT_OPTIONS} />
+        </Form.Item>
+        <Form.Item
+          name="news"
+          label="News"
+          valuePropName="checked"
+          tooltip="On: each decision reads the news (RAG + an LLM sentiment) like a live bot. Off: technical only, decided on the price alone: much faster and no OpenAI cost, but News catalyst has nothing to trade on."
+        >
+          <Switch checkedChildren="on" unCheckedChildren="technical only" />
         </Form.Item>
         <Form.Item name="initial_cash" label="Initial cash ($)">
           <InputNumber min={100} style={{ width: "100%" }} />

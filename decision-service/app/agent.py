@@ -27,6 +27,7 @@ class State(TypedDict, total=False):
     strategy: str  # which decision strategy runs (a key of strategies.STRATEGIES)
     account_balance: float  # used to size a BUY (risk a fixed % of this)
     llm_explanation: bool  # False: skip the LLM explanation and give the rule text (backtests: thousands of decisions)
+    use_news: bool  # False: technical only, the news step is skipped (fast screening); not "news": a node's name
     stop_pct: float  # optional per-request stop-loss distance (else STOP_PCT env)
     target_pct: float  # optional per-request target distance (else TARGET_PCT env)
     indicators: dict  # the strategy's facts: indicator values and patterns, always incl. last_close
@@ -34,7 +35,7 @@ class State(TypedDict, total=False):
     confidence: float
     headlines: list[str]  # news retrieved from the vector store
     catalysts: list[str]  # the fresh (<48h) company-specific events among them (earnings, upgrades, deals, ...)
-    sentiment: str  # bullish | bearish | neutral | unavailable
+    sentiment: str  # bullish | bearish | neutral | unavailable | off (technical only)
     position: dict  # sizing for a BUY: shares, entry, stop, target, risk/reward
     steps: list[str]  # "show your work" trail
     reasoning: str  # final human-readable explanation
@@ -90,6 +91,8 @@ def _news_enabled() -> bool:
 def news_rag(state: State) -> State:
     """Node 2 (RAG): fetch news -> store in vector DB -> retrieve relevant items -> LLM classifies sentiment,
     and flag fresh catalysts (earnings, upgrades, deals, ...) for the event strategies."""
+    if not state.get("use_news", True):  # technical only, asked for: not a failure, so not "unavailable"
+        return {"headlines": [], "catalysts": [], "sentiment": "off", "steps": state["steps"] + ["News off (technical only)"]}
     # No keys configured: skip gracefully so the service still works with technicals only
     if not _news_enabled():
         return {"headlines": [], "sentiment": "unavailable", "steps": state["steps"] + ["News RAG skipped (need OPENAI_API_KEY and at least one news source key)"]}

@@ -25,7 +25,8 @@ _CACHE_MONTHS = 240
 
 COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
 _cache: dict[tuple[str, int, int], tuple[float, pd.DataFrame]] = {}
-_lock = threading.Lock()
+_lock = threading.Lock()  # guards _cache and _month_locks; never held during a download
+_month_locks: dict[tuple[str, int, int], threading.Lock] = {}
 
 
 def _alpaca_headers() -> dict | None:
@@ -81,19 +82,30 @@ def _download(symbol: str, first: date, last: date) -> pd.DataFrame:
 
 def _month(symbol: str, day: date) -> pd.DataFrame:
     """The bars of day's calendar month, through a cache: a backtest replays every morning of a year or more,
-    one download per month instead of per day. One download at a time, so parallel runs share them."""
+    one download per month instead of per day. Callers wanting the same month wait for one download; a cached
+    month never waits behind another month's download (a scan runs several symbols at once)."""
     key = (symbol, day.year, day.month)
     first = day.replace(day=1)
     last = (first + timedelta(days=32)).replace(day=1) - timedelta(days=1)
-    with _lock:
+
+    def cached() -> pd.DataFrame | None:
         hit = _cache.get(key)
         finished = last < datetime.now(MARKET_TZ).date()
-        if hit and (finished or time.monotonic() - hit[0] < CURRENT_MONTH_TTL_S):
-            return hit[1]
+        return hit[1] if hit and (finished or time.monotonic() - hit[0] < CURRENT_MONTH_TTL_S) else None
+
+    with _lock:
+        if (df := cached()) is not None:
+            return df
+        month_lock = _month_locks.setdefault(key, threading.Lock())
+    with month_lock:
+        with _lock:
+            if (df := cached()) is not None:  # downloaded by the caller we waited for
+                return df
         df = _download(symbol, first, last)
-        if len(_cache) >= _CACHE_MONTHS:
-            _cache.pop(next(iter(_cache)))
-        _cache[key] = (time.monotonic(), df)
+        with _lock:
+            if len(_cache) >= _CACHE_MONTHS:
+                _cache.pop(next(iter(_cache)))
+            _cache[key] = (time.monotonic(), df)
         return df
 
 

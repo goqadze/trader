@@ -26,7 +26,7 @@ export function VerdictChecks({ verdict }: { verdict: Verdict }) {
           <div key={c.label} style={{ fontSize: 12 }}>
             {c.ok ? <CheckCircleFilled style={{ color: "#33c088" }} /> : <CloseCircleFilled style={{ color: "#ef5b6b" }} />}{" "}
             <b>{c.label}</b>
-            {c.mustHave && !c.ok && " (must-have)"}: <span style={{ color: MUTED }}>{c.detail}</span>
+            {c.must_have && !c.ok && " (must-have)"}: <span style={{ color: MUTED }}>{c.detail}</span>
           </div>
         ))}
       </div>

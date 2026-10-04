@@ -66,3 +66,15 @@ def test_backtests_can_skip_the_llm_explanation(monkeypatch):
     monkeypatch.setattr("langchain_openai.ChatOpenAI", lambda **kw: pytest.fail("explain=False must not call the LLM"))
     out = agent.explain({"symbol": "AAPL", "action": "HOLD", "llm_explanation": False, "steps": ["no setup -> HOLD"]})
     assert out["reasoning"] == "HOLD AAPL: no setup -> HOLD"
+
+
+def test_technical_only_skips_the_news_step(monkeypatch):
+    monkeypatch.setattr(agent, "_news_enabled", lambda: True)
+    monkeypatch.setattr(agent, "_analyze_news", lambda state: pytest.fail("use_news=False must not fetch or judge news"))
+    out = agent.news_rag({"symbol": "AAPL", "as_of": date(2026, 8, 3), "use_news": False, "steps": []})
+    assert out["sentiment"] == "off" and out["headlines"] == [] and out["catalysts"] == []
+    # "off" neither raises nor lowers the confidence
+    facts = {"sma20": 110.0, "sma50": 100.0, "rsi14": 55.0, "last_close": 120.0}
+    on = agent.decide({"strategy": "sma_rsi", "indicators": facts, "sentiment": "neutral", "steps": []})
+    off = agent.decide({"strategy": "sma_rsi", "indicators": facts, **out})
+    assert off["action"] == on["action"] and off["confidence"] == on["confidence"]

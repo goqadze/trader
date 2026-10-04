@@ -4,7 +4,7 @@ import type { ColumnsType } from "antd/es/table";
 import { strategyShortName, type StrategyId } from "../strategies";
 import { VerdictTag } from "../components/VerdictView";
 import type { BacktestState, Result } from "../types";
-import { judge, type Grade } from "../verdict";
+import { GRADE_LOOK } from "../verdict";
 import { METRICS, bestValues } from "./metrics";
 
 const MUTED = "#8b98b5";
@@ -19,8 +19,7 @@ interface Row {
 const sortValue = (v: number | null | undefined, order: "ascend" | "descend" | null | undefined) =>
   v == null || Number.isNaN(v) ? (order === "ascend" ? Infinity : -Infinity) : v;
 
-const GRADE_RANK: Record<Grade, number> = { paper: 3, weak: 2, no: 1 };
-const gradeRank = (run: BacktestState) => (run.result ? GRADE_RANK[judge(run.result, run.config).grade] : 0);
+const gradeRank = (run: BacktestState) => (run.result?.verdict ? GRADE_LOOK[run.result.verdict.grade].rank : 0);
 
 function Status({ run }: { run: BacktestState }) {
   if (run.status === "error") {
@@ -84,7 +83,7 @@ export default function CompareTable({
       width: 170,
       sorter: (a, b) => gradeRank(a.run) - gradeRank(b.run),
       render: (_, { run }) =>
-        run.result ? <VerdictTag verdict={judge(run.result, run.config)} /> : <span style={{ color: MUTED }}>…</span>,
+        run.result?.verdict ? <VerdictTag verdict={run.result.verdict} /> : <span style={{ color: MUTED }}>…</span>,
     },
     ...metrics.map(
       (m): ColumnsType<Row>[number] => ({

@@ -11,6 +11,7 @@ export default defineConfig({
     host: true,
     proxy: {
       "/runs": "http://localhost:8001",
+      "/scans": "http://localhost:8001",
       "/health": "http://localhost:8001",
       "/ws": { target: "ws://localhost:8001", ws: true },
       "/api/auth": {

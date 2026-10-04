@@ -8,7 +8,6 @@ import TradeThisButton from "../components/TradeThisButton";
 import { VerdictAlert } from "../components/VerdictView";
 import { strategyInfo } from "../strategies";
 import type { BacktestState, Trade } from "../types";
-import { judge } from "../verdict";
 import { METRICS } from "./metrics";
 
 const MUTED = "#8b98b5";
@@ -50,7 +49,7 @@ export default function StrategyDetail({ run }: { run: BacktestState }) {
               Ran with: every {cfg.rebalance_days} day{cfg.rebalance_days === 1 ? "" : "s"} · check{" "}
               {checkAtText(cfg.decide_at)} · stop {pct(cfg.stop_pct)} · target{" "}
               {pct(cfg.target_pct)} · min confidence {cfg.min_confidence} · breaker{" "}
-              {cfg.max_drawdown_pct ? pct(cfg.max_drawdown_pct) : "off"} ·{" "}
+              {cfg.max_drawdown_pct ? pct(cfg.max_drawdown_pct) : "off"} · news {cfg.news === false ? "off (technical only)" : "on"} ·{" "}
               <a href={`/guides/trading-strategies.html#${info.id}`} target="_blank" rel="noreferrer">
                 chart &amp; details
               </a>
@@ -60,7 +59,7 @@ export default function StrategyDetail({ run }: { run: BacktestState }) {
         </div>
       )}
       {run.error && <Alert type="error" showIcon message={run.error} style={{ marginBottom: 16 }} />}
-      {r && <VerdictAlert verdict={judge(r, cfg)} />}
+      {r?.verdict && <VerdictAlert verdict={r.verdict} />}
       <StatTiles state={run} />
       {r && (
         <Card title="All measurements" size="small" style={{ marginTop: 16 }}>

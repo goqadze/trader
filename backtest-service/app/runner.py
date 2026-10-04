@@ -19,21 +19,28 @@ class Run:
     (WebSocket clients) can watch the same run live. Not persisted — restarting the
     service clears all runs; swap in a DB later if you need history."""
 
-    def __init__(self, cfg: RunConfig):
+    def __init__(self, cfg: RunConfig, keep_steps: bool = True):
         self.id = uuid.uuid4().hex[:12]
         self.cfg = cfg
-        self.status = "pending"  # pending | running | done | error
+        self.status = "pending"  # pending | running | done | error | stopped
         self.created_at = datetime.now(timezone.utc).isoformat()
         self.events: list[dict] = []  # full history, so late joiners can catch up
         self.result: dict | None = None
         self.subscribers: set[asyncio.Queue] = set()
         self._seq = 0
+        # A scan starts hundreds of runs nobody watches live: their day-by-day "step" events (each with the decision
+        # text) would fill the memory, so they keep only the latest step, for the progress
+        self.keep_steps = keep_steps
+        self.last_step: dict | None = None
 
     async def emit(self, ev: dict) -> None:
         """Record an event and fan it out to every connected monitor."""
         ev = {**ev, "seq": self._seq}
         self._seq += 1
-        self.events.append(ev)
+        if ev["type"] == "step":
+            self.last_step = ev
+        if ev["type"] != "step" or self.keep_steps:
+            self.events.append(ev)
         for q in list(self.subscribers):
             q.put_nowait(ev)
 
@@ -180,10 +187,14 @@ async def _execute(run: Run) -> None:
                         at = datetime.combine(as_of, dtime.fromisoformat(slots.loc[as_of, "close_at"]), tzinfo=NY)
                     else:
                         at = None  # no 30-minute prices for this day: the finished day, news up to 15:30
-                    return await get_signal(client, symbol, as_of, cfg.strategy, cfg.stop_pct, cfg.target_pct, at)
+                    return await get_signal(client, symbol, as_of, cfg.strategy, cfg.stop_pct, cfg.target_pct, at, cfg.news)
 
                 run.result = await SimplePortfolioEngine().run(cfg, bars["Close"], decide, run.emit, bars=bars, slots=slots)
             run.status = "done"
+        except asyncio.CancelledError:  # a scan was stopped
+            run.status = "stopped"
+            await run.emit({"type": "error", "message": "stopped"})
+            raise
         except Exception as e:
             run.status = "error"
             await run.emit({"type": "error", "message": str(e)})

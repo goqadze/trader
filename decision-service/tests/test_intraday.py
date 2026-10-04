@@ -64,6 +64,34 @@ def test_a_month_is_downloaded_once_and_shared_by_its_days(monkeypatch):
     intraday._cache.clear()
 
 
+def test_a_cached_month_never_waits_behind_another_download(monkeypatch):
+    """A scan runs several symbols at once: one symbol's download mustn't stall every other decision."""
+    import threading
+
+    intraday._cache.clear()
+    release, calls = threading.Event(), []
+
+    def download(symbol, first, last):
+        calls.append(symbol)
+        if symbol == "SLOW":
+            assert release.wait(5)
+        return _half_hours(first)
+
+    monkeypatch.setattr(intraday, "_download", download)
+    intraday._month("AAPL", date(2025, 3, 3))  # cached
+    slow = [threading.Thread(target=intraday._month, args=("SLOW", date(2025, 3, 3))) for _ in range(2)]
+    for t in slow:
+        t.start()
+    done = threading.Event()
+    threading.Thread(target=lambda: (intraday._month("AAPL", date(2025, 3, 10)), done.set())).start()
+    assert done.wait(1)  # served from the cache while SLOW is still downloading
+    release.set()
+    for t in slow:
+        t.join(5)
+    assert calls == ["AAPL", "SLOW"]  # the two SLOW callers shared one download
+    intraday._cache.clear()
+
+
 def test_bars_between_spans_months_and_trims_to_the_range(monkeypatch):
     intraday._cache.clear()
     monkeypatch.setattr(intraday, "_download", lambda symbol, first, last: pd.concat([_half_hours(first), _half_hours(last)]))

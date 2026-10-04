@@ -4,8 +4,9 @@ import os
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
-from .models import RunConfig, RunSummary
+from .models import RunConfig, RunSummary, ScanConfig
 from .runner import RUNS, start_run
+from .scan import SCANS, scan_summary, scan_view, start_scan
 
 logger = logging.getLogger("backtest-service")
 logging.basicConfig(level=logging.INFO)
@@ -86,3 +87,36 @@ async def ws_run(ws: WebSocket, run_id: str):
         pass
     finally:
         run.subscribers.discard(q)
+
+
+@app.post("/scans")
+async def create_scan(cfg: ScanConfig):
+    """Start a scan: every strategy on every symbol, on the practice window, then the passers on the exam window.
+    Async for the same reason as POST /runs (it schedules tasks)."""
+    scan = start_scan(cfg)
+    return {"scan_id": scan.id}
+
+
+@app.get("/scans")
+def list_scans():
+    """Every scan since the service started, newest first."""
+    return [scan_summary(s) for s in sorted(SCANS.values(), key=lambda s: s.created_at, reverse=True)]
+
+
+@app.get("/scans/{scan_id}")
+def get_scan(scan_id: str):
+    """A scan's progress and every combination's practice and exam result (summary numbers and recommendation)."""
+    scan = SCANS.get(scan_id)
+    if not scan:
+        raise HTTPException(404, "scan not found (scans are forgotten when backtest-service restarts)")
+    return scan_view(scan)
+
+
+@app.post("/scans/{scan_id}/stop")
+def stop_scan(scan_id: str):
+    """Stop a scan: runs in progress end as "stopped", queued ones never start. Finished results stay."""
+    scan = SCANS.get(scan_id)
+    if not scan:
+        raise HTTPException(404, "scan not found")
+    scan.stop()
+    return scan_view(scan)

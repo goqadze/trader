@@ -1,4 +1,4 @@
-import { Button, Card, Checkbox, DatePicker, Form, InputNumber, Segmented, Select, Space, Typography } from "antd";
+import { Button, Card, Checkbox, DatePicker, Form, InputNumber, Segmented, Select, Space, Switch, Typography } from "antd";
 import { Dayjs } from "dayjs";
 import { CHECK_AT_OPTIONS, defaultRange } from "../checkAt";
 import SymbolSelect from "../components/SymbolSelect";
@@ -23,6 +23,7 @@ interface FormValues {
   target_pct: number;
   decide_at: DecideAt | "suggested";
   max_drawdown_pct: number; // percent in the form
+  news: boolean;
 }
 
 // "Each strategy's suggested time" first: it's the default, and how each strategy is meant to trade
@@ -54,6 +55,7 @@ function toConfigs(v: FormValues): RunConfig[] {
       strategy: id,
       decide_at: checkAt(id, v),
       max_drawdown_pct: v.max_drawdown_pct / 100,
+      news: v.news,
     };
   });
 }
@@ -100,6 +102,7 @@ export default function CompareForm({ onRun, running }: Props) {
           target_pct: 8,
           decide_at: "suggested",
           max_drawdown_pct: 20, // the bots' default
+          news: true,
         }}
       >
         <Form.Item
@@ -144,6 +147,14 @@ export default function CompareForm({ onRun, running }: Props) {
           tooltip="When each decision day decides, like a trading bot's “Check at”. Suggested: Gap and go after the open (10:00), News catalyst at both times, the rest before the close (15:30). Pick one time to run every strategy on it."
         >
           <Select options={COMPARE_CHECK_AT} />
+        </Form.Item>
+        <Form.Item
+          name="news"
+          label="News"
+          valuePropName="checked"
+          tooltip="On: each decision reads the news (RAG + an LLM sentiment) like a live bot. Off: technical only, decided on the price alone: much faster and no OpenAI cost, but News catalyst has nothing to trade on."
+        >
+          <Switch checkedChildren="on" unCheckedChildren="technical only" />
         </Form.Item>
         <Form.Item name="initial_cash" label="Initial cash ($)">
           <InputNumber min={100} style={{ width: "100%" }} />

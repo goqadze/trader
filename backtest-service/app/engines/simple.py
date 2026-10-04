@@ -4,6 +4,7 @@ from datetime import date
 import pandas as pd
 
 from ..models import RunConfig
+from ..verdict import judge
 from .base import BacktestEngine, DecideFn, EmitFn
 
 
@@ -171,6 +172,7 @@ class SimplePortfolioEngine(BacktestEngine):
         result["decision_errors"] = decision_errors
         result["no_news_decisions"] = no_news
         result["breaker_tripped_on"] = paused_on.isoformat() if paused_on else None
+        result["verdict"] = judge(result, cfg)  # the recommendation: a checklist and a grade
         await emit({"type": "done", "result": result})
         return result
 

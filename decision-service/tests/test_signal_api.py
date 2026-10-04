@@ -66,3 +66,10 @@ def test_explain_false_turns_off_the_llm_explanation(seen):
     client.post("/signal", params={"symbol": "AAPL", "as_of": "2025-06-02"})
     client.post("/signal", params={"symbol": "AAPL", "as_of": "2025-06-02", "explain": "false"})
     assert [s["llm_explanation"] for s in seen] == [True, False]  # live bots keep it by default
+
+
+def test_news_false_asks_for_a_technical_only_decision(seen):
+    client = TestClient(main.app)
+    client.post("/signal", params={"symbol": "AAPL", "as_of": "2025-06-02"})
+    client.post("/signal", params={"symbol": "AAPL", "as_of": "2025-06-02", "news": "false"})
+    assert [s["use_news"] for s in seen] == [True, False]  # live bots keep news by default

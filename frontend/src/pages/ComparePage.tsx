@@ -8,8 +8,7 @@ import CompareTable from "../compare/CompareTable";
 import StrategyDetail from "../compare/StrategyDetail";
 import { useCompare } from "../hooks/useCompare";
 import { strategyShortName, type StrategyId } from "../strategies";
-import type { BacktestState, Result, RunConfig } from "../types";
-import { judge } from "../verdict";
+import type { BacktestState, Result } from "../types";
 
 const MUTED = "#8b98b5";
 const signed = (v: number) => `${v > 0 ? "+" : ""}${v.toFixed(2)}%`;
@@ -22,7 +21,7 @@ function tradeCount(r: Result) {
 
 /** The winners in words: best return, best risk-adjusted, smallest drawdown, who beat buy & hold, and whether the
  *  leader's result rests on enough trades to mean anything. */
-function Verdict({ done, total, cfg }: { done: [StrategyId, Result][]; total: number; cfg?: RunConfig | null }) {
+function Verdict({ done, total }: { done: [StrategyId, Result][]; total: number }) {
   if (done.length < 2) return null;
   const top = (f: (r: Result) => number | null | undefined) =>
     done.filter(([, r]) => f(r) != null).sort(([, a], [, b]) => f(b)! - f(a)!)[0];
@@ -34,8 +33,7 @@ function Verdict({ done, total, cfg }: { done: [StrategyId, Result][]; total: nu
   const finished = done.length === total;
   const leader = strategyShortName(byReturn[0]);
   const thin = byReturn[1].num_trades < FEW_TRADES;
-  // every run shares the symbol and window, which is all judge() reads from the config
-  const passed = done.filter(([, r]) => judge(r, cfg).grade === "paper").map(([id]) => strategyShortName(id));
+  const passed = done.filter(([, r]) => r.verdict?.grade === "paper").map(([id]) => strategyShortName(id));
   return (
     <Alert
       type={passed.length ? "success" : "warning"}
@@ -124,7 +122,7 @@ export default function ComparePage() {
           </Card>
         ) : (
           <>
-            <Verdict done={done} total={order.length} cfg={cfg} />
+            <Verdict done={done} total={order.length} />
             <Card
               title={`${cfg?.symbol} · ${cfg?.start} → ${cfg?.end}`}
               size="small"

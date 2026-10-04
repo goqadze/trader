@@ -68,6 +68,21 @@ Each strategy suggests a starting cadence and stop/target (the **Apply** link un
 (breakout, mean reversion, gaps, news...) fire on a specific day, so they suggest checking **every trading day**; a
 weekly check would miss most setups.
 
+## Is a result worth trading? (recommendation + Scan)
+
+Every finished backtest ends with a **recommendation** from a checklist (`backtest-service/app/verdict.py`):
+must-haves are 10+ closed trades and making money; it also wants wins outweighing losses (profit factor ≥ 1.2),
+beating buy & hold on return or on a smoother ride (Sharpe), a worst drop shallower than 20% with the breaker never
+tripped, 6+ months tested and no failed decisions. Grades: **Worth paper trading**, **Not yet**, **Not
+recommended**. A backtest alone never earns "trade it with real money".
+
+**Scan** (`/scan`, `backtest-service/app/scan.py`) finds symbol + strategy combinations: every strategy on every
+symbol over a **practice** window, then only the ones that passed sit an **exam** on later years the practice never
+saw. What passes both is a candidate; the summary also shows which strategies held up on several symbols. Scans
+run on the server (leaving the page doesn't stop them; restarting backtest-service forgets them), at most
+`SCAN_PARALLEL_RUNS` (3) runs at a time so a normal backtest still gets a slot. **Technical only** (news off,
+`news=false` on `/signal`) makes a scan fast and free; **Re-check with news** opens a finalist on the Backtest page.
+
 ## Live trading (paper first)
 
 Once a backtest convinces you, click **Trade this strategy** on its result, or open **Live trading → New bot**.
@@ -215,7 +230,7 @@ Alpaca / Polygon / Finnhub optional for news RAG). Without news keys the agent u
 ```
 Browser ──► frontend :8080 (React + antd, nginx)
                 │  every API / WebSocket call: signed in?  ──► trading-service GET /auth/check (auth_request)
-                │  POST /runs  +  WebSocket /ws/{id}   (proxied by nginx)
+                │  POST /runs, /scans  +  WebSocket /ws/{id}   (proxied by nginx)
                 ▼
         backtest-service :8001 ──(loops over dates)──► decision-service :8000
                 │                                        prices (yfinance) + news RAG (pgvector) + LLM

@@ -3,6 +3,7 @@
 
 import type { StrategyId } from "./strategies";
 import type { DecideAt } from "./trading/types";
+import type { Verdict } from "./verdict";
 
 export type Action = "BUY" | "SELL" | "HOLD" | "hold"; // "hold" = carry day (non-decision)
 export type RunStatus = "idle" | "starting" | "running" | "done" | "error";
@@ -21,6 +22,7 @@ export interface RunConfig {
   strategy: StrategyId;
   decide_at?: DecideAt; // when a decision day decides, like a bot's "Check at"; omitted = before the close
   max_drawdown_pct?: number; // the bots' drawdown breaker: stop deciding after this drop from the peak (0 = off)
+  news?: boolean; // false = technical only: no news step (fast screening); omitted = news on
 }
 
 export interface Trade {
@@ -73,6 +75,7 @@ export interface Result {
   decision_errors?: number;
   no_news_decisions?: number;
   breaker_tripped_on?: string | null; // the day the drawdown breaker paused the run, if it did
+  verdict?: Verdict; // the recommendation: a checklist and a grade (backtest-service/app/verdict.py)
 }
 
 // --- WebSocket events (discriminated union on `type`) ---

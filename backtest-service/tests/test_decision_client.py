@@ -98,3 +98,11 @@ def test_backtests_ask_for_no_llm_explanation():
     client = _Client(resp=_Resp(200, {"action": "HOLD", "confidence": 0.5}))
     asyncio.run(get_signal(client, "AAPL", date(2025, 1, 1)))
     assert client.kwargs["params"]["explain"] == "false"
+
+
+def test_technical_only_runs_ask_for_no_news():
+    client = _Client(resp=_Resp(200, {"action": "HOLD", "confidence": 0.5}))
+    asyncio.run(get_signal(client, "AAPL", date(2025, 1, 1)))
+    assert "news" not in client.kwargs["params"]  # news on: decision-service's default
+    asyncio.run(get_signal(client, "AAPL", date(2025, 1, 1), news=False))
+    assert client.kwargs["params"]["news"] == "false"
