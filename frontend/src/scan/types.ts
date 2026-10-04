@@ -40,6 +40,9 @@ export interface ScanRunView {
     avg_trade_pct: number | null;
     exposure_pct: number;
     decision_errors: number;
+    breaker_tripped_on: string | null;
+    gross_win: number; // total $ of the winning closed trades (for pooling across symbols)
+    gross_loss: number; // total $ of the losing ones, positive
   } | null;
   verdict: Verdict | null;
 }

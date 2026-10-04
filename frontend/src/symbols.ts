@@ -52,6 +52,25 @@ export const SYMBOL_GROUPS: SymbolGroup[] = [
     ],
   },
   {
+    // The S&P 500's 11 sectors (SPDR): they all trade since 2018 (XLC) or earlier, so testing past years on them
+    // doesn't pick winners with hindsight the way today's largest companies do. A rotation's default universe.
+    label: "S&P 500 sector ETFs",
+    short: "Sector ETFs",
+    symbols: [
+      { symbol: "XLK", name: "Technology" },
+      { symbol: "XLF", name: "Financials" },
+      { symbol: "XLE", name: "Energy" },
+      { symbol: "XLV", name: "Health care" },
+      { symbol: "XLI", name: "Industrials" },
+      { symbol: "XLY", name: "Consumer discretionary" },
+      { symbol: "XLP", name: "Consumer staples" },
+      { symbol: "XLU", name: "Utilities" },
+      { symbol: "XLB", name: "Materials" },
+      { symbol: "XLRE", name: "Real estate" },
+      { symbol: "XLC", name: "Communication services" },
+    ],
+  },
+  {
     // The 20 largest US companies by market value on 2026-10-02 (finhacker.cz top 20 S&P 500 by market cap)
     label: "Top 20 US companies by market value (Oct 2026)",
     short: "Top 20 companies",
@@ -102,3 +121,17 @@ export const TWINS: { label: string; symbols: string[] }[] = [
 
 /** The family a symbol belongs to (its twin group's first symbol), or the symbol itself. */
 export const familyOf = (symbol: string) => TWINS.find((t) => t.symbols.includes(symbol))?.symbols[0] ?? symbol;
+
+/** Grouped options for a symbol picker, each ticker once (XLK is both a top-20 ETF and a sector): its first group
+ *  wins. `render` builds an option's label. */
+export function symbolOptions<L>(render: (s: SymbolInfo) => L) {
+  const seen = new Set<string>();
+  return SYMBOL_GROUPS.map((g) => ({
+    label: g.label,
+    options: g.symbols.filter((s) => !seen.has(s.symbol) && seen.add(s.symbol)).map((s) => ({ value: s.symbol, label: render(s), name: s.name })),
+  }));
+}
+
+/** ETFs: on one of the ETF lists. Anything else (a company, or a typed ticker) may be a hindsight pick in a test of
+ *  past years. */
+export const isListedEtf = (symbol: string) => SYMBOL_GROUPS.some((g) => g.label.includes("ETF") && g.symbols.some((s) => s.symbol === symbol));

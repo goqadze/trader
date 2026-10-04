@@ -7,6 +7,7 @@ import { LoginPage, SignupPage } from "./auth/AuthPages";
 import UsersPage from "./auth/UsersPage";
 import BacktestPage from "./pages/BacktestPage";
 import ComparePage from "./pages/ComparePage";
+import RotationPage from "./pages/RotationPage";
 import ScanPage from "./pages/ScanPage";
 import GuidePage from "./pages/GuidePage";
 import BotPage from "./trading/BotPage";
@@ -68,6 +69,8 @@ function Header() {
         ? "compare"
         : pathname === "/scan"
           ? "scan"
+          : pathname === "/rotation"
+            ? "rotation"
         : pathname === "/"
           ? "backtest"
           : "";
@@ -83,6 +86,7 @@ function Header() {
           { key: "backtest", label: <Link to="/">Backtest</Link> },
           { key: "compare", label: <Link to="/compare">Compare strategies</Link> },
           { key: "scan", label: <Link to="/scan">Scan</Link> },
+          { key: "rotation", label: <Link to="/rotation">Rotation</Link> },
           { key: "trading", label: <Link to="/trading">Live trading</Link> },
           ...(admin ? [{ key: "users", label: <Link to="/admin/users"><UsersNavLabel /></Link> }] : []),
         ]}
@@ -124,6 +128,7 @@ export default function App() {
                 <Route path="/" element={<BacktestPage />} />
                 <Route path="/compare" element={<ComparePage />} />
                 <Route path="/scan" element={<ScanPage />} />
+                <Route path="/rotation" element={<RotationPage />} />
                 <Route path="/trading" element={<TradingPage />} />
                 <Route path="/trading/:id" element={<BotPage />} />
                 <Route path="/guide" element={<GuidePage guide="lifecycle" />} />

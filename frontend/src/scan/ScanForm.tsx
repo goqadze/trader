@@ -1,7 +1,7 @@
 import { Alert, Button, Card, Checkbox, DatePicker, Form, Select, Space, Switch, Typography } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
 import { STRATEGIES, STYLES, strategyInfo, type StrategyId } from "../strategies";
-import { SYMBOL_GROUPS, TWINS } from "../symbols";
+import { SYMBOL_GROUPS, TWINS, symbolOptions } from "../symbols";
 import type { RunSettings, ScanConfig } from "./types";
 
 const MUTED = "#8b98b5";
@@ -17,10 +17,7 @@ interface FormValues {
   exam_all: boolean;
 }
 
-const SYMBOL_OPTIONS = SYMBOL_GROUPS.map((g) => ({
-  label: g.label,
-  options: g.symbols.map((s) => ({ value: s.symbol, label: `${s.symbol} · ${s.name}` })),
-}));
+const SYMBOL_OPTIONS = symbolOptions((s) => `${s.symbol} · ${s.name}`);
 
 const fmt = (d: Dayjs) => d.format("YYYY-MM-DD");
 

@@ -29,6 +29,7 @@ def fake_backtest(monkeypatch):
         ran.append((cfg.symbol, cfg.strategy, cfg.start.year >= 2025, cfg.news))
         good = cfg.start.year >= 2025 or (cfg.symbol, cfg.strategy) == ("QQQ", "sma_rsi")
         run.result = {"total_return_pct": 10.0 if good else -2.0, "num_trades": 12,
+                      "trades": [{"side": "BUY"}, {"side": "SELL", "pnl": 300.0}, {"side": "SELL", "pnl": -100.0}],
                       "verdict": {"grade": "paper" if good else "no", "title": "", "summary": "", "checks": []}}
         run.status = "done"
 
@@ -66,6 +67,7 @@ def test_only_combinations_that_passed_practice_sit_the_exam(fake_backtest):
     assert view["total"] == view["finished"] == 4
     qqq_sma = next(c for c in view["cells"] if c["symbol"] == "QQQ" and c["strategy"] == "sma_rsi")
     assert qqq_sma["practice"]["verdict"]["grade"] == qqq_sma["exam"]["verdict"]["grade"] == "paper"
+    assert (qqq_sma["practice"]["summary"]["gross_win"], qqq_sma["practice"]["summary"]["gross_loss"]) == (300.0, 100.0)
     spy = next(c for c in view["cells"] if c["symbol"] == "SPY" and c["strategy"] == "sma_rsi")
     assert spy["exam"] is None and spy["exam_note"] == "skipped: didn't pass practice"
     # each strategy keeps its own settings, news included

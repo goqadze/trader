@@ -83,6 +83,19 @@ run on the server (leaving the page doesn't stop them; restarting backtest-servi
 `SCAN_PARALLEL_RUNS` (3) runs at a time so a normal backtest still gets a slot. **Technical only** (news off,
 `news=false` on `/signal`) makes a scan fast and free; **Re-check with news** opens a finalist on the Backtest page.
 
+The Scan page also **pools** each strategy's trades across all symbols (twin ETFs counted once): trades, win rate,
+profit factor (gross won ÷ gross lost), average trade, how many symbols made money. One symbol can be lucky; a
+profit factor near 1.0 over hundreds of trades means the rule has no edge.
+
+## Momentum rotation (portfolio)
+
+**Rotation** (`/rotation`, `backtest-service/app/engines/rotation.py`, `POST /runs/rotation`) backtests a portfolio:
+at the start and each month's last close, rank a universe by its 12-1 momentum (the return over the past 12 months,
+skipping the latest one; Jegadeesh & Titman), hold the top N in equal parts, sell the rest; with "only hold what
+rose" a slot without a rising symbol stays in cash. The benchmark is the whole universe bought in equal parts on
+day one. The default universe is the 11 S&P sector ETFs: testing past years on today's largest companies would
+pick yesterday's winners in hindsight (survivorship bias), and the page warns when a universe holds stocks.
+
 ## Intraday strategies (backtest only)
 
 Two strategies trade within the day on 5-minute bars (Alpaca, years of history), one setup a day, every position

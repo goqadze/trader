@@ -7,6 +7,7 @@ import { VerdictTag } from "../components/VerdictView";
 import { strategyShortName } from "../strategies";
 import { GRADE_LOOK } from "../verdict";
 import CellDetail from "./CellDetail";
+import PooledTable from "./PooledTable";
 import { consistency } from "./consistency";
 import type { ScanCell, ScanRunView, ScanSummary, ScanView } from "./types";
 
@@ -188,6 +189,7 @@ export default function ScanResults({ scan, scans, onPick, onStop }: Props) {
         </Typography.Text>
       </Card>
       <Summary scan={scan} />
+      <PooledTable scan={scan} />
       <Card
         size="small"
         title="Combinations"

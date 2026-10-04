@@ -2,6 +2,7 @@
 // Same-origin: nginx (docker) or the Vite dev proxy forwards these to backtest-service.
 
 import { request } from "./http";
+import type { RotationConfig } from "./rotation/types";
 import type { ScanConfig, ScanSummary, ScanView } from "./scan/types";
 import type { Result, RunConfig, RunEvent } from "./types";
 
@@ -23,3 +24,6 @@ export const stopScan = (id: string) => request<ScanView>("POST", `/scans/${id}/
 /** One run's full detail (config + result), e.g. a scan combination opened for its checklist. */
 export const getRun = (id: string) =>
   request<{ run_id: string; config: RunConfig; status: string; result: Result | null }>("GET", `/runs/${id}`);
+
+/** A momentum-rotation backtest over a universe of symbols (one window); poll getRun for its result. */
+export const createRotationRun = (cfg: RotationConfig) => request<{ run_id: string }>("POST", "/runs/rotation", cfg);

@@ -10,8 +10,8 @@ import pandas as pd
 import yfinance as yf
 
 from .decision_client import BASE as DECISION_BASE, get_signal
-from .engines import IntradayEngine, SimplePortfolioEngine
-from .models import INTRADAY_STRATEGIES, RunConfig
+from .engines import IntradayEngine, RotationEngine, SimplePortfolioEngine
+from .models import INTRADAY_STRATEGIES, RotationConfig, RunConfig
 
 
 class Run:
@@ -133,6 +133,17 @@ def _intraday_plans(cfg: RunConfig) -> list[dict]:
     return r.json()
 
 
+def _universe_closes(symbols_key: str, start: date, end: date) -> pd.DataFrame:
+    """Daily closes of several symbols, one column each (a rotation's universe; `symbols_key` = "A,B,C" so the price
+    cache can key on it). A symbol Yahoo doesn't know comes back as an empty column."""
+    symbols = symbols_key.split(",")
+    df = yf.download([_yahoo_symbol(s) for s in symbols], start=start, end=end + timedelta(days=1), progress=False, auto_adjust=True)
+    close = df["Close"] if isinstance(df.columns, pd.MultiIndex) else df[["Close"]].rename(columns={"Close": _yahoo_symbol(symbols[0])})
+    close = close.rename(columns={_yahoo_symbol(s): s for s in symbols}).reindex(columns=symbols)
+    close.index = [d.date() for d in close.index]
+    return _finished_sessions(close, pd.Timestamp.now(tz=NEW_YORK))
+
+
 def _finished_sessions(close: pd.Series | pd.DataFrame, now: pd.Timestamp) -> pd.Series | pd.DataFrame:
     """Drop today's bar while the market is still open: yfinance returns the latest intraday price as today's
     "close", so a backtest ending today would decide and mark equity on a price that isn't a close yet."""
@@ -169,6 +180,29 @@ async def _load_prices(symbol: str, start: date, end: date, fetch=None) -> pd.Da
             _price_locks.pop(k, None)
         _price_cache[key] = (now, prices)
         return prices
+
+
+def start_rotation_run(cfg: RotationConfig) -> Run:
+    """Create a momentum-rotation run and execute it in the background."""
+    run = Run(cfg)
+    RUNS[run.id] = run
+    asyncio.create_task(_execute_rotation(run))
+    return run
+
+
+async def _execute_rotation(run: Run) -> None:
+    cfg: RotationConfig = run.cfg
+    async with _slots:
+        run.status = "running"
+        try:
+            # The momentum on the first day looks back lookback + skip months: download that much before the start
+            first = cfg.start - pd.DateOffset(months=cfg.lookback_months + cfg.skip_months) - timedelta(days=10)
+            closes = await _load_prices(",".join(cfg.symbols), first.date(), cfg.end, _universe_closes)
+            run.result = await RotationEngine().run(cfg, closes, run.emit)
+            run.status = "done"
+        except Exception as e:
+            run.status = "error"
+            await run.emit({"type": "error", "message": str(e)})
 
 
 def start_run(cfg: RunConfig) -> Run:

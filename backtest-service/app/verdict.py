@@ -3,7 +3,7 @@ worth paper trading, and a grade from it. The frontend shows it as is; a scan us
 combinations sit the exam. A backtest can at best earn "paper-trade it next": past results on one symbol and
 window never prove a strategy, so nothing here says "trade it with real money"."""
 
-from .models import RunConfig
+from .models import RotationConfig, RunConfig
 
 MIN_TRADES = 10  # fewer closed trades and luck can explain the whole result (the frontend's FEW_TRADES)
 MIN_PROFIT_FACTOR = 1.2  # every $1 lost has to bring back at least $1.20
@@ -20,11 +20,11 @@ def _signed(v: float) -> str:
     return f"{'+' if v > 0 else ''}{v:.1f}%"
 
 
-def _months(cfg: RunConfig) -> float:
+def _months(cfg: RunConfig | RotationConfig) -> float:
     return (cfg.end - cfg.start).days / 30.44
 
 
-def judge(r: dict, cfg: RunConfig) -> dict:
+def judge(r: dict, cfg: RunConfig | RotationConfig) -> dict:
     """{grade: paper | weak | no, title, summary, checks: [{ok, label, detail, must_have}]} for a result dict."""
     checks = []
 
@@ -88,6 +88,6 @@ def judge(r: dict, cfg: RunConfig) -> dict:
                    "Improve the settings or compare other strategies before paper trading.")
     else:
         grade = "paper"
-        summary = ("Passed every check on this symbol and window. That's a reason to keep testing, not proof: try another "
-                   "period or a similar symbol, then paper-trade it before risking real money.")
+        summary = ("Passed every check in this test period. That's a reason to keep testing, not proof: try another "
+                   "period or similar symbols, then paper-trade it before risking real money.")
     return {"grade": grade, "title": TITLES[grade], "summary": summary, "checks": checks}

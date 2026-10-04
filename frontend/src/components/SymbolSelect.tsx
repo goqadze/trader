@@ -1,20 +1,13 @@
 import { AutoComplete } from "antd";
-import { SYMBOL_GROUPS } from "../symbols";
+import { symbolOptions } from "../symbols";
 
 const MUTED = "#8b98b5";
 
-const OPTIONS = SYMBOL_GROUPS.map((g) => ({
-  label: g.label,
-  options: g.symbols.map((s) => ({
-    value: s.symbol,
-    search: `${s.symbol} ${s.name}`.toLowerCase(),
-    label: (
-      <span>
-        <b>{s.symbol}</b> <span style={{ color: MUTED }}>{s.name}</span>
-      </span>
-    ),
-  })),
-}));
+const OPTIONS = symbolOptions((s) => (
+  <span>
+    <b>{s.symbol}</b> <span style={{ color: MUTED }}>{s.name}</span>
+  </span>
+)).map((g) => ({ ...g, options: g.options.map((o) => ({ ...o, search: `${o.value} ${o.name}`.toLowerCase() })) }));
 
 interface Props {
   value?: string;

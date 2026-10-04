@@ -4,8 +4,8 @@ import os
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
-from .models import RunConfig, RunSummary, ScanConfig
-from .runner import RUNS, start_run
+from .models import RotationConfig, RunConfig, RunSummary, ScanConfig
+from .runner import RUNS, start_rotation_run, start_run
 from .scan import SCANS, scan_summary, scan_view, start_scan
 
 logger = logging.getLogger("backtest-service")
@@ -39,11 +39,18 @@ async def create_run(cfg: RunConfig):
     return {"run_id": run.id}
 
 
+@app.post("/runs/rotation")
+async def create_rotation_run(cfg: RotationConfig):
+    """Start a momentum-rotation backtest over several symbols (one window). Its result comes from GET /runs/{id}."""
+    return {"run_id": start_rotation_run(cfg).id}
+
+
 @app.get("/runs", response_model=list[RunSummary])
 def list_runs():
     """List every run (newest first) for the monitoring UI."""
     return [
-        RunSummary(run_id=r.id, symbol=r.cfg.symbol, status=r.status, created_at=r.created_at)
+        RunSummary(run_id=r.id, symbol=getattr(r.cfg, "symbol", None) or f"rotation of {len(r.cfg.symbols)}", status=r.status,
+                   created_at=r.created_at)
         for r in sorted(RUNS.values(), key=lambda r: r.created_at, reverse=True)
     ]
 
@@ -54,7 +61,8 @@ def get_run(run_id: str):
     run = RUNS.get(run_id)
     if not run:
         raise HTTPException(404, "run not found")
-    return {"run_id": run.id, "config": run.cfg, "status": run.status, "result": run.result}
+    error = next((e["message"] for e in reversed(run.events) if e["type"] == "error"), None)
+    return {"run_id": run.id, "config": run.cfg, "status": run.status, "result": run.result, "error": error}
 
 
 @app.websocket("/ws/{run_id}")

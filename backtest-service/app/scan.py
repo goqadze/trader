@@ -21,7 +21,14 @@ _scan_slots = asyncio.Semaphore(SCAN_PARALLEL_RUNS)
 # A summary row carries these result numbers; the full result stays at GET /runs/{id}.
 SUMMARY_KEYS = ("total_return_pct", "buy_hold_return_pct", "alpha_vs_buy_hold_pct", "max_drawdown_pct", "sharpe",
                 "buy_hold_sharpe", "num_trades", "win_rate_pct", "profit_factor", "avg_trade_pct", "exposure_pct",
-                "decision_errors")
+                "decision_errors", "breaker_tripped_on")
+
+
+def _gross(r: dict) -> dict:
+    """The closed trades' total won and total lost ($), so the frontend can pool a strategy's trades across symbols
+    (a profit factor can't be averaged: it needs the sums)."""
+    pnls = [t["pnl"] for t in r.get("trades", []) if "pnl" in t]
+    return {"gross_win": round(sum(p for p in pnls if p > 0), 2), "gross_loss": round(-sum(p for p in pnls if p <= 0), 2)}
 
 
 class Cell:
@@ -120,7 +127,7 @@ def _run_view(run: Run | None) -> dict | None:
         "status": run.status,
         "progress": round(step["i"] / step["total"], 3) if step and step.get("total") else 0.0,
         "error": next((e["message"] for e in reversed(run.events) if e["type"] == "error"), None),
-        "summary": {k: r.get(k) for k in SUMMARY_KEYS} if r else None,
+        "summary": {k: r.get(k) for k in SUMMARY_KEYS} | _gross(r) if r else None,
         "verdict": r["verdict"] if r else None,
     }
 

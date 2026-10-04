@@ -60,6 +60,18 @@ class RunConfig(RunSettings):
     end: date  # last day of the backtest window
 
 
+def clean_symbols(v: list[str]) -> list[str]:
+    """Upper-cased tickers in their given order, each once; anything that isn't a ticker is refused."""
+    out = []
+    for s in v:
+        s = s.strip().upper()
+        if not re.fullmatch(r"[A-Z][A-Z.\-]{0,9}", s):
+            raise ValueError(f"not a ticker: {s!r}")
+        if s not in out:
+            out.append(s)
+    return out
+
+
 class Period(BaseModel):
     start: date
     end: date
@@ -85,15 +97,8 @@ class ScanConfig(BaseModel):
 
     @field_validator("symbols")
     @classmethod
-    def _clean_symbols(cls, v: list[str]) -> list[str]:
-        out = []
-        for s in v:
-            s = s.strip().upper()
-            if not re.fullmatch(r"[A-Z][A-Z.\-]{0,9}", s):
-                raise ValueError(f"not a ticker: {s!r}")
-            if s not in out:
-                out.append(s)
-        return out
+    def _clean(cls, v: list[str]) -> list[str]:
+        return clean_symbols(v)
 
     @model_validator(mode="after")
     def _check(self):
@@ -101,6 +106,39 @@ class ScanConfig(BaseModel):
             raise ValueError("each strategy at most once")
         if self.exam and self.exam.start <= self.practice.end:
             raise ValueError("the exam period must start after the practice period ends, or it isn't an unseen test")
+        return self
+
+
+class RotationConfig(BaseModel):
+    """Momentum rotation: a portfolio across several symbols. At the start and each month's last trading day, rank
+    the universe by its return over the last `lookback_months` (skipping the latest `skip_months`, the classic 12-1
+    momentum), hold the top `top_n` in equal parts, sell the rest. Judged against holding the whole universe in
+    equal parts. One window per run: the frontend runs a practice and an exam window."""
+
+    strategy: Literal["momentum_rotation"] = "momentum_rotation"
+    symbols: list[str] = Field(min_length=2, max_length=60)
+    start: date
+    end: date
+    top_n: int = Field(3, ge=1, le=20)
+    lookback_months: int = Field(12, ge=1, le=24)
+    skip_months: int = Field(1, ge=0, le=3)  # the latest month tends to reverse: the classic momentum skips it
+    abs_filter: bool = True  # only hold symbols that rose over the lookback; a slot without one stays in cash
+    initial_cash: float = 10_000.0
+    slippage_pct: float = Field(0.0005, ge=0)
+    fee_pct: float = Field(0.0, ge=0)
+    max_drawdown_pct: float = Field(0.0, ge=0, lt=1)  # off by default: a portfolio isn't paused like a bot
+
+    @field_validator("symbols")
+    @classmethod
+    def _clean(cls, v: list[str]) -> list[str]:
+        return clean_symbols(v)
+
+    @model_validator(mode="after")
+    def _check(self):
+        if self.end <= self.start:
+            raise ValueError("end must be after start")
+        if self.top_n > len(self.symbols):
+            raise ValueError("top_n can't be more than the number of symbols")
         return self
 
 
