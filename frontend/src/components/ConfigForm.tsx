@@ -1,10 +1,11 @@
-import { Form, Input, InputNumber, DatePicker, Select, Button, Card } from "antd";
+import { Form, InputNumber, DatePicker, Select, Button, Card } from "antd";
 import { Dayjs } from "dayjs";
 import { CHECK_AT_OPTIONS, defaultRange } from "../checkAt";
 import { DEFAULT_STRATEGY, STRATEGY_OPTIONS, strategyInfo, type StrategyId, type StrategyInfo } from "../strategies";
 import type { DecideAt } from "../trading/types";
 import type { RunConfig } from "../types";
 import StrategyHelp from "./StrategyHelp";
+import SymbolSelect from "./SymbolSelect";
 
 // antd form values (dates are dayjs objects; we format them on submit).
 interface FormValues {
@@ -88,7 +89,7 @@ export default function ConfigForm({ onRun, running }: Props) {
         </Form.Item>
         <StrategyHelp id={strategy} onApply={applySuggested} />
         <Form.Item name="symbol" label="Symbol" rules={[{ required: true }]}>
-          <Input />
+          <SymbolSelect />
         </Form.Item>
         <Form.Item name="range" label="Date range" rules={[{ required: true }]}>
           <DatePicker.RangePicker style={{ width: "100%" }} />

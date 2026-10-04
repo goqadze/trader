@@ -1,6 +1,7 @@
-import { Button, Card, Checkbox, DatePicker, Form, Input, InputNumber, Segmented, Select, Space, Typography } from "antd";
+import { Button, Card, Checkbox, DatePicker, Form, InputNumber, Segmented, Select, Space, Typography } from "antd";
 import { Dayjs } from "dayjs";
 import { CHECK_AT_OPTIONS, defaultRange } from "../checkAt";
+import SymbolSelect from "../components/SymbolSelect";
 import { STRATEGIES, strategyInfo, type StrategyId } from "../strategies";
 import type { DecideAt } from "../trading/types";
 import type { RunConfig } from "../types";
@@ -132,7 +133,7 @@ export default function CompareForm({ onRun, running }: Props) {
           </Form.Item>
         </Form.Item>
         <Form.Item name="symbol" label="Symbol" rules={[{ required: true }]}>
-          <Input />
+          <SymbolSelect />
         </Form.Item>
         <Form.Item name="range" label="Date range" rules={[{ required: true }]}>
           <DatePicker.RangePicker style={{ width: "100%" }} />

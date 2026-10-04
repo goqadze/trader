@@ -1,6 +1,7 @@
 import { Alert, Checkbox, Col, Divider, Form, Input, InputNumber, Modal, Radio, Row, Select, Tooltip } from "antd";
 import { useEffect, useRef, useState } from "react";
 import StrategyHelp from "../components/StrategyHelp";
+import SymbolSelect from "../components/SymbolSelect";
 import { DEFAULT_STRATEGY, STRATEGY_OPTIONS, strategyInfo, type StrategyId, type StrategyInfo } from "../strategies";
 import { slotTimes } from "./format";
 import type { BotCreate, BotUpdate, BrokerInfo, DecideAt, StrategyParams } from "./types";
@@ -146,7 +147,7 @@ export default function BotForm({ open, editing, initial, brokers, times = slotT
             <Row gutter={12}>
               <Col span={8}>
                 <Form.Item name="symbol" label="Symbol" rules={[{ required: true, pattern: /^[A-Za-z][A-Za-z.-]{0,9}$/, message: "e.g. AAPL" }]}>
-                  <Input placeholder="AAPL" style={{ textTransform: "uppercase" }} />
+                  <SymbolSelect />
                 </Form.Item>
               </Col>
               <Col span={16}>
