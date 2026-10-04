@@ -28,7 +28,7 @@ from .brokers import Broker, BrokerError, BrokerOrder, Quote
 from .config import settings
 from .decision_client import SignalError, get_signal
 from .market import NY, ny_date
-from .models import OPEN_ORDER_STATUSES, Bot, Decision, EquitySnapshot, Event, Order
+from .models import OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, EquitySnapshot, Event, Holding, Order
 
 logger = logging.getLogger("trading-service")
 
@@ -72,6 +72,19 @@ def resting_stop(session: Session, bot: Bot) -> Order | None:
     )
 
 
+def holdings(session: Session, bot: Bot) -> list[Holding]:
+    """A rotation bot's positions (none for the other bots, whose one position lives on the Bot row)."""
+    return list(session.scalars(select(Holding).where(Holding.bot_id == bot.id).order_by(Holding.symbol)))
+
+
+def bot_equity(session: Session, bot: Bot, price: float | None) -> float:
+    """Cash plus what the bot holds: its position at `price`, or a rotation bot's holdings at their last prices."""
+    if bot.strategy == ROTATION:
+        return round(bot.cash + sum(h.shares * (h.last_price or h.cost_basis / h.shares) for h in holdings(session, bot)
+                                    if h.shares), 2)
+    return round(bot.cash + bot.shares * (price or 0.0), 2)
+
+
 def fresh_quote(broker: Broker, bot: Bot, now: datetime) -> Quote:
     """A quote we're willing to trade on. Also refreshes the bot's last known price."""
     q = broker.quote(bot.symbol)
@@ -89,14 +102,17 @@ def fresh_quote(broker: Broker, bot: Bot, now: datetime) -> Quote:
 # ---------------------------------------------------------------------------
 
 def submit_order(session: Session, bot: Bot, broker: Broker, side: str, qty: int, reason: str,
-                 now: datetime, decision: Decision | None = None, stop_price: float | None = None) -> Order:
-    """Write-ahead order submission (a market order, or a resting SELL stop when stop_price is given):
+                 now: datetime, decision: Decision | None = None, stop_price: float | None = None,
+                 symbol: str | None = None) -> Order:
+    """Write-ahead order submission (a market order, or a resting SELL stop when stop_price is given), for the
+    bot's symbol or, on a rotation bot, `symbol`:
     1. save the order as "new" and COMMIT, before the broker hears about it;
     2. send it with our client_order_id;
     3. book whatever the broker answered.
     If we crash or the network drops between 1 and 3, the scheduler finds the "new" order and asks
     the broker what happened to it -- so an order can be neither lost nor sent twice."""
-    order = Order(bot_id=bot.id, decision_id=decision.id if decision else None, side=side, qty=qty,
+    symbol = symbol or bot.symbol
+    order = Order(bot_id=bot.id, decision_id=decision.id if decision else None, side=side, symbol=symbol, qty=qty,
                   order_type="market" if stop_price is None else "stop", stop_price=stop_price,
                   reason=reason, status="new", client_order_id=f"bot{bot.id}-{uuid.uuid4().hex[:16]}",
                   created_at=now, updated_at=now)
@@ -104,12 +120,12 @@ def submit_order(session: Session, bot: Bot, broker: Broker, side: str, qty: int
     session.commit()
     try:
         if stop_price is None:
-            result = broker.submit(bot.symbol, side, qty, order.client_order_id)
+            result = broker.submit(symbol, side, qty, order.client_order_id)
         else:
-            result = broker.submit_stop(bot.symbol, qty, stop_price, order.client_order_id)
+            result = broker.submit_stop(symbol, qty, stop_price, order.client_order_id)
     except BrokerError as e:
         order.error = str(e)
-        log_event(session, bot.id, "order", f"{_label(order, bot.symbol)}: submit uncertain ({e}); will reconcile",
+        log_event(session, bot.id, "order", f"{_label(order, bot)}: submit uncertain ({e}); will reconcile",
                   "warning", now)
         session.commit()
         return order
@@ -129,25 +145,29 @@ def apply_broker_state(session: Session, bot: Bot, order: Order, bo: BrokerOrder
         order.error = bo.error
         # Canceling a stop order is routine (it happens before every other sell); anything else deserves a look
         routine = order.order_type == "stop" and order.status == "canceled"
-        log_event(session, bot.id, "order", f"{_label(order, bot.symbol)} {order.status}" + (f": {bo.error}" if bo.error else ""),
+        log_event(session, bot.id, "order", f"{_label(order, bot)} {order.status}" + (f": {bo.error}" if bo.error else ""),
                   "info" if routine else "warning", now)
         return
     order.status = bo.status  # filled | partially_filled (finished with a partial fill)
     order.filled_qty = bo.filled_qty
     order.avg_price = bo.avg_price
     order.fee = bo.fee
-    _book_fill(bot, order)
-    bot.last_price, bot.last_price_at = bo.avg_price, now  # a fill is the freshest price we have
-    mark_to_market(session, bot, bo.avg_price, now)
+    if bot.strategy == ROTATION:
+        _book_holding_fill(session, bot, order, now)
+        mark_to_market(session, bot, bot.last_price or bot.allocated_cash, now)  # its "price": the universe's value
+    else:
+        _book_fill(bot, order)
+        bot.last_price, bot.last_price_at = bo.avg_price, now  # a fill is the freshest price we have
+        mark_to_market(session, bot, bo.avg_price, now)
     how = ", stop order executed at the broker" if order.order_type == "stop" else ""
     log_event(session, bot.id, "order",
-              f"{order.side} {order.filled_qty} {bot.symbol} @ ${order.avg_price:.2f} ({order.reason}{how})"
+              f"{order.side} {order.filled_qty} {order.symbol or bot.symbol} @ ${order.avg_price:.2f} ({order.reason}{how})"
               + (f", P&L ${order.pnl:+.2f}" if order.pnl is not None else ""), now=now)
 
 
-def _label(order: Order, symbol: str) -> str:
+def _label(order: Order, bot: Bot) -> str:
     """How an order is named in the audit log: 'BUY 10 AAPL' or 'stop SELL 10 AAPL @ $95.20'."""
-    text = f"{order.side} {order.qty} {symbol}"
+    text = f"{order.side} {order.qty} {order.symbol or bot.symbol}"
     return f"stop {text} @ ${order.stop_price:.2f}" if order.order_type == "stop" else text
 
 
@@ -177,6 +197,34 @@ def _book_fill(bot: Bot, order: Order) -> None:
             bot.cost_basis = 0.0
 
 
+def _book_holding_fill(session: Session, bot: Bot, order: Order, now: datetime) -> None:
+    """The same accounting for a rotation bot, on the Holding of the order's symbol."""
+    qty, price, fee = order.filled_qty, order.avg_price, order.fee
+    h = session.scalar(select(Holding).where(Holding.bot_id == bot.id, Holding.symbol == order.symbol))
+    if order.side == "BUY":
+        if h is None:
+            h = Holding(bot_id=bot.id, symbol=order.symbol, shares=0, cost_basis=0.0, opened_at=now)
+            session.add(h)
+        bot.cash = round(bot.cash - qty * price - fee, 2)
+        h.shares += qty
+        h.cost_basis = round(h.cost_basis + qty * price + fee, 2)
+    else:
+        if h is None or h.shares <= 0:  # can't happen through the bot itself; book the cash so it isn't lost
+            bot.cash = round(bot.cash + qty * price - fee, 2)
+            return
+        net = qty * price - fee
+        basis = h.cost_basis * min(qty, h.shares) / h.shares
+        order.pnl = round(net - basis, 2)
+        bot.cash = round(bot.cash + net, 2)
+        bot.realized_pnl = round(bot.realized_pnl + order.pnl, 2)
+        h.shares -= qty
+        h.cost_basis = round(h.cost_basis - basis, 2)
+    h.last_price, h.last_price_at = price, now  # a fill is the freshest price we have
+    if h.shares <= 0:
+        session.delete(h)
+    session.flush()
+
+
 def sync_pending(session: Session, bot: Bot, broker: Broker, now: datetime) -> None:
     """Resolve orders we sent but haven't seen finish (slow fills, a crash mid-submit) -- and notice when the
     stop order resting at the broker has filled, which books that sale like any other."""
@@ -191,7 +239,7 @@ def sync_pending(session: Session, bot: Bot, broker: Broker, now: datetime) -> N
             # The broker never got it. Give a grace period first: a just-sent order can take a moment to appear.
             if now - order.created_at > timedelta(minutes=2):
                 order.status = "failed"
-                log_event(session, bot.id, "order", f"{order.side} {order.qty} {bot.symbol} never reached the broker; marked failed",
+                log_event(session, bot.id, "order", f"{_label(order, bot)} never reached the broker; marked failed",
                           "warning", now)
             continue
         apply_broker_state(session, bot, order, bo, now)
@@ -295,8 +343,9 @@ def release_stop(session: Session, bot: Bot, broker: Broker, now: datetime) -> b
 # ---------------------------------------------------------------------------
 
 def mark_to_market(session: Session, bot: Bot, price: float, now: datetime) -> None:
-    """Record today's equity point and trip the drawdown breaker if the bot lost too much from its peak."""
-    equity = round(bot.cash + bot.shares * price, 2)
+    """Record today's equity point and trip the drawdown breaker if the bot lost too much from its peak.
+    `price`: the symbol's price; for a rotation bot the universe's value (its holdings carry their own prices)."""
+    equity = bot_equity(session, bot, price)
     day = ny_date(now)
     snap = session.scalar(select(EquitySnapshot).where(EquitySnapshot.bot_id == bot.id, EquitySnapshot.day == day))
     if snap is None:
@@ -309,9 +358,10 @@ def mark_to_market(session: Session, bot: Bot, price: float, now: datetime) -> N
     if bot.status == "active" and bot.max_drawdown_pct > 0 and equity < floor:
         # Pause, don't panic-sell: the position keeps its stop-loss; you decide what happens next.
         bot.status = "paused"
+        after = ("no more rebalances; it keeps what it holds" if bot.strategy == ROTATION else "stop-loss still active")
         log_event(session, bot.id, "risk",
                   f"Drawdown breaker: equity ${equity:,.2f} is more than {bot.max_drawdown_pct:.0%} below its peak "
-                  f"${bot.peak_equity:,.2f}. Bot paused; stop-loss still active.", "error", now)
+                  f"${bot.peak_equity:,.2f}. Bot paused; {after}.", "error", now)
 
 
 def watch(session: Session, bot: Bot, broker: Broker, now: datetime) -> Order | None:

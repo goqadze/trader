@@ -11,11 +11,13 @@ import { CartesianGrid, Legend, Line, LineChart, ReferenceDot, ResponsiveContain
 import { tradingApi } from "./api";
 import BotForm from "./BotForm";
 import {
-  ACTION_COLOR, ORDER_STATUS_COLOR, SENTIMENT_COLOR, STATUS_COLOR, checkTimes, frac, localTime, pct, pnlColor, slotTimes, usd,
+  ACTION_COLOR, ORDER_STATUS_COLOR, SENTIMENT_COLOR, STATUS_COLOR, botTitle, checkTimes, frac, isRotation, localTime, pct, pnlColor,
+  slotTimes, usd,
 } from "./format";
-import { strategyInfo, strategyName } from "../strategies";
+import { strategyInfo, strategyName, type StrategyId } from "../strategies";
+import { HoldingsCard, RotationEditForm, RotationParamsCard } from "./RotationParts";
 import { MarketStatus } from "./TradingPage";
-import type { Bot, BotUpdate, Decision, Order, Snapshot, TradingEvent } from "./types";
+import type { Bot, BotUpdate, Decision, Order, RotationBotUpdate, Snapshot, TradingEvent } from "./types";
 import { usePolling } from "./usePolling";
 
 const MUTED = "#8b98b5";
@@ -43,16 +45,24 @@ const decisionColumns: ColumnsType<Decision> = [
   { title: "What the bot did", dataIndex: "outcome", ellipsis: { showTitle: true } },
 ];
 
-const orderColumns: ColumnsType<Order> = [
+const REASON_COLOR: Record<string, string> = { "stop-loss": "red", target: "green", manual: "purple", rotation: "geekblue", rebalance: "blue" };
+const REASON_TIP: Record<string, string> = {
+  rotation: "A rotation bot moving into or out of this symbol",
+  rebalance: "A rotation bot trimming or topping up a symbol it keeps, back to an equal part",
+};
+
+/** `symbol`: the bot's symbol, for orders saved before each order stored its own. */
+const orderColumns = (symbol: string): ColumnsType<Order> => [
   { title: "When", dataIndex: "created_at", width: 150, render: (v: string) => localTime(v) },
   { title: "Side", dataIndex: "side", width: 70, render: (s: string) => <Tag color={s === "BUY" ? "green" : "red"}>{s}</Tag> },
+  { title: "Symbol", dataIndex: "symbol", width: 85, render: (s: string | null) => s ?? symbol },
   {
     title: "Type", dataIndex: "order_type", width: 120,
     render: (t: string, o) => (t === "stop"
       ? <Tooltip title="Stop order held at the broker: becomes a market sell if the price trades at or below this level">stop @ {usd(o.stop_price)}</Tooltip>
       : "market"),
   },
-  { title: "Reason", dataIndex: "reason", width: 95, render: (r: string) => <Tag color={r === "stop-loss" ? "red" : r === "target" ? "green" : r === "manual" ? "purple" : "default"}>{r}</Tag> },
+  { title: "Reason", dataIndex: "reason", width: 100, render: (r: string) => <Tooltip title={REASON_TIP[r]}><Tag color={REASON_COLOR[r] ?? "default"}>{r}</Tag></Tooltip> },
   { title: "Qty", key: "qty", width: 80, align: "right", render: (_, o) => (o.filled_qty && o.filled_qty !== o.qty ? `${o.filled_qty}/${o.qty}` : o.qty) },
   { title: "Fill price", dataIndex: "avg_price", width: 100, align: "right", render: (p: number | null) => usd(p) },
   { title: "Fee", dataIndex: "fee", width: 70, align: "right", render: (f: number) => usd(f) },
@@ -93,8 +103,10 @@ function DecisionDetail({ d }: { d: Decision }) {
 // Equity chart
 // ---------------------------------------------------------------------------
 
-/** Bot equity per trading day vs. simply buying the stock with the same capital on day one. */
+/** Bot equity per trading day vs. simply buying the stock with the same capital on day one (a rotation bot: its whole
+ *  universe in equal parts, the rotation backtest's benchmark). */
 function EquityCard({ bot, snapshots, orders }: { bot: Bot; snapshots: Snapshot[]; orders: Order[] }) {
+  const held = isRotation(bot) ? `All ${bot.universe?.length} held equally` : "Buy & hold";
   const data = snapshots.map((s) => ({
     day: s.day,
     bot: Math.round(s.equity * 100) / 100,
@@ -108,7 +120,7 @@ function EquityCard({ bot, snapshots, orders }: { bot: Bot; snapshots: Snapshot[
     .filter((m) => m.point);
 
   return (
-    <Card title="Equity vs. buy & hold" size="small" style={{ marginTop: 16 }}>
+    <Card title={`Equity vs. ${held.toLowerCase()}`} size="small" style={{ marginTop: 16 }}>
       {data.length < 2 ? (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="The chart fills in as the bot runs: one point per trading day, updated every few minutes while the market is open." />
       ) : (
@@ -120,7 +132,7 @@ function EquityCard({ bot, snapshots, orders }: { bot: Bot; snapshots: Snapshot[
             <RTooltip contentStyle={{ background: "#182031", border: "1px solid #2a3550" }} labelStyle={{ color: "#e6ebf5" }} />
             <Legend />
             <Line type="monotone" dataKey="bot" name={bot.name} stroke="#4f8cff" dot={false} strokeWidth={2} isAnimationActive={false} />
-            <Line type="monotone" dataKey="buyhold" name="Buy & hold" stroke={MUTED} dot={false} strokeDasharray="5 4" isAnimationActive={false} />
+            <Line type="monotone" dataKey="buyhold" name={held} stroke={MUTED} dot={false} strokeDasharray="5 4" isAnimationActive={false} />
             {markers.map(({ o, point }) => (
               <ReferenceDot key={o.id} x={point!.day} y={point!.bot} r={5} fill={o.side === "BUY" ? "#33c088" : "#ef5b6b"} stroke="none" />
             ))}
@@ -186,17 +198,19 @@ export default function BotPage() {
     }
   };
 
+  const rotation = isRotation(bot);
+  const holding = rotation ? bot.holdings.length > 0 : bot.shares > 0;
   const runNow = () =>
     act("run", async () => {
       const d = await tradingApi.runNow(bot.id);
       modal.info({
-        title: `${d.kind === "preview" ? "Preview" : "Decision"}: ${d.action} (confidence ${d.confidence.toFixed(2)})`,
+        title: `${d.kind === "preview" ? "Preview" : "Decision"}: ${d.action}${rotation ? "" : ` (confidence ${d.confidence.toFixed(2)})`}`,
         content: <DecisionDetail d={d} />,
         width: 640,
       });
     });
 
-  const save = async (body: BotUpdate | object) => {
+  const save = async (body: BotUpdate | RotationBotUpdate | object) => {
     await tradingApi.updateBot(bot.id, body as BotUpdate);
     message.success("Parameters saved");
     setEditOpen(false);
@@ -214,20 +228,27 @@ export default function BotPage() {
       <Row justify="space-between" align="middle" gutter={[16, 12]} style={{ margin: "8px 0 16px" }}>
         <Col>
           <Space align="center" wrap>
-            <Typography.Title level={3} style={{ margin: 0 }}>{bot.symbol}</Typography.Title>
+            <Typography.Title level={3} style={{ margin: 0 }}>{botTitle(bot)}</Typography.Title>
             <span style={{ color: MUTED }}>{bot.name}</span>
             <Tag color={STATUS_COLOR[bot.status]}>{bot.status}</Tag>
             <Tag color={bot.live ? "red" : "blue"}>{bot.live ? "LIVE — real money" : bot.broker === "paper" ? "PAPER (simulated)" : bot.broker}</Tag>
             {bot.pending_order && <Tag color="processing">order pending</Tag>}
+            {bot.rebalancing && !bot.pending_order && <Tag color="processing">rebalancing</Tag>}
           </Space>
           <div style={{ marginTop: 4 }}><MarketStatus status={status.data} bot={bot} /></div>
         </Col>
         {bot.status !== "archived" && (
           <Col>
             <Space wrap>
-              <Tooltip title={marketOpen && bot.status === "active" ? "Decide now and trade on the result. Counts as today's next scheduled check." : "Market closed or bot paused: shows what the bot would do, sends no order"}>
+              <Tooltip
+                title={marketOpen && bot.status === "active"
+                  ? rotation
+                    ? "Rebalance now and trade towards the result. The month-end rebalance still happens."
+                    : "Decide now and trade on the result. Counts as today's next scheduled check."
+                  : "Market closed or bot paused: shows what the bot would do, sends no order"}
+              >
                 <Button icon={<ThunderboltOutlined />} loading={busy === "run"} onClick={runNow}>
-                  {marketOpen && bot.status === "active" ? "Run now" : "Preview decision"}
+                  {marketOpen && bot.status === "active" ? (rotation ? "Rebalance now" : "Run now") : rotation ? "Preview rebalance" : "Preview decision"}
                 </Button>
               </Tooltip>
               {bot.status === "active" ? (
@@ -236,14 +257,17 @@ export default function BotPage() {
                 <Button type="primary" icon={<CaretRightOutlined />} loading={busy === "resume"} onClick={() => act("resume", () => tradingApi.resume(bot.id), "Resumed")}>Resume</Button>
               )}
               <Popconfirm
-                title={`Sell all ${bot.shares} ${bot.symbol} at market now?`}
+                title={rotation ? `Sell all ${bot.holdings.length} holdings at market now?` : `Sell all ${bot.shares} ${bot.symbol} at market now?`}
+                description={rotation && bot.status === "active" ? "It buys again at its next rebalance: pause it first to stay in cash." : undefined}
                 okText="Sell now"
                 okButtonProps={{ danger: true }}
-                onConfirm={() => act("close", () => tradingApi.closePosition(bot.id), "Sell order sent")}
-                disabled={bot.shares === 0 || !marketOpen || bot.pending_order}
+                onConfirm={() => act("close", () => tradingApi.closePosition(bot.id), rotation ? "Sell orders sent" : "Sell order sent")}
+                disabled={!holding || !marketOpen || bot.pending_order}
               >
-                <Tooltip title={bot.shares === 0 ? "No open position" : !marketOpen ? "Orders only during market hours" : ""}>
-                  <Button danger loading={busy === "close"} disabled={bot.shares === 0 || !marketOpen || bot.pending_order}>Close position</Button>
+                <Tooltip title={!holding ? "No open position" : !marketOpen ? "Orders only during market hours" : ""}>
+                  <Button danger loading={busy === "close"} disabled={!holding || !marketOpen || bot.pending_order}>
+                    {rotation ? "Close all positions" : "Close position"}
+                  </Button>
                 </Tooltip>
               </Popconfirm>
               <Button icon={<EditOutlined />} onClick={() => setEditOpen(true)}>Edit</Button>
@@ -251,10 +275,10 @@ export default function BotPage() {
                 title="Archive this bot?"
                 description="It stops for good and is hidden from the list. Its history is kept."
                 onConfirm={() => act("archive", () => tradingApi.archive(bot.id), "Archived")}
-                disabled={bot.shares > 0 || bot.pending_order}
+                disabled={holding || bot.pending_order}
               >
-                <Tooltip title={bot.shares > 0 ? "Close the position first" : ""}>
-                  <Button icon={<InboxOutlined />} disabled={bot.shares > 0 || bot.pending_order}>Archive</Button>
+                <Tooltip title={holding ? "Close the position first" : ""}>
+                  <Button icon={<InboxOutlined />} disabled={holding || bot.pending_order}>Archive</Button>
                 </Tooltip>
               </Popconfirm>
             </Space>
@@ -264,7 +288,9 @@ export default function BotPage() {
 
       {bot.status === "paused" && (
         <Alert type="warning" showIcon style={{ marginBottom: 16 }}
-          message="Paused: no new decisions. Stop-loss and take-profit still protect any open position."
+          message={rotation
+            ? "Paused: no rebalances. It keeps holding what it has; use Close all positions to go to cash."
+            : "Paused: no new decisions. Stop-loss and take-profit still protect any open position."}
           description={pauseReason ? `${localTime(pauseReason.created_at)}: ${pauseReason.message}` : undefined} />
       )}
       {page.error && <Alert type="error" showIcon message={`Refresh failed: ${page.error}`} style={{ marginBottom: 16 }} />}
@@ -275,75 +301,87 @@ export default function BotPage() {
         <Col xs={12} md={8} xl={4}>
           <Card size="small">
             <Statistic title="Return" value={pct(bot.return_pct)} valueStyle={{ color: pnlColor(bot.return_pct) }} />
-            <span style={{ color: MUTED, fontSize: 12 }}>buy &amp; hold {pct(bot.buy_hold_return_pct)}</span>
+            <span style={{ color: MUTED, fontSize: 12 }}>
+              {rotation ? `all ${bot.universe?.length} held equally` : "buy & hold"} {pct(bot.buy_hold_return_pct)}
+            </span>
           </Card>
         </Col>
         <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="Realized P&L" value={usd(bot.realized_pnl)} valueStyle={{ color: pnlColor(bot.realized_pnl) }} /><span style={{ color: MUTED, fontSize: 12 }}>closed trades</span></Card></Col>
-        <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="Unrealized P&L" value={usd(bot.unrealized_pnl)} valueStyle={{ color: pnlColor(bot.unrealized_pnl) }} /><span style={{ color: MUTED, fontSize: 12 }}>open position</span></Card></Col>
+        <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="Unrealized P&L" value={usd(bot.unrealized_pnl)} valueStyle={{ color: pnlColor(bot.unrealized_pnl) }} /><span style={{ color: MUTED, fontSize: 12 }}>{rotation ? "open positions" : "open position"}</span></Card></Col>
         <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="Cash" value={usd(bot.cash)} /><span style={{ color: MUTED, fontSize: 12 }}>uninvested</span></Card></Col>
         <Col xs={12} md={8} xl={4}>
           <Card size="small">
             <Statistic title="Win rate" value={stats.winRate == null ? "—" : `${stats.winRate.toFixed(0)}%`} />
-            <span style={{ color: MUTED, fontSize: 12 }}>{stats.trades} closed trade{stats.trades === 1 ? "" : "s"}</span>
+            <span style={{ color: MUTED, fontSize: 12 }}>
+              {/* a rotation bot's trims count too: each sale books its slice of the cost as P&L */}
+              {stats.trades} {rotation ? "sale" : "closed trade"}{stats.trades === 1 ? "" : "s"}
+            </span>
           </Card>
         </Col>
       </Row>
 
       {/* ---------- Position + parameters ---------- */}
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        <Col xs={24} lg={12}>
-          <Card title="Position" size="small" style={{ height: "100%" }}>
-            {bot.shares > 0 ? (
-              <Descriptions column={2} size="small">
-                <Descriptions.Item label="Shares">{bot.shares}</Descriptions.Item>
-                <Descriptions.Item label="Entry">{usd(bot.entry_price)}</Descriptions.Item>
-                <Descriptions.Item label="Last price">{usd(bot.last_price)}</Descriptions.Item>
-                <Descriptions.Item label="Cost basis">{usd(bot.cost_basis)}</Descriptions.Item>
-                <Descriptions.Item label="Stop-loss">
-                  <Space size={6} wrap>
-                    <span style={{ whiteSpace: "nowrap" }}>
-                      <span style={{ color: "#ef5b6b" }}>{usd(bot.stop_price)}</span>&nbsp;<span style={{ color: MUTED }}>({distance(bot.stop_price)})</span>
-                    </span>
-                    {bot.stop_at_broker ? (
-                      <Tooltip title="A real stop order waits at the broker, so it fires even while this app or your computer is off">
-                        <Tag color="green" style={{ marginInlineEnd: 0 }}>held at broker</Tag>
-                      </Tooltip>
-                    ) : (
-                      <Tooltip title={`Checked by this app every ${status.data?.risk_check_minutes ?? 5} min during market hours, so only while it is running`}>
-                        <Tag style={{ marginInlineEnd: 0 }}>checked by app</Tag>
-                      </Tooltip>
-                    )}
-                  </Space>
+      {rotation ? (
+        <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+          <Col xs={24} lg={13}><HoldingsCard bot={bot} /></Col>
+          <Col xs={24} lg={11}><RotationParamsCard bot={bot} closeTime={slotTimes(status.data).close} onEdit={() => setEditOpen(true)} /></Col>
+        </Row>
+      ) : (
+        <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+          <Col xs={24} lg={12}>
+            <Card title="Position" size="small" style={{ height: "100%" }}>
+              {bot.shares > 0 ? (
+                <Descriptions column={2} size="small">
+                  <Descriptions.Item label="Shares">{bot.shares}</Descriptions.Item>
+                  <Descriptions.Item label="Entry">{usd(bot.entry_price)}</Descriptions.Item>
+                  <Descriptions.Item label="Last price">{usd(bot.last_price)}</Descriptions.Item>
+                  <Descriptions.Item label="Cost basis">{usd(bot.cost_basis)}</Descriptions.Item>
+                  <Descriptions.Item label="Stop-loss">
+                    <Space size={6} wrap>
+                      <span style={{ whiteSpace: "nowrap" }}>
+                        <span style={{ color: "#ef5b6b" }}>{usd(bot.stop_price)}</span>&nbsp;<span style={{ color: MUTED }}>({distance(bot.stop_price)})</span>
+                      </span>
+                      {bot.stop_at_broker ? (
+                        <Tooltip title="A real stop order waits at the broker, so it fires even while this app or your computer is off">
+                          <Tag color="green" style={{ marginInlineEnd: 0 }}>held at broker</Tag>
+                        </Tooltip>
+                      ) : (
+                        <Tooltip title={`Checked by this app every ${status.data?.risk_check_minutes ?? 5} min during market hours, so only while it is running`}>
+                          <Tag style={{ marginInlineEnd: 0 }}>checked by app</Tag>
+                        </Tooltip>
+                      )}
+                    </Space>
+                  </Descriptions.Item>
+                  <Descriptions.Item label="Take-profit"><span style={{ color: "#33c088" }}>{usd(bot.target_price)}</span>&nbsp;<span style={{ color: MUTED }}>({distance(bot.target_price)})</span></Descriptions.Item>
+                </Descriptions>
+              ) : (
+                <Space direction="vertical" size={2}>
+                  <span>Flat, holding cash.</span>
+                  <span style={{ color: MUTED }}>Last price {usd(bot.last_price)} · updated {localTime(bot.last_price_at)}</span>
+                </Space>
+              )}
+            </Card>
+          </Col>
+          <Col xs={24} lg={12}>
+            <Card title="Parameters" size="small" style={{ height: "100%" }} extra={<Button size="small" type="link" onClick={() => setEditOpen(true)}>Edit</Button>}>
+              <Descriptions column={3} size="small">
+                <Descriptions.Item label="Strategy" span={3}>
+                  <Tooltip title={strategyInfo(bot.strategy)?.summary}>{strategyName(bot.strategy)}</Tooltip>
                 </Descriptions.Item>
-                <Descriptions.Item label="Take-profit"><span style={{ color: "#33c088" }}>{usd(bot.target_price)}</span>&nbsp;<span style={{ color: MUTED }}>({distance(bot.target_price)})</span></Descriptions.Item>
+                <Descriptions.Item label="Min conf.">{bot.min_confidence}</Descriptions.Item>
+                <Descriptions.Item label="Every">{bot.rebalance_days} trading day{bot.rebalance_days === 1 ? "" : "s"}</Descriptions.Item>
+                <Descriptions.Item label="Check at">{checkTimes(bot.decide_at, slotTimes(status.data))}</Descriptions.Item>
+                <Descriptions.Item label="Position">{frac(bot.position_pct)} of cash</Descriptions.Item>
+                <Descriptions.Item label="Stop">{frac(bot.stop_pct)}</Descriptions.Item>
+                <Descriptions.Item label="Target">{frac(bot.target_pct)}</Descriptions.Item>
+                <Descriptions.Item label="Breaker">{bot.max_drawdown_pct ? `${frac(bot.max_drawdown_pct)} drawdown` : "off"}</Descriptions.Item>
+                <Descriptions.Item label="Slippage">{frac(bot.slippage_pct)}</Descriptions.Item>
+                <Descriptions.Item label="Fee">{frac(bot.fee_pct)}</Descriptions.Item>
               </Descriptions>
-            ) : (
-              <Space direction="vertical" size={2}>
-                <span>Flat, holding cash.</span>
-                <span style={{ color: MUTED }}>Last price {usd(bot.last_price)} · updated {localTime(bot.last_price_at)}</span>
-              </Space>
-            )}
-          </Card>
-        </Col>
-        <Col xs={24} lg={12}>
-          <Card title="Parameters" size="small" style={{ height: "100%" }} extra={<Button size="small" type="link" onClick={() => setEditOpen(true)}>Edit</Button>}>
-            <Descriptions column={3} size="small">
-              <Descriptions.Item label="Strategy" span={3}>
-                <Tooltip title={strategyInfo(bot.strategy)?.summary}>{strategyName(bot.strategy)}</Tooltip>
-              </Descriptions.Item>
-              <Descriptions.Item label="Min conf.">{bot.min_confidence}</Descriptions.Item>
-              <Descriptions.Item label="Every">{bot.rebalance_days} trading day{bot.rebalance_days === 1 ? "" : "s"}</Descriptions.Item>
-              <Descriptions.Item label="Check at">{checkTimes(bot.decide_at, slotTimes(status.data))}</Descriptions.Item>
-              <Descriptions.Item label="Position">{frac(bot.position_pct)} of cash</Descriptions.Item>
-              <Descriptions.Item label="Stop">{frac(bot.stop_pct)}</Descriptions.Item>
-              <Descriptions.Item label="Target">{frac(bot.target_pct)}</Descriptions.Item>
-              <Descriptions.Item label="Breaker">{bot.max_drawdown_pct ? `${frac(bot.max_drawdown_pct)} drawdown` : "off"}</Descriptions.Item>
-              <Descriptions.Item label="Slippage">{frac(bot.slippage_pct)}</Descriptions.Item>
-              <Descriptions.Item label="Fee">{frac(bot.fee_pct)}</Descriptions.Item>
-            </Descriptions>
-          </Card>
-        </Col>
-      </Row>
+            </Card>
+          </Col>
+        </Row>
+      )}
 
       <EquityCard bot={bot} snapshots={snapshots} orders={orders} />
 
@@ -368,7 +406,7 @@ export default function BotPage() {
               label: `Orders (${orders.length})`,
               children: (
                 <Table<Order>
-                  rowKey="id" size="small" columns={orderColumns} dataSource={orders}
+                  rowKey="id" size="small" columns={orderColumns(bot.symbol)} dataSource={orders}
                   pagination={{ pageSize: 20, hideOnSinglePage: true }} scroll={{ x: 900 }}
                   locale={{ emptyText: "No orders yet." }}
                 />
@@ -388,15 +426,19 @@ export default function BotPage() {
         />
       </Card>
 
-      <BotForm
-        open={editOpen}
-        editing
-        initial={bot}
-        brokers={status.data?.brokers ?? []}
-        times={slotTimes(status.data)}
-        onCancel={() => setEditOpen(false)}
-        onSubmit={save}
-      />
+      {rotation ? (
+        <RotationEditForm open={editOpen} bot={bot} onCancel={() => setEditOpen(false)} onSubmit={save} />
+      ) : (
+        <BotForm
+          open={editOpen}
+          editing
+          initial={{ ...bot, strategy: bot.strategy as StrategyId }}
+          brokers={status.data?.brokers ?? []}
+          times={slotTimes(status.data)}
+          onCancel={() => setEditOpen(false)}
+          onSubmit={save}
+        />
+      )}
     </>
   );
 }

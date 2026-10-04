@@ -1,16 +1,31 @@
-import { Alert, Card, Col, Empty, Row } from "antd";
+import { RocketOutlined } from "@ant-design/icons";
+import { Alert, Button, Card, Col, Empty, Row, Space } from "antd";
+import { useNavigate } from "react-router-dom";
 import RotationForm from "../rotation/RotationForm";
 import RotationResult from "../rotation/RotationResult";
 import { useRotation } from "../rotation/useRotation";
 import { isListedEtf } from "../symbols";
+import type { RotationBotInitial } from "../trading/RotationBotForm";
 
 const MUTED = "#8b98b5";
 
 /** Momentum rotation across a universe, on a practice window and an unseen exam window. */
 export default function RotationPage() {
   const { runs, error, starting, start } = useRotation();
-  const universe = runs.practice?.config.symbols ?? runs.exam?.config.symbols ?? [];
+  const navigate = useNavigate();
+  const cfg = runs.exam?.config ?? runs.practice?.config;
+  const universe = cfg?.symbols ?? [];
   const stocks = universe.filter((s) => !isListedEtf(s));
+  const done = [runs.practice, runs.exam].some((r) => r?.result);
+  /** Opens the new rotation bot form on the Live trading page, with exactly the rules that were tested. */
+  const paperTrade = () => {
+    if (!cfg) return;
+    const prefill: RotationBotInitial = {
+      universe: cfg.symbols, top_n: cfg.top_n, lookback_months: cfg.lookback_months, skip_months: cfg.skip_months, abs_filter: cfg.abs_filter,
+      ...(cfg.slippage_pct != null && { slippage_pct: cfg.slippage_pct }),
+    };
+    navigate("/trading", { state: { rotationPrefill: prefill } });
+  };
   return (
     <Row gutter={[16, 16]}>
       <Col xs={24} md={7} lg={6}>
@@ -31,6 +46,14 @@ export default function RotationPage() {
         )}
         {runs.practice || runs.exam ? (
           <>
+            {done && (
+              <Space wrap style={{ marginBottom: 16 }}>
+                <Button type="primary" icon={<RocketOutlined />} onClick={paperTrade}>Paper trade this rotation</Button>
+                <span style={{ color: MUTED, fontSize: 12 }}>
+                  A bot with these rules on a paper account: it rebalances at each month's last close, so give it months, not days.
+                </span>
+              </Space>
+            )}
             <RotationResult title="Practice" run={runs.practice} />
             <RotationResult title="Exam" run={runs.exam} />
           </>

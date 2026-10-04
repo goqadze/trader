@@ -1,6 +1,8 @@
 """Database tables: the trading history that survives restarts.
 
-    Bot            one strategy running on one symbol with its own parameters and its own capital
+    Bot            one strategy running on one symbol with its own parameters and its own capital -- or a momentum
+                   rotation across a universe of symbols (strategy == ROTATION, see rotation.py)
+    Holding        a rotation bot's positions, one row per symbol it holds
     Decision       every time a bot asked decision-service for a signal, and what it did about it
     Order          every order sent to a broker (write-ahead: saved BEFORE it is sent, see trader.submit_order)
     EquitySnapshot one row per bot per trading day, for the equity chart
@@ -13,7 +15,7 @@ two in agreement; switch to Decimal (Numeric columns) if you ever do real accoun
 
 from datetime import date, datetime, timezone
 
-from sqlalchemy import JSON, Date, DateTime, Float, ForeignKey, Integer, String, Text, TypeDecorator, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, TypeDecorator, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base, utcnow
@@ -47,6 +49,11 @@ class UTCDateTime(TypeDecorator):
 #   paused   -> no new decisions or entries; stop-loss / target exits still protect an open position
 #   archived -> retired (only allowed when flat); hidden from the dashboard, history kept forever
 BOT_STATUSES = ("active", "paused", "archived")
+
+# Bot.strategy of a momentum rotation bot: one bot holding the strongest few of a universe (see rotation.py). Its
+# symbol column just says ROTATION; what it holds lives in Holding, and benchmark_price / last_price track the value
+# of the universe bought in equal parts at the start (beginning at allocated_cash) instead of one symbol's price.
+ROTATION = "momentum_rotation"
 
 
 class Bot(Base):
@@ -94,8 +101,35 @@ class Bot(Base):
     # The exact moment of that decision: tells the scheduler which of the day's slots are already done
     last_decision_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
 
+    # --- Momentum rotation bots only (NULL on the others): same names as the backtest's RotationConfig ---
+    universe: Mapped[list | None] = mapped_column(JSON, nullable=True)  # the symbols it chooses from
+    top_n: Mapped[int | None] = mapped_column(Integer, nullable=True)  # how many of the strongest it holds
+    lookback_months: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    skip_months: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    abs_filter: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # only hold what rose, else cash
+    benchmark_prices: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # the universe's prices at creation
+    # The rebalance in progress: {"decision_id", "targets": [[symbol, shares], ...], "rounds"}; NULL when done
+    rotation_plan: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
+
+
+class Holding(Base):
+    """One symbol a rotation bot holds right now (the row goes once it's sold). Same accounting as Bot's position:
+    cost_basis is what the shares still held cost, fees included; each sale books its slice as P&L."""
+
+    __tablename__ = "holdings"
+    __table_args__ = (UniqueConstraint("bot_id", "symbol"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bot_id: Mapped[int] = mapped_column(ForeignKey("bots.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(16))
+    shares: Mapped[int] = mapped_column(Integer, default=0)
+    cost_basis: Mapped[float] = mapped_column(Float, default=0.0)
+    last_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_price_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    opened_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
 class Decision(Base):
@@ -106,7 +140,8 @@ class Decision(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, index=True)
     session_date: Mapped[date] = mapped_column(Date)  # the trading day this decision belongs to (New York date)
     kind: Mapped[str] = mapped_column(String(16))  # scheduled | manual (Run now, market open) | preview (market closed: no trading)
-    action: Mapped[str] = mapped_column(String(8))  # BUY | SELL | HOLD (HOLD also when the signal call failed)
+    # BUY | SELL | HOLD (HOLD also when the signal call failed); rotation bots: ROTATE (the holdings change) | HOLD
+    action: Mapped[str] = mapped_column(String(8))
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
     sentiment: Mapped[str] = mapped_column(String(32), default="")  # clipped in trader.evaluate (LLM output)
     reasoning: Mapped[str] = mapped_column(Text, default="")
@@ -136,11 +171,12 @@ class Order(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
     side: Mapped[str] = mapped_column(String(4))  # BUY | SELL
+    symbol: Mapped[str | None] = mapped_column(String(16), nullable=True)  # NULL on orders from before: the bot's symbol
     # server_default: lets db.init_db add these columns to an existing orders table (old rows = market)
     order_type: Mapped[str] = mapped_column(String(8), default="market", server_default="market")
     stop_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # stop orders only: the trigger price
     qty: Mapped[int] = mapped_column(Integer)  # requested shares
-    reason: Mapped[str] = mapped_column(String(16))  # signal | stop-loss | target | manual
+    reason: Mapped[str] = mapped_column(String(16))  # signal | stop-loss | target | manual | rotation | rebalance
     status: Mapped[str] = mapped_column(String(20), default="new", index=True)
     # Our own unique id, sent to the broker. If the network drops mid-submit we can ask the broker
     # "did you get order X?" instead of guessing -- and a retry can never create a duplicate order.

@@ -1,4 +1,5 @@
-"""Trading API: create bots (one symbol + one parameter set each), control them, read their history.
+"""Trading API: create bots (one symbol + one parameter set each, or a momentum rotation across a universe), control
+them, read their history.
 
 The React dashboard reaches this through nginx at /api/trading/* (see frontend/nginx.conf), and nginx only
 lets signed-in users through. Sign-in and accounts are in auth.py (/auth/*).
@@ -14,14 +15,15 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import auth, scheduler
+from . import auth, rotation, scheduler
 from .brokers import SHARED_ACCOUNT_BROKERS, BrokerError, catalog, get_broker
 from .config import settings
 from .db import get_session, init_db, utcnow
 from .market import is_open, next_decision_time, ny_date, session_bounds
-from .models import OPEN_ORDER_STATUSES, Bot, Decision, EquitySnapshot, Event, Order
-from .schemas import BotCreate, BotOut, BotUpdate, DecisionOut, EventOut, OrderOut, SnapshotOut, StatusOut
-from .trader import bot_lock, close_position, evaluate, log_event, open_orders, resting_stop
+from .models import OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, EquitySnapshot, Event, Order
+from .schemas import (BotCreate, BotOut, BotUpdate, DecisionOut, EventOut, HoldingOut, OrderOut, RotationBotCreate,
+                      SnapshotOut, StatusOut)
+from .trader import bot_equity, bot_lock, close_position, evaluate, holdings, log_event, open_orders, resting_stop
 
 logger = logging.getLogger("trading-service")
 logging.basicConfig(level=logging.INFO)
@@ -64,21 +66,43 @@ def _get_bot(session: Session, bot_id: int) -> Bot:
 
 
 def _bot_out(session: Session, bot: Bot) -> BotOut:
-    price = bot.last_price or bot.entry_price or 0.0
-    equity = round(bot.cash + bot.shares * price, 2)
+    price = bot.last_price or bot.entry_price or 0.0  # a rotation bot's "price": what its universe held equally is worth
+    equity = bot_equity(session, bot, price)
     live = next((b["live"] for b in catalog() if b["name"] == bot.broker), False)
     now = utcnow()
+    rows = []
+    for h in holdings(session, bot):
+        value = round(h.shares * (h.last_price or h.cost_basis / h.shares), 2)
+        rows.append(HoldingOut(symbol=h.symbol, shares=h.shares, cost_basis=h.cost_basis, last_price=h.last_price,
+                               last_price_at=h.last_price_at, value=value, unrealized_pnl=round(value - h.cost_basis, 2),
+                               weight_pct=round(value / equity * 100, 1) if equity else 0.0))
     return BotOut.model_validate({
         **{c: getattr(bot, c) for c in BotOut.model_fields if hasattr(bot, c)},
         "live": live,
         "equity": equity,
         "return_pct": round((equity / bot.allocated_cash - 1) * 100, 2),
-        "unrealized_pnl": round(bot.shares * price - bot.cost_basis, 2) if bot.shares else 0.0,
+        "unrealized_pnl": round(sum(r.unrealized_pnl for r in rows) if rows else
+                                bot.shares * price - bot.cost_basis if bot.shares else 0.0, 2),
         "buy_hold_return_pct": round((price / bot.benchmark_price - 1) * 100, 2) if bot.benchmark_price and price else None,
         "pending_order": bool(open_orders(session, bot)),
         "stop_at_broker": resting_stop(session, bot) is not None,
         "next_decision_at": scheduler.next_decision_at(bot, now),
+        "holdings": rows,
+        "rebalancing": bot.rotation_plan is not None,
     })
+
+
+def _symbol_clash(session: Session, broker: str, symbols: list[str]) -> tuple[str, Bot] | None:
+    """On a real (paper) account, another bot already trading one of these symbols: (symbol, that bot). Both would
+    buy and sell the same shares and corrupt each other's position. The simulator keeps every bot apart."""
+    if broker not in SHARED_ACCOUNT_BROKERS:
+        return None
+    for other in session.scalars(select(Bot).where(Bot.broker == broker, Bot.status != "archived")):
+        theirs = set(other.universe or []) if other.strategy == ROTATION else {other.symbol}
+        for s in symbols:
+            if s in theirs:
+                return s, other
+    return None
 
 
 class _Locked:
@@ -158,11 +182,9 @@ def create_bot(body: BotCreate, session: Session = Depends(get_session)):
         raise HTTPException(422, f"broker '{body.broker}' unavailable: {info['reason']}")
     if info["live"] and not body.confirm_live:
         raise HTTPException(422, "real-money bot: set confirm_live=true to confirm")
-    if body.broker in SHARED_ACCOUNT_BROKERS:
-        clash = session.scalar(select(Bot).where(Bot.broker == body.broker, Bot.symbol == symbol, Bot.status != "archived"))
-        if clash:
-            raise HTTPException(409, f"bot #{clash.id} already trades {symbol} on {body.broker}; one bot per symbol "
-                                     "per real account, or their positions would mix")
+    if clash := _symbol_clash(session, body.broker, [symbol]):
+        raise HTTPException(409, f"bot #{clash[1].id} already trades {symbol} on {body.broker}; one bot per symbol "
+                                 "per real account, or their positions would mix")
 
     params = body.model_dump(exclude={"name", "symbol", "broker", "allocated_cash", "confirm_live"})
     bot = Bot(name=body.name or f"{symbol} {body.strategy}", symbol=symbol, broker=body.broker, status="active",
@@ -185,6 +207,50 @@ def create_bot(body: BotCreate, session: Session = Depends(get_session)):
     return _bot_out(session, bot)
 
 
+@app.post("/bots/rotation", response_model=BotOut, status_code=201)
+def create_rotation_bot(body: RotationBotCreate, session: Session = Depends(get_session)):
+    """A momentum rotation bot: holds the strongest `top_n` of the universe, rebalanced at each month's last close
+    (rotation.py). Paper accounts only for now."""
+    info = next((b for b in catalog() if b["name"] == body.broker), None)
+    if info is None:
+        raise HTTPException(422, f"unknown broker '{body.broker}'")
+    if not info["available"]:
+        raise HTTPException(422, f"broker '{body.broker}' unavailable: {info['reason']}")
+    if info["live"]:
+        raise HTTPException(422, "rotation bots trade on paper accounts only for now: paper-trade it first")
+    if clash := _symbol_clash(session, body.broker, body.universe):
+        raise HTTPException(409, f"bot #{clash[1].id} already trades {clash[0]} on {body.broker}; one bot per symbol "
+                                 "per real account, or their positions would mix")
+
+    # The universe's prices today: they validate the symbols and start the benchmark (the universe held equally)
+    now = utcnow()
+    try:
+        prices = rotation.universe_prices(body.universe, ny_date(now))
+    except BrokerError as e:
+        raise HTTPException(422, f"can't get prices for the universe: {e}")
+    if missing := [s for s in body.universe if s not in prices]:
+        raise HTTPException(422, f"no prices for {', '.join(missing)} (unknown symbols?)")
+
+    params = body.model_dump(exclude={"name", "broker", "allocated_cash"})
+    bot = Bot(name=body.name or f"Momentum top {body.top_n} of {len(body.universe)}", symbol="ROTATION",
+              broker=body.broker, status="active", strategy=ROTATION, allocated_cash=body.allocated_cash,
+              cash=body.allocated_cash, peak_equity=body.allocated_cash, benchmark_prices=prices,
+              benchmark_price=body.allocated_cash, last_price=body.allocated_cash, last_price_at=now, **params)
+    session.add(bot)
+    session.flush()
+    skip = f", skipping the latest {body.skip_months} month{'s' if body.skip_months > 1 else ''}" if body.skip_months else ""
+    log_event(session, bot.id, "created",
+              f"Created {bot.name}: momentum rotation on {bot.broker} with ${bot.allocated_cash:,.2f}. Holds the strongest "
+              f"{body.top_n} of {', '.join(body.universe)} by {body.lookback_months}-month momentum{skip}"
+              f"{', only those that rose' if body.abs_filter else ''}; rebalances at each month's last close")
+    session.commit()
+    return _bot_out(session, bot)
+
+
+# A rotation bot's universe and rules are fixed for its life, like a bot's symbol: create a new bot instead
+ROTATION_EDITABLE = {"name", "fee_pct", "slippage_pct", "max_drawdown_pct"}
+
+
 @app.get("/bots/{bot_id}", response_model=BotOut)
 def get_bot(bot_id: int, session: Session = Depends(get_session)):
     return _bot_out(session, _get_bot(session, bot_id))
@@ -197,8 +263,12 @@ def update_bot(bot_id: int, body: BotUpdate, session: Session = Depends(get_sess
         bot = _get_bot(session, bot_id)
         if bot.status == "archived":
             raise HTTPException(409, "bot is archived")
+        fields = body.model_dump(exclude_unset=True, exclude_none=True)
+        if bot.strategy == ROTATION and (fixed := sorted(set(fields) - ROTATION_EDITABLE)):
+            raise HTTPException(422, f"a rotation bot can only change its name, slippage, fee and breaker, not "
+                                     f"{', '.join(fixed)}; create a new bot for other settings")
         changes = []
-        for field, value in body.model_dump(exclude_unset=True, exclude_none=True).items():
+        for field, value in fields.items():
             old = getattr(bot, field)
             if old != value:
                 setattr(bot, field, value)
@@ -233,7 +303,7 @@ def resume_bot(bot_id: int, session: Session = Depends(get_session)):
     _broker_or_400(bot)  # e.g. live trading was switched off since the bot was created
     if bot.status == "paused":
         # Restart the drawdown peak from today's equity, or a breaker-paused bot would trip again at once
-        bot.peak_equity = round(bot.cash + bot.shares * (bot.last_price or bot.entry_price or 0), 2)
+        bot.peak_equity = bot_equity(session, bot, bot.last_price or bot.entry_price)
     return _set_status(session, bot, ("paused",), "active", "Resumed by user")
 
 
@@ -242,7 +312,7 @@ def archive_bot(bot_id: int, session: Session = Depends(get_session)):
     """Retire a bot. History is kept; there is deliberately no hard delete (audit trail)."""
     with _Locked(bot_id):  # locked: the "is it flat?" check must not race with a buy
         bot = _get_bot(session, bot_id)
-        if bot.shares or open_orders(session, bot) or resting_stop(session, bot):
+        if bot.shares or holdings(session, bot) or open_orders(session, bot) or resting_stop(session, bot):
             raise HTTPException(409, "close the position (and let pending orders finish) before archiving")
         return _set_status(session, bot, ("active", "paused"), "archived", "Archived by user")
 
@@ -258,17 +328,28 @@ def run_now(bot_id: int, session: Session = Depends(get_session)):
         broker = _broker_or_400(bot)
         now = utcnow()
         kind = "manual" if is_open(now) and bot.status == "active" else "preview"
+        if bot.strategy == ROTATION:
+            return rotation.rebalance(session, bot, broker, now, kind)
         return evaluate(session, bot, broker, now, kind)
 
 
-@app.post("/bots/{bot_id}/close", response_model=OrderOut)
+@app.post("/bots/{bot_id}/close", response_model=OrderOut | list[OrderOut])
 def close_now(bot_id: int, session: Session = Depends(get_session)):
-    """Sell the whole position now at market (manual override; works on paused bots too)."""
+    """Sell the whole position now at market (manual override; works on paused bots too). A rotation bot sells all
+    its holdings and answers with one order per symbol."""
     with _Locked(bot_id):
         bot = _get_bot(session, bot_id)
         now = utcnow()
         if not is_open(now):
             raise HTTPException(409, "market is closed; orders are only sent during regular hours")
+        if bot.strategy == ROTATION:
+            if not holdings(session, bot):
+                raise HTTPException(409, "no open positions")
+            if open_orders(session, bot):
+                raise HTTPException(409, "orders are still pending; try again in a moment")
+            broker = _broker_or_400(bot)
+            log_event(session, bot.id, "order", "Close all positions requested by user", now=now)
+            return rotation.close_all(session, bot, broker, now)
         if bot.shares == 0:
             raise HTTPException(409, "no open position")
         if open_orders(session, bot):

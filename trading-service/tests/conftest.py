@@ -59,18 +59,20 @@ def at(hour: int, minute: int = 0, day: int = 2) -> datetime:
 
 class FakeBroker(Broker):
     """Fills instantly at `price` (with optional slippage/fee), unless told to misbehave.
-    With stops=True it also holds stop orders, like Alpaca: they rest until the test calls trigger_stop()."""
+    With stops=True it also holds stop orders, like Alpaca: they rest until the test calls trigger_stop().
+    `prices` gives some symbols their own price (rotation bots trade several)."""
 
     name = "fake"
 
     def __init__(self, price: float = 100.0, now: datetime | None = None, quote_at: datetime | None = None,
-                 slippage_pct: float = 0.0, fee_pct: float = 0.0, stops: bool = False):
+                 slippage_pct: float = 0.0, fee_pct: float = 0.0, stops: bool = False, prices: dict | None = None):
         self.supports_stop_orders = stops
         self.stop_mode = "rest"  # rest | reject | raise
         self.cancel_mode = "cancel"  # cancel | filled (the stop executed first) | pending (not confirmed) | raise
         self.stops: list[tuple[int, float]] = []  # (qty, stop_price) of every stop order received
         self.canceled: list[str] = []
         self.price = price
+        self.prices = prices or {}
         self.now = now  # the test's "current time"; quotes are stamped with it (i.e. fresh) ...
         self.quote_at = quote_at  # ... unless a fixed quote time is given (to simulate stale data)
         self.slippage_pct = slippage_pct
@@ -78,14 +80,17 @@ class FakeBroker(Broker):
         self.submit_mode = "fill"  # fill | pending | reject | raise
         self.orders: dict[str, BrokerOrder] = {}
         self.submitted: list[tuple[str, int]] = []
+        self.sent: list[tuple[str, str, int]] = []  # (side, symbol, qty)
         self.bp: float | None = None
         self.held: int | None = None
+        self.held_by: dict[str, int] | None = None  # a real account's positions per symbol (rotation bots)
 
     def quote(self, symbol):
-        return Quote(self.price, self.quote_at or self.now or datetime.now(timezone.utc))
+        return Quote(self.prices.get(symbol, self.price), self.quote_at or self.now or datetime.now(timezone.utc))
 
     def submit(self, symbol, side, qty, client_order_id):
         self.submitted.append((side, qty))
+        self.sent.append((side, symbol, qty))
         if self.submit_mode == "raise":
             raise BrokerError("network down")
         if self.submit_mode == "reject":
@@ -94,12 +99,15 @@ class FakeBroker(Broker):
             o = BrokerOrder(status="submitted", broker_order_id="b-" + client_order_id)
             self.orders[client_order_id] = o
             return o
-        fill = self.price * (1 + self.slippage_pct if side == "BUY" else 1 - self.slippage_pct)
+        price = self.prices.get(symbol, self.price)
+        fill = price * (1 + self.slippage_pct if side == "BUY" else 1 - self.slippage_pct)
         o = BrokerOrder(status="filled", filled_qty=qty, avg_price=fill, fee=round(qty * fill * self.fee_pct, 2),
                         broker_order_id="b-" + client_order_id)
         self.orders[client_order_id] = o
         if self.held is not None:  # tracking a real account's position
             self.held += qty if side == "BUY" else -qty
+        if self.held_by is not None:
+            self.held_by[symbol] = self.held_by.get(symbol, 0) + (qty if side == "BUY" else -qty)
         return o
 
     def lookup(self, client_order_id):
@@ -142,7 +150,7 @@ class FakeBroker(Broker):
         return self.bp
 
     def position_qty(self, symbol):
-        return self.held
+        return self.held_by.get(symbol, 0) if self.held_by is not None else self.held
 
 
 @pytest.fixture(scope="session", autouse=True)

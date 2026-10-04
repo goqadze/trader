@@ -1,12 +1,10 @@
-import { Button, Card, Checkbox, DatePicker, Form, InputNumber, Select, Space, Typography } from "antd";
+import { Button, Card, Checkbox, DatePicker, Form, InputNumber, Typography } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
-import { SYMBOL_GROUPS, symbolOptions } from "../symbols";
 import type { Period } from "./useRotation";
 import type { RotationConfig } from "./types";
+import UniverseField, { SECTORS } from "./UniverseField";
 
 const MUTED = "#8b98b5";
-const SECTORS = SYMBOL_GROUPS.find((g) => g.short === "Sector ETFs")!.symbols.map((s) => s.symbol);
-const OPTIONS = symbolOptions((s) => `${s.symbol} · ${s.name}`);
 
 interface FormValues {
   symbols: string[];
@@ -34,7 +32,6 @@ export default function RotationForm({ onRun, starting }: { onRun: (c: Partial<R
   const [form] = Form.useForm<FormValues>();
   const v = Form.useWatch([], form) as Partial<FormValues> | undefined;
   const today = dayjs();
-  const add = (more: string[]) => form.setFieldValue("symbols", [...new Set([...(form.getFieldValue("symbols") ?? []), ...more])]);
   return (
     <Card title="Momentum rotation" size="small">
       <Typography.Paragraph style={{ fontSize: 12, color: MUTED }}>
@@ -56,30 +53,7 @@ export default function RotationForm({ onRun, starting }: { onRun: (c: Partial<R
           exam: [today.subtract(3, "year"), today],
         }}
       >
-        <Form.Item
-          label="Universe"
-          extra={
-            <Space size={0} wrap>
-              {SYMBOL_GROUPS.map((g) => (
-                <Button key={g.label} type="link" size="small" style={{ paddingInline: 4 }} onClick={() => add(g.symbols.map((s) => s.symbol))}>
-                  + {g.short}
-                </Button>
-              ))}
-              <Button type="link" size="small" style={{ paddingInline: 4 }} onClick={() => form.setFieldValue("symbols", [])}>
-                clear
-              </Button>
-            </Space>
-          }
-        >
-          <Form.Item
-            name="symbols"
-            noStyle
-            rules={[{ required: true, type: "array", min: 2, max: 60, message: "Pick 2 to 60 symbols" }]}
-            normalize={(vals: string[]) => [...new Set(vals.map((s) => s.trim().toUpperCase()).filter(Boolean))]}
-          >
-            <Select mode="tags" options={OPTIONS} optionLabelProp="value" tokenSeparators={[",", " "]} placeholder="Pick or type tickers" />
-          </Form.Item>
-        </Form.Item>
+        <UniverseField name="symbols" />
         <Form.Item
           name="top_n"
           label="Hold the strongest"

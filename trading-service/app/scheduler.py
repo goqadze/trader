@@ -7,6 +7,9 @@
   4. makes a decision when one is due                     (active bots, every `rebalance_days` trading days, at the
                                                            slots the bot chose: 30 min after the open and/or 30 min
                                                            before the close, see market.slot_window)
+Momentum rotation bots (see rotation.py) take the same steps their own way: no stop-loss to keep at the broker,
+prices and the account check every RISK_CHECK_MINUTES, a rebalance at each month's last close, and the orders of a
+rebalance still in progress sent on the following ticks.
 
 Restart-safe by design: "which slots are already done?" comes from the database (Bot.last_decision_at),
 not from memory, so a restart at 15:40 doesn't decide twice. If the service is down for a slot's whole
@@ -25,7 +28,8 @@ from .config import settings
 from .db import SessionLocal, utcnow
 from .decision_client import get_signal
 from .market import NY, is_open, ny_date, session_bounds, sessions_since, slot_window
-from .models import Bot
+from . import rotation
+from .models import ROTATION, Bot
 from .trader import bot_lock, evaluate, log_event, protect, reconcile, sync_pending, watch
 
 logger = logging.getLogger("trading-service")
@@ -93,6 +97,8 @@ def decision_due(bot: Bot, now: datetime) -> bool:
 
 def next_decision_at(bot: Bot, now: datetime) -> datetime | None:
     """When the scheduler will next decide for this bot (the dashboard shows it). None unless active."""
+    if bot.strategy == ROTATION:
+        return rotation.next_rebalance_at(bot, now)
     if bot.status != "active":
         return None
     last = _last_decided(bot)
@@ -108,8 +114,9 @@ def next_decision_at(bot: Bot, now: datetime) -> datetime | None:
     return None
 
 
-def process_bot(bot_id: int, now: datetime, signal_fn=get_signal, broker_factory=get_broker) -> None:
-    """One scheduler pass for one bot. Never raises: one broken bot must not stop the others."""
+def process_bot(bot_id: int, now: datetime, signal_fn=get_signal, broker_factory=get_broker, closes_fn=None) -> None:
+    """One scheduler pass for one bot. Never raises: one broken bot must not stop the others.
+    closes_fn: the rotation bots' daily price download (tests pass a fake)."""
     lock = bot_lock(bot_id)
     if not lock.acquire(blocking=False):
         return  # busy: an API action or a slow LLM decision from the previous tick; try next tick
@@ -121,6 +128,10 @@ def process_bot(bot_id: int, now: datetime, signal_fn=get_signal, broker_factory
             try:
                 broker = broker_factory(bot)
                 sync_pending(session, bot, broker, now)
+                if bot.strategy == ROTATION:
+                    _process_rotation(session, bot, broker, now, closes_fn)
+                    session.commit()
+                    return
                 protect(session, bot, broker, now)
                 if not is_open(now):
                     return
@@ -141,6 +152,26 @@ def process_bot(bot_id: int, now: datetime, signal_fn=get_signal, broker_factory
                 _log_error_throttled(session, bot_id, e, now)
     finally:
         lock.release()
+
+
+def _process_rotation(session, bot: Bot, broker, now: datetime, closes_fn) -> None:
+    """The scheduler pass for a rotation bot, after its pending orders were synced."""
+    if not is_open(now):
+        return
+    if now - _last_watch.get(bot.id, datetime.min.replace(tzinfo=now.tzinfo)) >= timedelta(minutes=settings.risk_check_minutes):
+        _last_watch[bot.id] = now
+        if not rotation.reconcile(session, bot, broker, now):
+            return
+        rotation.watch(session, bot, broker, now, closes_fn)
+    if bot.status != "active":
+        return  # paused: no new rebalance, and a half-done one waits (HALT means stop trading)
+    if rotation.due(bot, now) and now >= _retry_after.get(bot.id, now):
+        before = bot.last_decision_at
+        rotation.rebalance(session, bot, broker, now, "scheduled", closes_fn)
+        if bot.last_decision_at == before:  # the ranking or the quotes failed
+            _retry_after[bot.id] = now + SIGNAL_RETRY
+    elif bot.rotation_plan:
+        rotation.step(session, bot, broker, now)  # the rest of a rebalance whose first orders were still filling
 
 
 def _log_error_throttled(session, bot_id: int, e: Exception, now: datetime) -> None:

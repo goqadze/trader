@@ -1,16 +1,19 @@
 """Request/response shapes of the trading API. Validation lives here, so a bad value (a 150% stop-loss,
 a negative position size) is rejected with a clear 422 before it can reach a bot."""
 
+import re
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # decision-service's strategies (its GET /strategies describes each). Keep in sync with
 # decision-service/app/strategies.py STRATEGIES.
 Strategy = Literal["sma_rsi", "trend_following", "momentum", "breakout", "mean_reversion", "range_trading",
                    "ma_pullback", "reversal", "gap_and_go", "news_catalyst", "fibonacci"]
 DecideAt = Literal["close", "open", "both"]  # which of the day's decision slots a bot uses (see market.slot_window)
+Rotation = Literal["momentum_rotation"]  # models.ROTATION: a rotation bot's strategy (see rotation.py)
+TICKER = r"^[A-Z][A-Z.\-]{0,9}$"
 
 
 class StrategyParams(BaseModel):
@@ -37,6 +40,39 @@ class BotCreate(StrategyParams):
     confirm_live: bool = False
 
 
+class RotationBotCreate(BaseModel):
+    """A momentum rotation bot: the backtest's RotationConfig (same names) plus the bot's broker and capital."""
+
+    name: str | None = Field(None, max_length=80)
+    broker: str = "paper"
+    allocated_cash: float = Field(10_000, ge=100, le=10_000_000)
+    universe: list[str] = Field(..., min_length=2, max_length=60)
+    top_n: int = Field(3, ge=1, le=20)
+    lookback_months: int = Field(12, ge=1, le=24)
+    skip_months: int = Field(1, ge=0, le=3)
+    abs_filter: bool = True
+    fee_pct: float = Field(0.0, ge=0, le=0.05)
+    slippage_pct: float = Field(0.0005, ge=0, le=0.05)
+    max_drawdown_pct: float = Field(0.2, ge=0, le=1)
+
+    @field_validator("universe")
+    @classmethod
+    def _clean(cls, v: list[str]) -> list[str]:
+        out = list(dict.fromkeys(s.strip().upper() for s in v if s.strip()))
+        bad = [s for s in out if not re.match(TICKER, s)]
+        if bad:
+            raise ValueError(f"not a ticker: {', '.join(bad)}")
+        if len(out) < 2:
+            raise ValueError("pick at least 2 symbols")
+        return out
+
+    @model_validator(mode="after")
+    def _top_n_fits(self):
+        if self.top_n > len(self.universe):
+            raise ValueError(f"top_n ({self.top_n}) is more than the universe ({len(self.universe)} symbols)")
+        return self
+
+
 class BotUpdate(BaseModel):
     """Everything is optional: only the fields sent are changed. Symbol, broker and capital are fixed
     for a bot's life (create a new bot instead) so its history always describes one consistent setup."""
@@ -54,9 +90,23 @@ class BotUpdate(BaseModel):
     max_drawdown_pct: float | None = Field(None, ge=0, le=1)
 
 
+class HoldingOut(BaseModel):
+    """One symbol a rotation bot holds, valued at its last price."""
+
+    symbol: str
+    shares: int
+    cost_basis: float
+    last_price: float | None
+    last_price_at: datetime | None
+    value: float
+    weight_pct: float  # of the bot's equity
+    unrealized_pnl: float
+
+
 class BotOut(StrategyParams):
     model_config = ConfigDict(from_attributes=True)
 
+    strategy: Strategy | Rotation
     id: int
     name: str
     symbol: str
@@ -86,6 +136,14 @@ class BotOut(StrategyParams):
     buy_hold_return_pct: float | None
     pending_order: bool  # a market order is still working at the broker
     stop_at_broker: bool  # the stop-loss rests at the broker as a real order (Alpaca), not only in this service
+    # --- rotation bots only (None / empty on the others) ---
+    universe: list[str] | None = None
+    top_n: int | None = None
+    lookback_months: int | None = None
+    skip_months: int | None = None
+    abs_filter: bool | None = None
+    holdings: list[HoldingOut] = []
+    rebalancing: bool = False  # a rebalance's orders are still being sent (sells first, then the buys)
 
 
 class DecisionOut(BaseModel):
@@ -112,6 +170,7 @@ class OrderOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     side: str
+    symbol: str | None  # None on orders from before it was stored: the bot's symbol
     order_type: str  # market | stop
     stop_price: float | None
     qty: int

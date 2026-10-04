@@ -95,6 +95,7 @@ skipping the latest one; Jegadeesh & Titman), hold the top N in equal parts, sel
 rose" a slot without a rising symbol stays in cash. The benchmark is the whole universe bought in equal parts on
 day one. The default universe is the 11 S&P sector ETFs: testing past years on today's largest companies would
 pick yesterday's winners in hindsight (survivorship bias), and the page warns when a universe holds stocks.
+**Paper trade this rotation** turns the tested rules into a rotation bot (see below).
 
 ## Intraday strategies (backtest only)
 
@@ -154,6 +155,20 @@ Brokers (choose per bot):
 | `alpaca-live` | **Real money** | `ALLOW_LIVE_TRADING=true` **and** `ALPACA_LIVE_*` keys, plus a confirmation tick per bot |
 
 Adding Interactive Brokers later = one new class implementing `trading-service/app/brokers/base.py`.
+
+**Rotation bots** (`trading-service/app/rotation.py`, `POST /bots/rotation`; **New rotation bot**, or **Paper trade
+this rotation** on the Rotation page) run the rotation backtest's rules on one bot holding several symbols:
+
+- At its first decision time, then on each month's last trading day at 15:30 New York, it ranks the universe by
+  the backtest's momentum formula (Yahoo daily closes, as in the backtest), sells what dropped out of the top N,
+  trims or tops up what stays, and buys what came in, in equal parts. Sells go first; the buys wait for their fills.
+  A month end missed while the service was down is made up at the next 15:30.
+- Whole shares, so a pick that stays is only traded when the change is worth at least 2% of its slot.
+- No stop-loss or take-profit, like the backtest; the drawdown breaker pauses it (no more rebalances, it keeps its
+  holdings). Its benchmark is the universe bought in equal parts when it started. Each order records its symbol;
+  `rotation` = moving into or out of a symbol, `rebalance` = a trim or top-up.
+- Paper accounts only for now (the simulator or Alpaca paper). On Alpaca paper no other bot may trade a symbol of its
+  universe, and the account is reconciled symbol by symbol.
 
 Safety built in:
 

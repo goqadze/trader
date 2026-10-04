@@ -77,6 +77,15 @@ def sessions_since(last: date | None, today: date) -> int:
     return len(_cal().sessions_in_range((last + timedelta(days=1)).isoformat(), today.isoformat()))
 
 
+def month_end_after(day: date) -> date:
+    """The first trading day after `day` that is the last trading day of its month (rotation bots rebalance then)."""
+    sessions = _cal().sessions_in_range((day + timedelta(days=1)).isoformat(), (day + timedelta(days=70)).isoformat())
+    for s, nxt in zip(sessions, sessions[1:]):
+        if s.month != nxt.month:
+            return s.date()
+    raise RuntimeError(f"no month end found after {day}")
+
+
 def next_decision_time(now: datetime, minutes_before_close: int) -> datetime:
     """The next scheduled decision moment at or after `now` (for the dashboard's "next decision" label)."""
     day = ny_date(now)

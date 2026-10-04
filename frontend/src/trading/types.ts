@@ -30,7 +30,41 @@ export interface BotCreate extends StrategyParams {
 
 export type BotUpdate = Partial<StrategyParams> & { name?: string };
 
-export interface Bot extends StrategyParams {
+/** A momentum rotation bot's strategy: one bot holding the strongest few of a universe (trading-service rotation.py). */
+export const ROTATION = "momentum_rotation" as const;
+
+/** A rotation bot: the backtest's rotation settings (same names) plus the bot's broker and capital. */
+export interface RotationBotCreate {
+  name?: string;
+  broker: string;
+  allocated_cash: number;
+  universe: string[];
+  top_n: number;
+  lookback_months: number;
+  skip_months: number;
+  abs_filter: boolean;
+  fee_pct: number;
+  slippage_pct: number;
+  max_drawdown_pct: number;
+}
+
+/** A rotation bot changes only these: its universe and rules are fixed for its life. */
+export type RotationBotUpdate = Partial<Pick<RotationBotCreate, "name" | "fee_pct" | "slippage_pct" | "max_drawdown_pct">>;
+
+/** One symbol a rotation bot holds. */
+export interface Holding {
+  symbol: string;
+  shares: number;
+  cost_basis: number;
+  last_price: number | null;
+  last_price_at: string | null;
+  value: number;
+  weight_pct: number; // of the bot's equity
+  unrealized_pnl: number;
+}
+
+export interface Bot extends Omit<StrategyParams, "strategy"> {
+  strategy: StrategyId | typeof ROTATION;
   id: number;
   name: string;
   symbol: string;
@@ -59,6 +93,15 @@ export interface Bot extends StrategyParams {
   buy_hold_return_pct: number | null;
   pending_order: boolean; // a market order is still working at the broker
   stop_at_broker: boolean; // the stop-loss rests at the broker as a real order (Alpaca), so it works while this app is off
+  // Rotation bots only (null / empty on the others). Their benchmark_price / last_price are what the universe held in
+  // equal parts since the start is worth, beginning at allocated_cash.
+  universe: string[] | null;
+  top_n: number | null;
+  lookback_months: number | null;
+  skip_months: number | null;
+  abs_filter: boolean | null;
+  holdings: Holding[];
+  rebalancing: boolean; // a rebalance's orders are still going out (sells first, then the buys)
 }
 
 export interface Decision {
@@ -66,7 +109,7 @@ export interface Decision {
   created_at: string;
   session_date: string;
   kind: "scheduled" | "manual" | "preview";
-  action: "BUY" | "SELL" | "HOLD";
+  action: "BUY" | "SELL" | "HOLD" | "ROTATE"; // ROTATE: a rotation bot changed what it holds
   confidence: number;
   sentiment: string;
   reasoning: string;
@@ -81,10 +124,11 @@ export interface Order {
   created_at: string;
   updated_at: string;
   side: "BUY" | "SELL";
+  symbol: string | null; // null on orders from before it was stored: the bot's symbol
   order_type: "market" | "stop"; // stop = the stop-loss resting at the broker until the price falls to it
   stop_price: number | null;
   qty: number;
-  reason: "signal" | "stop-loss" | "target" | "manual";
+  reason: "signal" | "stop-loss" | "target" | "manual" | "rotation" | "rebalance"; // rotation: in or out; rebalance: a trim or top-up
   status: "new" | "submitted" | "filled" | "partially_filled" | "canceled" | "rejected" | "failed";
   client_order_id: string;
   broker_order_id: string | null;
