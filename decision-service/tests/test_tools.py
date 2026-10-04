@@ -105,3 +105,11 @@ def test_a_past_10am_decision_uses_the_replayed_day(monkeypatch):
     # Without a decision moment (the default 15:30 backtest decision) the finished bar is used as before
     agent.fetch_data({"symbol": "AAPL", "as_of": date(2026, 8, 3), "strategy": "sma_rsi"})
     assert len(replayed) == 1
+
+
+def test_yahoo_gets_share_classes_with_a_dash(monkeypatch):
+    """The app (like Alpaca) writes BRK.B; Yahoo only knows BRK-B."""
+    asked = []
+    monkeypatch.setattr(tools.yf, "download", lambda symbol, **kw: asked.append(symbol) or pd.DataFrame())
+    tools._download("BRK.B", date(2026, 9, 1), date(2026, 9, 10))
+    assert asked == ["BRK-B"]

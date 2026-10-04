@@ -171,3 +171,14 @@ def test_intraday_bars_come_from_decision_service(monkeypatch):
     df = runner._intraday_bars("AAPL", date(2025, 3, 3), date(2025, 3, 3))
     assert asked["url"].endswith("/bars/intraday") and asked["start"] == "2025-03-03"
     assert [str(t) for t in df.index] == ["2025-03-07 09:30:00-05:00", "2025-03-10 09:30:00-04:00"]
+
+
+def test_yahoo_gets_share_classes_with_a_dash(monkeypatch):
+    """The app (like Alpaca) writes BRK.B; Yahoo only knows BRK-B."""
+    from app import runner
+
+    asked = []
+    bars = pd.DataFrame({"Open": [1.0], "High": [1.0], "Low": [1.0], "Close": [1.0]}, index=pd.to_datetime(["2026-09-01"]))
+    monkeypatch.setattr(runner.yf, "download", lambda symbol, **kw: asked.append(symbol) or bars)
+    runner._fetch_prices("BRK.B", date(2026, 9, 1), date(2026, 9, 2))
+    assert asked == ["BRK-B"]

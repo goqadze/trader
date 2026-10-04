@@ -58,10 +58,15 @@ CLOSE_SLOT = dtime(15, 30)  # DECISION_MINUTES_BEFORE_CLOSE = 30
 HALF_HOUR = pd.Timedelta(minutes=30)
 
 
+def _yahoo_symbol(symbol: str) -> str:
+    """Yahoo writes share classes with a dash (BRK-B); Alpaca, the bots and this app with a dot (BRK.B)."""
+    return symbol.replace(".", "-")
+
+
 def _fetch_prices(symbol: str, start: date, end: date, now: pd.Timestamp | None = None) -> pd.DataFrame:
     """Download daily bars (Open, High, Low, Close) for the backtest window (runs in a thread: yfinance blocks).
     Decisions and equity use the close; the high and low tell whether a stop or target was hit during the day."""
-    df = yf.download(symbol, start=start, end=end + timedelta(days=1), progress=False, auto_adjust=True)
+    df = yf.download(_yahoo_symbol(symbol), start=start, end=end + timedelta(days=1), progress=False, auto_adjust=True)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     bars = df[["Open", "High", "Low", "Close"]].dropna()

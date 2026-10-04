@@ -13,7 +13,7 @@ import httpx
 import pandas as pd
 import yfinance as yf
 
-from .tools import MARKET_TZ
+from .tools import MARKET_TZ, yahoo_symbol
 
 BAR = timedelta(minutes=30)
 SESSION_START, SESSION_END = dtime(9, 30), dtime(16, 0)
@@ -58,7 +58,7 @@ def _from_alpaca(symbol: str, start: datetime, end: datetime, headers: dict) -> 
 
 
 def _from_yahoo(symbol: str, start: datetime, end: datetime) -> pd.DataFrame:
-    df = yf.download(symbol, start=start.date(), end=end.date() + timedelta(days=1), interval="30m", progress=False, auto_adjust=True)
+    df = yf.download(yahoo_symbol(symbol), start=start.date(), end=end.date() + timedelta(days=1), interval="30m", progress=False, auto_adjust=True)
     if df.empty:
         return pd.DataFrame(columns=COLUMNS)
     if isinstance(df.columns, pd.MultiIndex):

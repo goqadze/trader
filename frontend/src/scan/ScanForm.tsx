@@ -25,6 +25,20 @@ const SYMBOL_OPTIONS = SYMBOL_GROUPS.map((g) => ({
 
 const fmt = (d: Dayjs) => d.format("YYYY-MM-DD");
 
+const MAX_SYMBOLS = 60; // backtest-service's ScanConfig limit
+// Measured: technical only, 3 runs at a time, a backtest-year takes about this long (data downloads included).
+// With news each decision waits for the news step, many times slower.
+const SECONDS_PER_RUN_YEAR = 3.5;
+const years = (r?: [Dayjs, Dayjs]) => (r?.[0] && r?.[1] ? r[1].diff(r[0], "day") / 365.25 : 0);
+
+/** "about 25 minutes" for the practice runs (plus every exam run when they all sit it), technical only. */
+function estimate(v: Partial<FormValues>, combos: number): string | null {
+  if (!combos || v.news) return null;
+  const runYears = combos * (years(v.practice) + (v.exam_on !== false && v.exam_all ? years(v.exam) : 0));
+  const min = Math.max(1, Math.round((runYears * SECONDS_PER_RUN_YEAR) / 60));
+  return min < 90 ? `about ${min} minute${min === 1 ? "" : "s"}` : `about ${(min / 60).toFixed(1)} hours`;
+}
+
 /** Each strategy on its own suggested settings (like Compare's default), with the same cash, sizing and breaker. */
 function settingsFor(id: StrategyId, news: boolean): RunSettings {
   const g = strategyInfo(id)!.suggested;
@@ -65,6 +79,7 @@ export default function ScanForm({ onRun, starting }: Props) {
   const news = v?.news ?? false;
   const nStrategies = (v?.strategies ?? []).filter((id) => news || id !== NEEDS_NEWS).length;
   const combos = (v?.symbols?.length ?? 0) * nStrategies;
+  const est = estimate(v ?? {}, combos);
   const addSymbols = (more: string[]) => form.setFieldValue("symbols", [...new Set([...(form.getFieldValue("symbols") ?? []), ...more])]);
   const today = dayjs();
 
@@ -78,10 +93,10 @@ export default function ScanForm({ onRun, starting }: Props) {
           symbols: ["QQQ", "SPY", "DIA", "IWM"],
           strategies: STRATEGIES.map((s) => s.id).filter((id) => id !== NEEDS_NEWS),
           news: false,
-          // Practice on three older years (2022's bear market included), sit the exam on the last year
-          practice: [today.subtract(4, "year"), today.subtract(1, "year").subtract(1, "day")],
+          // Practice on three older years (2022's bear market included), sit the exam on the last three
+          practice: [today.subtract(6, "year"), today.subtract(3, "year").subtract(1, "day")],
           exam_on: true,
-          exam: [today.subtract(1, "year"), today],
+          exam: [today.subtract(3, "year"), today],
           exam_all: false,
         }}
       >
@@ -91,7 +106,7 @@ export default function ScanForm({ onRun, starting }: Props) {
             <Space size={0} wrap>
               {SYMBOL_GROUPS.map((g) => (
                 <Button key={g.label} type="link" size="small" style={{ paddingInline: 4 }} onClick={() => addSymbols(g.symbols.map((s) => s.symbol))}>
-                  + {g.label.split(" (")[0]}
+                  + {g.short}
                 </Button>
               ))}
             </Space>
@@ -100,7 +115,10 @@ export default function ScanForm({ onRun, starting }: Props) {
           <Form.Item
             name="symbols"
             noStyle
-            rules={[{ required: true, type: "array", min: 1, message: "Pick at least one symbol" }]}
+            rules={[
+              { required: true, type: "array", min: 1, message: "Pick at least one symbol" },
+              { type: "array", max: MAX_SYMBOLS, message: `At most ${MAX_SYMBOLS} symbols in one scan` },
+            ]}
             normalize={(vals: string[]) => [...new Set(vals.map((s) => s.trim().toUpperCase()).filter(Boolean))]}
           >
             <Select mode="tags" options={SYMBOL_OPTIONS} optionLabelProp="value" tokenSeparators={[",", " "]} placeholder="Pick or type tickers" />
@@ -194,6 +212,7 @@ export default function ScanForm({ onRun, starting }: Props) {
         <Typography.Text style={{ display: "block", marginTop: 8, fontSize: 12, color: MUTED }}>
           {combos} practice backtest{combos === 1 ? "" : "s"}
           {v?.exam_on !== false && (v?.exam_all ? `, then ${combos} exam backtests` : ", then an exam backtest for each that passes")}.
+          {est && ` Technical only: ${est}${v?.exam_on !== false && !v?.exam_all ? " plus the exams" : ""}.`}{" "}
           A few run at a time, on the server: you can leave this page.
         </Typography.Text>
       </Form>

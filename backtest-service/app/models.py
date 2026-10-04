@@ -59,7 +59,7 @@ class ScanConfig(BaseModel):
     """Many symbols x a few strategies, on a practice window and optionally an unseen exam window after it.
     Each strategy brings its own settings (the frontend sends each strategy's suggested ones)."""
 
-    symbols: list[str] = Field(min_length=1, max_length=30)
+    symbols: list[str] = Field(min_length=1, max_length=60)  # e.g. the top 20 ETFs + the top 20 companies
     runs: list[RunSettings] = Field(min_length=1, max_length=11)  # one per strategy
     practice: Period
     exam: Period | None = None

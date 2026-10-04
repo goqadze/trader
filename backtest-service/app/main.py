@@ -75,6 +75,9 @@ async def ws_run(ws: WebSocket, run_id: str):
         for ev in list(run.events):
             await ws.send_json(ev)
             sent.add(ev["seq"])
+            if ev["type"] in ("done", "error"):
+                await ws.close()  # a finished run: nothing more will come (waiting would hang until the server stops)
+                return
         # Then stream live; de-dupe by sequence number in case of overlap
         while True:
             ev = await q.get()

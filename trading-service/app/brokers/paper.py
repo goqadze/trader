@@ -15,7 +15,8 @@ from .base import Broker, BrokerError, BrokerOrder, Quote
 def yahoo_quote(symbol: str) -> Quote:
     """Last 1-minute bar from Yahoo Finance (free; can lag a little and has no uptime guarantee)."""
     try:
-        df = yf.Ticker(symbol).history(period="1d", interval="1m", auto_adjust=True)
+        # Yahoo writes share classes with a dash (BRK-B); Alpaca and the bots with a dot (BRK.B)
+        df = yf.Ticker(symbol.replace(".", "-")).history(period="1d", interval="1m", auto_adjust=True)
     except Exception as e:  # yfinance raises many different things on network trouble
         raise BrokerError(f"quote failed for {symbol}: {e}") from e
     if df is None or df.empty:

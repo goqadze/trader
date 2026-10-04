@@ -1,5 +1,6 @@
-// Suggested symbols for the Symbol pickers (backtest, compare, bot). Only a shortlist: any other
-// ticker can still be typed. Everything here trades on Alpaca and has Yahoo/Alpaca price history.
+// Suggested symbols for the Symbol pickers (backtest, compare, bot, scan). Only a shortlist: any other ticker can
+// still be typed. Everything here trades on Alpaca and has Yahoo/Alpaca price history. Share classes are written
+// with a dot (BRK.B) like Alpaca; the services turn that into Yahoo's dash (BRK-B) themselves.
 
 export interface SymbolInfo {
   symbol: string;
@@ -8,35 +9,78 @@ export interface SymbolInfo {
 
 export interface SymbolGroup {
   label: string;
+  short: string; // for the scan form's "+ add group" links
   symbols: SymbolInfo[];
 }
 
 export const SYMBOL_GROUPS: SymbolGroup[] = [
   {
-    // Alpaca doesn't trade futures, so these ETFs stand in for the NQ / ES / YM index futures.
-    label: "Index ETFs (stand-ins for NQ, ES, YM futures)",
+    // The 20 largest US-listed ETFs by assets on 2026-10-02 (chartrow.com/lists/biggest-etfs). Several track the
+    // same index (VOO, IVV and SPY are all the S&P 500), so they trade almost identically. Alpaca doesn't trade
+    // futures: SPY and QQQ stand in for the ES and NQ index futures.
+    label: "Top 20 ETFs by assets (Oct 2026)",
+    short: "Top 20 ETFs",
     symbols: [
-      { symbol: "QQQ", name: "Nasdaq-100, like NQ / MNQ" },
+      { symbol: "VOO", name: "S&P 500 (Vanguard; same index as SPY)" },
+      { symbol: "IVV", name: "S&P 500 (iShares; same index as SPY)" },
       { symbol: "SPY", name: "S&P 500, like ES / MES" },
+      { symbol: "VTI", name: "Total US stock market" },
+      { symbol: "QQQ", name: "Nasdaq-100, like NQ / MNQ" },
+      { symbol: "VEA", name: "Developed markets outside the US" },
+      { symbol: "VUG", name: "US large-cap growth" },
+      { symbol: "VTV", name: "US large-cap value" },
+      { symbol: "VGT", name: "US information technology" },
+      { symbol: "VWO", name: "Emerging markets" },
+      { symbol: "BND", name: "Total US bond market (moves little)" },
+      { symbol: "AGG", name: "US aggregate bonds (moves little)" },
+      { symbol: "IWF", name: "Russell 1000 growth" },
+      { symbol: "VXUS", name: "Total international stocks" },
+      { symbol: "IJH", name: "S&P 400 mid caps" },
+      { symbol: "XLK", name: "Technology sector (S&P 500 tech)" },
+      { symbol: "IJR", name: "S&P 600 small caps" },
+      { symbol: "VIG", name: "Dividend growers" },
+      { symbol: "VO", name: "US mid caps" },
+      { symbol: "QQQM", name: "Nasdaq-100 (cheaper twin of QQQ)" },
+    ],
+  },
+  {
+    label: "More index ETFs",
+    short: "Dow & small caps",
+    symbols: [
       { symbol: "DIA", name: "Dow Jones 30, like YM / MYM" },
       { symbol: "IWM", name: "Russell 2000 small caps" },
     ],
   },
   {
-    label: "Large caps",
+    // The 20 largest US companies by market value on 2026-10-02 (finhacker.cz top 20 S&P 500 by market cap)
+    label: "Top 20 US companies by market value (Oct 2026)",
+    short: "Top 20 companies",
     symbols: [
-      { symbol: "AAPL", name: "Apple" },
-      { symbol: "MSFT", name: "Microsoft" },
       { symbol: "NVDA", name: "Nvidia" },
-      { symbol: "AMZN", name: "Amazon" },
+      { symbol: "AAPL", name: "Apple" },
       { symbol: "GOOGL", name: "Alphabet (Google)" },
+      { symbol: "MSFT", name: "Microsoft" },
+      { symbol: "AMZN", name: "Amazon" },
       { symbol: "META", name: "Meta Platforms" },
+      { symbol: "AVGO", name: "Broadcom" },
       { symbol: "TSLA", name: "Tesla (very volatile)" },
+      { symbol: "MU", name: "Micron Technology" },
+      { symbol: "BRK.B", name: "Berkshire Hathaway (class B)" },
+      { symbol: "LLY", name: "Eli Lilly" },
+      { symbol: "AMD", name: "Advanced Micro Devices" },
       { symbol: "JPM", name: "JPMorgan Chase" },
+      { symbol: "WMT", name: "Walmart" },
+      { symbol: "XOM", name: "Exxon Mobil" },
+      { symbol: "V", name: "Visa" },
+      { symbol: "JNJ", name: "Johnson & Johnson" },
+      { symbol: "INTC", name: "Intel" },
+      { symbol: "MA", name: "Mastercard" },
+      { symbol: "ABBV", name: "AbbVie" },
     ],
   },
   {
     label: "Commodity ETFs",
+    short: "Gold & silver",
     symbols: [
       { symbol: "GLD", name: "Gold (the ticker GOLD is a company, not gold)" },
       { symbol: "SLV", name: "Silver" },

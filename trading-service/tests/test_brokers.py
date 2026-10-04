@@ -36,3 +36,23 @@ def test_live_needs_flag_and_keys(monkeypatch):
 def test_unknown_broker():
     with pytest.raises(BrokerError):
         get_broker(Bot(broker="robinhood"))
+
+
+def test_yahoo_quotes_ask_for_share_classes_with_a_dash(monkeypatch):
+    """Bots (like Alpaca) write BRK.B; Yahoo only knows BRK-B."""
+    import pandas as pd
+
+    from app.brokers import paper
+
+    asked = []
+
+    class Ticker:
+        def __init__(self, symbol):
+            asked.append(symbol)
+
+        def history(self, **kw):
+            return pd.DataFrame({"Close": [500.0]}, index=pd.to_datetime(["2026-09-01 14:00"], utc=True))
+
+    monkeypatch.setattr(paper.yf, "Ticker", Ticker)
+    assert paper.yahoo_quote("BRK.B").price == 500.0
+    assert asked == ["BRK-B"]

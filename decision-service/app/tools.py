@@ -18,9 +18,14 @@ _cache_lock = threading.Lock()
 _CACHE_SYMBOLS = 32
 
 
+def yahoo_symbol(symbol: str) -> str:
+    """Yahoo writes share classes with a dash (BRK-B); Alpaca, the bots and this app with a dot (BRK.B)."""
+    return symbol.replace(".", "-")
+
+
 def _download(symbol: str, start: date, end: date) -> pd.DataFrame:
     """Daily OHLCV bars in [start, end] from Yahoo Finance (free, no API key); auto_adjust corrects for splits/dividends."""
-    df = yf.download(symbol, start=start, end=end + timedelta(days=1), progress=False, auto_adjust=True)  # end is exclusive
+    df = yf.download(yahoo_symbol(symbol), start=start, end=end + timedelta(days=1), progress=False, auto_adjust=True)  # end is exclusive
     # Newer yfinance returns two-level column names; flatten them to plain "Close", "Open", ...
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
