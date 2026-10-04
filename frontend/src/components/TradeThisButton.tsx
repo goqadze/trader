@@ -1,7 +1,7 @@
 import { RocketOutlined } from "@ant-design/icons";
-import { Button } from "antd";
+import { Button, Tooltip } from "antd";
 import { useNavigate } from "react-router-dom";
-import { strategyName } from "../strategies";
+import { isIntraday, strategyName } from "../strategies";
 import type { BotFormInitial } from "../trading/BotForm";
 import type { RunConfig } from "../types";
 
@@ -25,6 +25,15 @@ function toBotParams(cfg: RunConfig): BotFormInitial {
 /** Opens the new-bot form on the Live trading page, prefilled with exactly what was backtested. */
 export default function TradeThisButton({ config, type = "primary" }: { config: RunConfig; type?: "primary" | "default" }) {
   const navigate = useNavigate();
+  if (isIntraday(config.strategy)) {
+    return (
+      <Tooltip title="Live bots can't run intraday strategies yet: they decide at 10:00 and 15:30, not every minute">
+        <Button type={type} icon={<RocketOutlined />} disabled>
+          Trade this strategy
+        </Button>
+      </Tooltip>
+    );
+  }
   return (
     <Button type={type} icon={<RocketOutlined />} onClick={() => navigate("/trading", { state: { prefill: toBotParams(config) } })}>
       Trade this strategy

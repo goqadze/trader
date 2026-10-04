@@ -1,6 +1,7 @@
 // The decision strategies decision-service can run, for the pickers on the backtest and bot forms.
 // Mirrors decision-service/app/strategies.py (its GET /strategies returns the same catalog); keep the ids
-// in sync with it, trading-service/app/schemas.py and backtest-service/app/models.py.
+// in sync with it, trading-service/app/schemas.py and backtest-service/app/models.py. The intraday ones
+// (decision-service/app/intraday_strategies.py) only backtest: live bots can't run them yet.
 
 export type StrategyId =
   | "sma_rsi"
@@ -13,19 +14,34 @@ export type StrategyId =
   | "reversal"
   | "gap_and_go"
   | "news_catalyst"
-  | "fibonacci";
+  | "fibonacci"
+  | "orb"
+  | "ict_sweep_fvg";
 
 export interface StrategyInfo {
   id: StrategyId;
   name: string;
-  style: "trend" | "momentum" | "breakout" | "mean reversion" | "event";
+  style: "trend" | "momentum" | "breakout" | "mean reversion" | "event" | "intraday";
   summary: string;
   buy: string;
   sell: string;
   bestFor: string;
   /** Starting points for the knobs that matter most for this style: backtest before trusting them. */
   suggested: { rebalance_days: number; stop_pct: number; target_pct: number; decide_at?: "close" | "open" | "both" };
+  /** Intraday strategies: their settings instead (their stop and target come from each day's setup). */
+  intraday?: IntradaySettings;
 }
+
+export interface IntradaySettings {
+  risk_pct: number; // what one trade may lose, as a fraction of equity
+  sides: "long" | "both";
+  slippage_pct: number; // per market fill: liquid ETFs trade with a one-cent spread
+}
+
+export const INTRADAY_DEFAULTS: IntradaySettings = { risk_pct: 0.01, sides: "both", slippage_pct: 0.0001 };
+
+/** The style groups in display order (pickers, comparison and scan checklists). */
+export const STYLES = ["trend", "momentum", "breakout", "mean reversion", "event", "intraday"] as const;
 
 export const DEFAULT_STRATEGY: StrategyId = "sma_rsi";
 
@@ -113,6 +129,21 @@ export const STRATEGIES: StrategyInfo[] = [
     bestFor: "trending stocks after a sharp run-up",
     suggested: { rebalance_days: 1, stop_pct: 0.05, target_pct: 0.12 },
   },
+  {
+    id: "orb", name: "Opening range breakout (5-min ORB)", style: "intraday",
+    summary: "Trade the direction of the first 5-minute candle from 9:35: long if it closed up, short if down; stop at its other end, target 10× the risk, out by 15:55.",
+    buy: "first 5-minute candle closes up: buy at 9:35, stop at its low", sell: "it closes down: short at 9:35, stop at its high (needs long and short)",
+    bestFor: "liquid index ETFs (QQQ, SPY); the published intraday baseline (Zarattini & Aziz, 2023)",
+    suggested: { rebalance_days: 1, stop_pct: 0.01, target_pct: 0.1 }, intraday: INTRADAY_DEFAULTS,
+  },
+  {
+    id: "ict_sweep_fvg", name: "ICT: sweep → shift → FVG", style: "intraday",
+    summary: "9:30–11:00 New York: price sweeps yesterday's or the opening range's low, a strong candle breaks the last swing high and leaves a fair value gap in discount; buy back into the gap's middle. Shorts mirror it.",
+    buy: "sweep of a low + close back above, then the first close above the swing high leaving a bullish FVG below 50% of the move: limit at the gap's middle, stop under the sweep, target the nearest high paying ≥ 2× the risk",
+    sell: "the mirror: sweep of a high, break of the swing low, bearish FVG in premium (needs long and short)",
+    bestFor: "QQQ and SPY (stand-ins for NQ and ES); ICT made into exact rules: unproven, which is what the test is for",
+    suggested: { rebalance_days: 1, stop_pct: 0.01, target_pct: 0.02 }, intraday: INTRADAY_DEFAULTS,
+  },
 ];
 
 const BY_ID = new Map(STRATEGIES.map((s) => [s.id, s]));
@@ -120,11 +151,16 @@ const BY_ID = new Map(STRATEGIES.map((s) => [s.id, s]));
 export const strategyInfo = (id: string): StrategyInfo | undefined => BY_ID.get(id as StrategyId);
 export const strategyName = (id: string) => strategyInfo(id)?.name ?? id;
 
+export const isIntraday = (id: string | undefined) => strategyInfo(id ?? "")?.style === "intraday";
+
 /** Select options grouped by style, for antd's <Select options>. */
-export const STRATEGY_OPTIONS = (["trend", "momentum", "breakout", "mean reversion", "event"] as const).map((style) => ({
+export const STRATEGY_OPTIONS = STYLES.map((style) => ({
   label: style,
   options: STRATEGIES.filter((s) => s.style === style).map((s) => ({ value: s.id, label: s.name })),
 }));
+
+/** The bot form's options: live bots can't run the intraday strategies yet. */
+export const BOT_STRATEGY_OPTIONS = STRATEGY_OPTIONS.filter((g) => g.label !== "intraday");
 
 /** The name without its parenthesized detail ("Breakout (20-day high + volume)" -> "Breakout"), for tabs and tables. */
 export const strategyShortName = (id: string) => strategyName(id).replace(/\s*\(.*\)\s*$/, "");

@@ -1,6 +1,7 @@
 import logging
 import os
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Query
@@ -8,6 +9,7 @@ from pydantic import BaseModel
 
 from .agent import agent  # the compiled LangGraph workflow
 from .intraday import bars_between
+from .intraday_strategies import INTRADAY_STRATEGIES, plans as intraday_plans
 from .strategies import DEFAULT_STRATEGY, STRATEGIES, catalog
 
 logger = logging.getLogger("decision-service")
@@ -53,19 +55,38 @@ def strategies():
 
 
 @app.get("/bars/intraday")
-def intraday_bars(symbol: str, start: date, end: date):
-    """Regular-hours 30-minute bars (New York time, each stamped with its START) for backtests that decide after
-    the open: they need each day's 10:00 price and the range around it. From Alpaca when its keys are set (years
-    of history), else Yahoo (the last 60 days). The data keys stay in this service."""
+def intraday_bars(symbol: str, start: date, end: date, timeframe: Literal["30Min", "5Min"] = "30Min"):
+    """Regular-hours bars (New York time, each stamped with its START). 30-minute ones for backtests that decide
+    after the open (each day's 10:00 price and the range around it), 5-minute ones for the intraday strategies.
+    From Alpaca when its keys are set (years of history), else Yahoo (the last 60 days). The data keys stay here."""
     if end < start:
         raise HTTPException(422, "end must not be before start")
     try:
-        df = bars_between(symbol.upper(), start, end)
+        df = bars_between(symbol.upper(), start, end, timeframe)
     except Exception as e:
         logger.exception("intraday bars failed for %s %s..%s", symbol, start, end)
-        raise HTTPException(502, f"30-minute prices unavailable: {type(e).__name__}: {e}")
+        raise HTTPException(502, f"{timeframe} prices unavailable: {type(e).__name__}: {e}")
     return [{"t": ts.isoformat(), "open": float(r.Open), "high": float(r.High), "low": float(r.Low),
              "close": float(r.Close), "volume": float(r.Volume)} for ts, r in df.iterrows()]
+
+
+@app.get("/intraday/plans")
+def intraday_plan_list(symbol: str, start: date, end: date, strategy: str, sides: Literal["long", "both"] = "both"):
+    """Each day's order plan from an intraday strategy (orb, ict_sweep_fvg) on 5-minute bars: side, entry (a limit,
+    or the next bar's open), stop, target, when it was placed and until when it may fill. Days without a setup are
+    left out. Built from the bars that had finished when each setup completed, so backtest-service can replay them
+    without look-ahead."""
+    if strategy not in INTRADAY_STRATEGIES:
+        raise HTTPException(422, f"unknown intraday strategy '{strategy}'; one of {list(INTRADAY_STRATEGIES)}")
+    if end < start:
+        raise HTTPException(422, "end must not be before start")
+    try:
+        # A week before the start, so the first day knows the previous session's high and low
+        bars = bars_between(symbol.upper(), start - timedelta(days=10), end, "5Min")
+    except Exception as e:
+        logger.exception("5-minute bars failed for %s %s..%s", symbol, start, end)
+        raise HTTPException(502, f"5-minute prices unavailable: {type(e).__name__}: {e}")
+    return intraday_plans(bars, strategy, start, end, sides)
 
 
 @app.post("/signal", response_model=Signal)

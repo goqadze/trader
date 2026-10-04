@@ -69,3 +69,14 @@ def test_decide_at_defaults_to_the_close_and_is_validated():
     assert RunConfig(start=date(2025, 1, 1), end=date(2025, 2, 1), decide_at="both").decide_at == "both"
     with pytest.raises(ValidationError):
         RunConfig(start=date(2025, 1, 1), end=date(2025, 2, 1), decide_at="noon")
+
+
+def test_intraday_strategies_default_to_the_slippage_of_liquid_etfs():
+    from app.models import ScanConfig
+
+    assert RunConfig(start=date(2025, 1, 1), end=date(2025, 6, 1), strategy="orb").slippage_pct == 0.0001
+    assert RunConfig(start=date(2025, 1, 1), end=date(2025, 6, 1), strategy="orb", slippage_pct=0.0005).slippage_pct == 0.0005
+    assert RunConfig(start=date(2025, 1, 1), end=date(2025, 6, 1)).slippage_pct == 0.0005  # daily strategies keep theirs
+    scan = ScanConfig(symbols=["QQQ"], runs=[{"strategy": "ict_sweep_fvg"}],
+                      practice={"start": "2022-01-01", "end": "2023-01-01"})
+    assert scan.runs[0].slippage_pct == 0.0001  # kept when a scan builds each run from these settings

@@ -25,8 +25,13 @@ const tradeColumns: ColumnsType<Trade & { key: number }> = [
     render: (v: number | undefined, t) =>
       v == null ? "" : <span style={{ color: pnlColor(v) }}>{`${v >= 0 ? "+" : "−"}$${Math.abs(v).toFixed(2)}`}{t.pnl_pct != null && ` (${t.pnl_pct > 0 ? "+" : ""}${t.pnl_pct}%)`}</span>,
   },
-  { title: "Held", dataIndex: "hold_days", width: 70, render: (d: number | undefined) => (d == null ? "" : `${d} d`) },
-  { title: "Exit", dataIndex: "reason", render: (r: string | undefined) => r ?? "" },
+  {
+    title: "Held",
+    dataIndex: "hold_days",
+    width: 70,
+    render: (d: number | undefined, t) => (t.hold_minutes != null ? `${t.hold_minutes} min` : d == null ? "" : `${d} d`),
+  },
+  { title: "Exit", dataIndex: "reason", render: (r: string | undefined, t) => (r ? `${r}${t.direction === "short" ? " (short)" : ""}` : "") },
 ];
 
 /** Everything about one strategy's run: its settings, live tiles, every metric, its equity chart, its trades
@@ -35,7 +40,7 @@ export default function StrategyDetail({ run }: { run: BacktestState }) {
   const cfg = run.config;
   const info = cfg && strategyInfo(cfg.strategy);
   const r = run.result;
-  const pct = (v: number | undefined) => (v == null ? "default" : `${+(v * 100).toFixed(1)}%`);
+  const pct = (v: number | undefined) => (v == null ? "default" : `${+(v * 100).toFixed(2)}%`);
   return (
     <>
       {cfg && info && (
@@ -45,15 +50,23 @@ export default function StrategyDetail({ run }: { run: BacktestState }) {
             <div>
               <b>Buy:</b> {info.buy} · <b>Sell:</b> {info.sell}
             </div>
-            <div>
-              Ran with: every {cfg.rebalance_days} day{cfg.rebalance_days === 1 ? "" : "s"} · check{" "}
-              {checkAtText(cfg.decide_at)} · stop {pct(cfg.stop_pct)} · target{" "}
-              {pct(cfg.target_pct)} · min confidence {cfg.min_confidence} · breaker{" "}
-              {cfg.max_drawdown_pct ? pct(cfg.max_drawdown_pct) : "off"} · news {cfg.news === false ? "off (technical only)" : "on"} ·{" "}
-              <a href={`/guides/trading-strategies.html#${info.id}`} target="_blank" rel="noreferrer">
-                chart &amp; details
-              </a>
-            </div>
+            {info.intraday ? (
+              <div>
+                Ran with: 5-minute bars, one setup a day, out by 15:55 · risk {pct(cfg.risk_pct)} a trade ·{" "}
+                {cfg.sides === "long" ? "long only" : "long and short"} · slippage {pct(cfg.slippage_pct)} · breaker{" "}
+                {cfg.max_drawdown_pct ? pct(cfg.max_drawdown_pct) : "off"}
+              </div>
+            ) : (
+              <div>
+                Ran with: every {cfg.rebalance_days} day{cfg.rebalance_days === 1 ? "" : "s"} · check{" "}
+                {checkAtText(cfg.decide_at)} · stop {pct(cfg.stop_pct)} · target{" "}
+                {pct(cfg.target_pct)} · min confidence {cfg.min_confidence} · breaker{" "}
+                {cfg.max_drawdown_pct ? pct(cfg.max_drawdown_pct) : "off"} · news {cfg.news === false ? "off (technical only)" : "on"} ·{" "}
+                <a href={`/guides/trading-strategies.html#${info.id}`} target="_blank" rel="noreferrer">
+                  chart &amp; details
+                </a>
+              </div>
+            )}
           </div>
           {r && <TradeThisButton config={cfg} type="default" />}
         </div>

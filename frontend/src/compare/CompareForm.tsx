@@ -2,12 +2,11 @@ import { Button, Card, Checkbox, DatePicker, Form, InputNumber, Segmented, Selec
 import { Dayjs } from "dayjs";
 import { CHECK_AT_OPTIONS, defaultRange } from "../checkAt";
 import SymbolSelect from "../components/SymbolSelect";
-import { STRATEGIES, strategyInfo, type StrategyId } from "../strategies";
+import { STRATEGIES, STYLES, strategyInfo, type StrategyId } from "../strategies";
 import type { DecideAt } from "../trading/types";
 import type { RunConfig } from "../types";
 
 const MUTED = "#8b98b5";
-const STYLES = ["trend", "momentum", "breakout", "mean reversion", "event"] as const;
 
 // antd form values (dates are dayjs objects; percents are sent as fractions).
 interface FormValues {
@@ -40,7 +39,8 @@ function checkAt(id: StrategyId, v: Partial<FormValues>): DecideAt {
  *  weekly would miss most breakouts); "same" runs them all on identical settings. */
 function toConfigs(v: FormValues): RunConfig[] {
   return v.strategies.map((id) => {
-    const g = strategyInfo(id)!.suggested;
+    const info = strategyInfo(id)!;
+    const g = info.suggested;
     const own = v.settings === "suggested";
     return {
       symbol: v.symbol.trim().toUpperCase(),
@@ -56,6 +56,7 @@ function toConfigs(v: FormValues): RunConfig[] {
       decide_at: checkAt(id, v),
       max_drawdown_pct: v.max_drawdown_pct / 100,
       news: v.news,
+      ...info.intraday, // intraday strategies: their own risk, sides and slippage (stop and target come from the setup)
     };
   });
 }
@@ -66,6 +67,7 @@ function decisionCalls(v: Partial<FormValues>): number | null {
   let weekdays = 0;
   for (let d = v.range[0]; !d.isAfter(v.range[1], "day"); d = d.add(1, "day")) if (d.day() % 6 !== 0) weekdays++;
   return v.strategies.reduce((n, id) => {
+    if (strategyInfo(id)!.intraday) return n + 1; // one call for the whole window's plans
     const every = v.settings === "same" ? v.rebalance_days || 1 : strategyInfo(id)!.suggested.rebalance_days;
     return n + Math.ceil(weekdays / every) * (checkAt(id, v) === "both" ? 2 : 1);
   }, 0);

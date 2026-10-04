@@ -27,7 +27,7 @@ def _half_hours(day: date):
 @pytest.fixture
 def half_hours(monkeypatch):
     intraday._cache.clear()
-    monkeypatch.setattr(intraday, "_download", lambda symbol, first, last: _half_hours(date(2026, 8, 3)))
+    monkeypatch.setattr(intraday, "_download", lambda symbol, first, last, timeframe="30Min": _half_hours(date(2026, 8, 3)))
     yield
     intraday._cache.clear()
 
@@ -56,7 +56,7 @@ def test_no_bars_for_the_day_is_a_clear_error(half_hours):
 def test_a_month_is_downloaded_once_and_shared_by_its_days(monkeypatch):
     intraday._cache.clear()
     calls = []
-    monkeypatch.setattr(intraday, "_download", lambda symbol, first, last: calls.append((first, last)) or _half_hours(first))
+    monkeypatch.setattr(intraday, "_download", lambda symbol, first, last, timeframe="30Min": calls.append((first, last)) or _half_hours(first))
     intraday._month("AAPL", date(2025, 3, 3))
     intraday._month("AAPL", date(2025, 3, 28))
     intraday._month("AAPL", date(2025, 4, 1))
@@ -71,7 +71,7 @@ def test_a_cached_month_never_waits_behind_another_download(monkeypatch):
     intraday._cache.clear()
     release, calls = threading.Event(), []
 
-    def download(symbol, first, last):
+    def download(symbol, first, last, timeframe="30Min"):
         calls.append(symbol)
         if symbol == "SLOW":
             assert release.wait(5)
@@ -94,7 +94,7 @@ def test_a_cached_month_never_waits_behind_another_download(monkeypatch):
 
 def test_bars_between_spans_months_and_trims_to_the_range(monkeypatch):
     intraday._cache.clear()
-    monkeypatch.setattr(intraday, "_download", lambda symbol, first, last: pd.concat([_half_hours(first), _half_hours(last)]))
+    monkeypatch.setattr(intraday, "_download", lambda symbol, first, last, timeframe="30Min": pd.concat([_half_hours(first), _half_hours(last)]))
     df = intraday.bars_between("AAPL", date(2025, 3, 31), date(2025, 4, 1))
     assert sorted(set(df.index.date)) == [date(2025, 3, 31), date(2025, 4, 1)]
     intraday._cache.clear()
@@ -129,16 +129,29 @@ def test_alpaca_bars_are_paged_and_limited_to_regular_hours(monkeypatch):
     df = intraday._download("AAPL", date(2025, 3, 3), date(2025, 3, 3))
     assert list(df["Close"]) == [2.0, 3.0]  # 9:00 pre-market and 16:00 after-hours dropped
     assert str(df.index[0]) == "2025-03-03 09:30:00-05:00"
-    assert seen[1]["page_token"] == "p2" and seen[0]["adjustment"] == "all"
+    assert seen[1]["page_token"] == "p2" and seen[0]["adjustment"] == "all" and seen[0]["timeframe"] == "30Min"
+
+
+def test_five_minute_bars_are_cached_apart_from_thirty_minute_ones(monkeypatch):
+    intraday._cache.clear()
+    calls = []
+    monkeypatch.setattr(intraday, "_download", lambda symbol, first, last, timeframe="30Min": calls.append(timeframe) or _half_hours(first))
+    intraday.bars_between("AAPL", date(2025, 3, 3), date(2025, 3, 3), "5Min")
+    intraday.bars_between("AAPL", date(2025, 3, 3), date(2025, 3, 3))
+    intraday.bars_between("AAPL", date(2025, 3, 4), date(2025, 3, 4), "5Min")  # same month: cached
+    assert calls == ["5Min", "30Min"]
+    with pytest.raises(ValueError):
+        intraday.bars_between("AAPL", date(2025, 3, 3), date(2025, 3, 3), "1Min")
+    intraday._cache.clear()
 
 
 def test_without_alpaca_keys_yahoo_is_the_fallback(monkeypatch):
     monkeypatch.setenv("ALPACA_API_KEY", "# paste your key")
     used = []
-    monkeypatch.setattr(intraday, "_from_yahoo", lambda symbol, start, end: used.append(symbol) or _half_hours(date(2025, 3, 3)))
+    monkeypatch.setattr(intraday, "_from_yahoo", lambda symbol, start, end, timeframe: used.append((symbol, timeframe)) or _half_hours(date(2025, 3, 3)))
     monkeypatch.setattr(intraday, "_from_alpaca", lambda *a: pytest.fail("no Alpaca keys: must not call it"))
     intraday._download("AAPL", date(2025, 3, 3), date(2025, 3, 3))
-    assert used == ["AAPL"]
+    assert used == [("AAPL", "30Min")]
 
 
 def test_the_endpoint_serves_bars_for_backtests(monkeypatch):
@@ -146,7 +159,7 @@ def test_the_endpoint_serves_bars_for_backtests(monkeypatch):
 
     from app import main
 
-    monkeypatch.setattr(main, "bars_between", lambda symbol, start, end: _half_hours(date(2025, 3, 3)))
+    monkeypatch.setattr(main, "bars_between", lambda symbol, start, end, timeframe="30Min": _half_hours(date(2025, 3, 3)))
     r = TestClient(main.app).get("/bars/intraday", params={"symbol": "aapl", "start": "2025-03-03", "end": "2025-03-03"})
     assert r.status_code == 200
     first = r.json()[0]

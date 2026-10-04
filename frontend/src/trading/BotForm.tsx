@@ -2,7 +2,7 @@ import { Alert, Checkbox, Col, Divider, Form, Input, InputNumber, Modal, Radio, 
 import { useEffect, useRef, useState } from "react";
 import StrategyHelp from "../components/StrategyHelp";
 import SymbolSelect from "../components/SymbolSelect";
-import { DEFAULT_STRATEGY, STRATEGY_OPTIONS, strategyInfo, type StrategyId, type StrategyInfo } from "../strategies";
+import { BOT_STRATEGY_OPTIONS, DEFAULT_STRATEGY, strategyInfo, type StrategyId, type StrategyInfo } from "../strategies";
 import { slotTimes } from "./format";
 import type { BotCreate, BotUpdate, BrokerInfo, DecideAt, StrategyParams } from "./types";
 
@@ -180,7 +180,7 @@ export default function BotForm({ open, editing, initial, brokers, times = slotT
 
         <Divider orientation="left" plain>Strategy</Divider>
         <Form.Item name="strategy" label="Strategy">
-          <Select options={STRATEGY_OPTIONS} popupMatchSelectWidth={false} listHeight={420} />
+          <Select options={BOT_STRATEGY_OPTIONS} popupMatchSelectWidth={false} listHeight={420} />
         </Form.Item>
         <StrategyHelp id={strategy} onApply={applySuggested} />
         <Row gutter={12}>

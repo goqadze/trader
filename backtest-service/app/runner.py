@@ -10,8 +10,8 @@ import pandas as pd
 import yfinance as yf
 
 from .decision_client import BASE as DECISION_BASE, get_signal
-from .engines import SimplePortfolioEngine
-from .models import RunConfig
+from .engines import IntradayEngine, SimplePortfolioEngine
+from .models import INTRADAY_STRATEGIES, RunConfig
 
 
 class Run:
@@ -74,12 +74,13 @@ def _fetch_prices(symbol: str, start: date, end: date, now: pd.Timestamp | None 
     return _finished_sessions(bars, now or pd.Timestamp.now(tz=NEW_YORK))
 
 
-def _intraday_bars(symbol: str, start: date, end: date) -> pd.DataFrame:
-    """Regular-hours 30-minute bars from decision-service (which holds the market-data keys: Alpaca, years of
+def _intraday_bars(symbol: str, start: date, end: date, timeframe: str = "30Min") -> pd.DataFrame:
+    """Regular-hours 30- or 5-minute bars from decision-service (which holds the market-data keys: Alpaca, years of
     history; Yahoo's last 60 days without them), indexed by each bar's start in New York time."""
-    r = httpx.get(f"{DECISION_BASE}/bars/intraday", params={"symbol": symbol, "start": str(start), "end": str(end)}, timeout=180)
+    r = httpx.get(f"{DECISION_BASE}/bars/intraday", params={"symbol": symbol, "start": str(start), "end": str(end),
+                                                             "timeframe": timeframe}, timeout=600)
     if r.status_code != 200:
-        raise ValueError(f"30-minute prices for {symbol} unavailable: decision-service {r.status_code}: {r.text[:200]}")
+        raise ValueError(f"{timeframe} prices for {symbol} unavailable: decision-service {r.status_code}: {r.text[:200]}")
     rows = r.json()
     if not rows:
         return pd.DataFrame(columns=["Open", "High", "Low", "Close"])
@@ -116,6 +117,20 @@ def _fetch_slots(symbol: str, start: date, end: date) -> pd.DataFrame:
         rows[day] = {"open_price": at_open, "close_price": at_close, "close_at": close_at.strftime("%H:%M"),
                      "a_high": a_high, "a_low": a_low, "b_high": b_high, "b_low": b_low, "c_high": c_high, "c_low": c_low}
     return pd.DataFrame.from_dict(rows, orient="index")
+
+
+def _five_minute_bars(symbol: str, start: date, end: date) -> pd.DataFrame:
+    """The intraday strategies' bars (a function of its own: the price cache is keyed by the fetcher's name)."""
+    return _intraday_bars(symbol, start, end, "5Min")
+
+
+def _intraday_plans(cfg: RunConfig) -> list[dict]:
+    """Each day's order plan from decision-service, which holds the intraday strategies' rules."""
+    r = httpx.get(f"{DECISION_BASE}/intraday/plans", timeout=600, params={
+        "symbol": cfg.symbol, "start": str(cfg.start), "end": str(cfg.end), "strategy": cfg.strategy, "sides": cfg.sides})
+    if r.status_code != 200:
+        raise ValueError(f"intraday plans for {cfg.symbol} unavailable: decision-service {r.status_code}: {r.text[:200]}")
+    return r.json()
 
 
 def _finished_sessions(close: pd.Series | pd.DataFrame, now: pd.Timestamp) -> pd.Series | pd.DataFrame:
@@ -169,6 +184,12 @@ async def _execute(run: Run) -> None:
     async with _slots:  # stays "pending" until a slot frees up
         run.status = "running"
         try:
+            if cfg.strategy in INTRADAY_STRATEGIES:  # 5-minute bars + the day's order plans, no per-day decisions
+                bars5 = await _load_prices(cfg.symbol, cfg.start, cfg.end, _five_minute_bars)
+                plans = await asyncio.to_thread(_intraday_plans, cfg)
+                run.result = await IntradayEngine().run(cfg, bars5, plans, run.emit)
+                run.status = "done"
+                return
             # 1) Load prices for the window (the download runs in a thread)
             bars = await _load_prices(cfg.symbol, cfg.start, cfg.end)
             if bars is None or len(bars) < 2:

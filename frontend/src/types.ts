@@ -23,6 +23,10 @@ export interface RunConfig {
   decide_at?: DecideAt; // when a decision day decides, like a bot's "Check at"; omitted = before the close
   max_drawdown_pct?: number; // the bots' drawdown breaker: stop deciding after this drop from the peak (0 = off)
   news?: boolean; // false = technical only: no news step (fast screening); omitted = news on
+  // Intraday strategies only (their stop and target come from each day's setup)
+  risk_pct?: number; // what one trade may lose, as a fraction of equity
+  sides?: "long" | "both";
+  slippage_pct?: number; // per market fill; omitted = 0.05% daily, 0.01% intraday
 }
 
 export interface Trade {
@@ -34,7 +38,9 @@ export interface Trade {
   pnl?: number; // SELLs only: round-trip profit net of fees and slippage
   pnl_pct?: number; // ... as a % of what the entry cost
   hold_days?: number; // trading days between entry and exit
-  reason?: "signal" | "stop-loss" | "target";
+  reason?: "signal" | "stop-loss" | "target" | "close"; // close = an intraday position closed at 15:55
+  hold_minutes?: number; // intraday round trips
+  direction?: "long" | "short"; // intraday round trips (a short closes with a BUY)
 }
 
 /** Final result payload carried by the "done" event. */

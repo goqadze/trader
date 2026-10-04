@@ -2,7 +2,7 @@ import { Form, InputNumber, DatePicker, Select, Button, Card, Switch } from "ant
 import dayjs, { Dayjs } from "dayjs";
 import { useEffect } from "react";
 import { CHECK_AT_OPTIONS, defaultRange } from "../checkAt";
-import { DEFAULT_STRATEGY, STRATEGY_OPTIONS, strategyInfo, type StrategyId, type StrategyInfo } from "../strategies";
+import { DEFAULT_STRATEGY, INTRADAY_DEFAULTS, STRATEGY_OPTIONS, isIntraday, strategyInfo, type IntradaySettings, type StrategyId, type StrategyInfo } from "../strategies";
 import type { DecideAt } from "../trading/types";
 import type { RunConfig } from "../types";
 import StrategyHelp from "./StrategyHelp";
@@ -22,6 +22,10 @@ interface FormValues {
   decide_at: DecideAt;
   max_drawdown_pct: number; // percent in the form
   news: boolean;
+  // Intraday strategies only (percents in the form)
+  risk_pct: number;
+  sides: "long" | "both";
+  slippage_pct: number;
 }
 
 interface Props {
@@ -46,6 +50,9 @@ function toFormValues(c: RunConfig): Partial<FormValues> {
     decide_at: c.decide_at ?? "close",
     max_drawdown_pct: pct(c.max_drawdown_pct),
     news: c.news ?? true,
+    ...(c.risk_pct != null && { risk_pct: pct(c.risk_pct) }),
+    ...(c.sides && { sides: c.sides }),
+    ...(c.slippage_pct != null && { slippage_pct: pct(c.slippage_pct) }),
   };
 }
 
@@ -65,8 +72,13 @@ export default function ConfigForm({ onRun, running, prefill }: Props) {
       target_pct: +(g.target_pct * 100).toFixed(2),
       decide_at: g.decide_at ?? "close",
     });
+  const applyIntraday = (g: IntradaySettings) =>
+    form.setFieldsValue({ risk_pct: +(g.risk_pct * 100).toFixed(2), sides: g.sides, slippage_pct: +(g.slippage_pct * 100).toFixed(3) });
+  const intraday = isIntraday(strategy);
 
-  const submit = (v: FormValues) => {
+  // Every field's value, also the ones hidden for this kind of strategy (onFinish would only pass the visible ones)
+  const submit = () => {
+    const v = form.getFieldsValue(true) as FormValues;
     onRun({
       symbol: v.symbol.trim().toUpperCase(),
       start: v.range[0].format("YYYY-MM-DD"),
@@ -81,6 +93,7 @@ export default function ConfigForm({ onRun, running, prefill }: Props) {
       decide_at: v.decide_at,
       max_drawdown_pct: v.max_drawdown_pct / 100,
       news: v.news,
+      ...(isIntraday(v.strategy) && { risk_pct: v.risk_pct / 100, sides: v.sides, slippage_pct: v.slippage_pct / 100 }),
     });
   };
 
@@ -93,7 +106,8 @@ export default function ConfigForm({ onRun, running, prefill }: Props) {
         // Picking a strategy loads its suggested rebalance, stop and take-profit; edit them afterwards if you like
         onValuesChange={(changed: Partial<FormValues>) => {
           const s = changed.strategy && strategyInfo(changed.strategy);
-          if (s) applySuggested(s.suggested);
+          if (s?.intraday) applyIntraday(s.intraday);
+          else if (s) applySuggested(s.suggested);
         }}
         initialValues={{
           symbol: "AAPL",
@@ -109,47 +123,75 @@ export default function ConfigForm({ onRun, running, prefill }: Props) {
           decide_at: "close",
           max_drawdown_pct: 20, // the bots' default
           news: true,
+          risk_pct: INTRADAY_DEFAULTS.risk_pct * 100,
+          sides: INTRADAY_DEFAULTS.sides,
+          slippage_pct: INTRADAY_DEFAULTS.slippage_pct * 100,
         }}
       >
         <Form.Item name="strategy" label="Strategy">
           <Select options={STRATEGY_OPTIONS} popupMatchSelectWidth={false} listHeight={420} />
         </Form.Item>
-        <StrategyHelp id={strategy} onApply={applySuggested} />
+        <StrategyHelp id={strategy} onApply={applySuggested} onApplyIntraday={applyIntraday} />
         <Form.Item name="symbol" label="Symbol" rules={[{ required: true }]}>
           <SymbolSelect />
         </Form.Item>
         <Form.Item name="range" label="Date range" rules={[{ required: true }]}>
           <DatePicker.RangePicker style={{ width: "100%" }} />
         </Form.Item>
-        <Form.Item name="decide_at" label="Check at (New York time)" tooltip="When a decision day decides, exactly like a trading bot's “Check at”: the day as it stood at 15:30 or 10:00, filled at that moment's price, then the stop and target guard the rest of the day. Both does the two.">
-          <Select options={CHECK_AT_OPTIONS} />
-        </Form.Item>
-        <Form.Item
-          name="news"
-          label="News"
-          valuePropName="checked"
-          tooltip="On: each decision reads the news (RAG + an LLM sentiment) like a live bot. Off: technical only, decided on the price alone: much faster and no OpenAI cost, but News catalyst has nothing to trade on."
-        >
-          <Switch checkedChildren="on" unCheckedChildren="technical only" />
-        </Form.Item>
+        {intraday && (
+          <>
+            <Form.Item name="risk_pct" label="Risk per trade" tooltip="What one trade may lose, as a share of the account: the distance from the entry to the setup's stop decides how many shares. Capped by the cash (no leverage).">
+              <InputNumber min={0.1} max={5} step={0.25} addonAfter="%" style={{ width: "100%" }} />
+            </Form.Item>
+            <Form.Item name="sides" label="Trade" tooltip="Long and short takes the bearish setups too (live, shorting needs a margin account).">
+              <Select options={[{ value: "both", label: "Long and short" }, { value: "long", label: "Long only" }]} />
+            </Form.Item>
+            <Form.Item name="slippage_pct" label="Slippage per market fill" tooltip="How much worse than the price a market order fills (entries at the open, stops, the 15:55 exit). QQQ and SPY trade with a one-cent spread (~0.002%); with tight intraday stops this number decides a lot, so try 0 and 0.05% too. Limit fills (entries at a price, targets) have none.">
+              <InputNumber min={0} max={1} step={0.005} addonAfter="%" style={{ width: "100%" }} />
+            </Form.Item>
+          </>
+        )}
+        {!intraday && (
+          <>
+            <Form.Item name="decide_at" label="Check at (New York time)" tooltip="When a decision day decides, exactly like a trading bot's “Check at”: the day as it stood at 15:30 or 10:00, filled at that moment's price, then the stop and target guard the rest of the day. Both does the two.">
+              <Select options={CHECK_AT_OPTIONS} />
+            </Form.Item>
+            <Form.Item
+              name="news"
+              label="News"
+              valuePropName="checked"
+              tooltip="On: each decision reads the news (RAG + an LLM sentiment) like a live bot. Off: technical only, decided on the price alone: much faster and no OpenAI cost, but News catalyst has nothing to trade on."
+            >
+              <Switch checkedChildren="on" unCheckedChildren="technical only" />
+            </Form.Item>
+          </>
+        )}
         <Form.Item name="initial_cash" label="Initial cash ($)">
           <InputNumber min={100} style={{ width: "100%" }} />
         </Form.Item>
-        <Form.Item name="min_confidence" label="Min confidence (0–1)">
-          <InputNumber min={0} max={1} step={0.05} style={{ width: "100%" }} />
-        </Form.Item>
-        <Form.Item name="rebalance_days" label="Rebalance every N trading days">
-          <InputNumber min={1} style={{ width: "100%" }} />
-        </Form.Item>
+        {!intraday && (
+          <>
+            <Form.Item name="min_confidence" label="Min confidence (0–1)">
+              <InputNumber min={0} max={1} step={0.05} style={{ width: "100%" }} />
+            </Form.Item>
+            <Form.Item name="rebalance_days" label="Rebalance every N trading days">
+              <InputNumber min={1} style={{ width: "100%" }} />
+            </Form.Item>
+          </>
+        )}
         <Form.Item name="position_pct" label="Position size (fraction of cash)">
           <InputNumber min={0.1} max={1} step={0.1} style={{ width: "100%" }} />
         </Form.Item>
-        <Form.Item name="stop_pct" label="Stop-loss (% below entry)">
-          <InputNumber min={0.1} max={50} step={0.5} addonAfter="%" style={{ width: "100%" }} />
-        </Form.Item>
-        <Form.Item name="target_pct" label="Take-profit (% above entry)">
-          <InputNumber min={0.1} max={200} step={0.5} addonAfter="%" style={{ width: "100%" }} />
-        </Form.Item>
+        {!intraday && (
+          <>
+            <Form.Item name="stop_pct" label="Stop-loss (% below entry)">
+              <InputNumber min={0.1} max={50} step={0.5} addonAfter="%" style={{ width: "100%" }} />
+            </Form.Item>
+            <Form.Item name="target_pct" label="Take-profit (% above entry)">
+              <InputNumber min={0.1} max={200} step={0.5} addonAfter="%" style={{ width: "100%" }} />
+            </Form.Item>
+          </>
+        )}
         <Form.Item name="max_drawdown_pct" label="Drawdown breaker" tooltip="Like a trading bot: once equity falls this far below its peak, stop deciding (the stop-loss and target still guard an open position). 0 = off.">
           <InputNumber min={0} max={99} step={5} addonAfter="%" style={{ width: "100%" }} />
         </Form.Item>

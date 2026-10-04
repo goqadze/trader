@@ -176,10 +176,12 @@ class SimplePortfolioEngine(BacktestEngine):
         await emit({"type": "done", "result": result})
         return result
 
-    def _metrics(self, cfg, prices, cash, position, cost_basis, trades, equity_curve) -> dict:
+    def _metrics(self, cfg, prices, cash, position, cost_basis, trades, equity_curve, closed: list[dict] | None = None) -> dict:
         """Summary statistics the frontend shows in the results panel and the strategy comparison.
         Ratios are annualized from daily closes (252 trading days), with a 0% risk-free rate; on a
-        window of a few weeks they are noisy, so read them next to the return and drawdown."""
+        window of a few weeks they are noisy, so read them next to the return and drawdown.
+        `closed` = the round trips' closing legs (default: the SELLs; the intraday engine passes its own, as a
+        short closes with a BUY)."""
         first_price = float(prices.iloc[0])
         last_price = float(prices.iloc[-1])
         final_equity = cash + position * last_price
@@ -189,7 +191,7 @@ class SimplePortfolioEngine(BacktestEngine):
         # Buy & hold benchmark: what if you just bought on day 1 and did nothing?
         buy_hold_return = (last_price / first_price - 1) * 100
 
-        closed = [t for t in trades if t["side"] == "SELL"]
+        closed = closed if closed is not None else [t for t in trades if t["side"] == "SELL"]
         wins = [t for t in closed if t.get("pnl", 0) > 0]
         losses = [t for t in closed if t.get("pnl", 0) <= 0]
         gross_win = sum(t["pnl"] for t in wins)

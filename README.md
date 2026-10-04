@@ -83,6 +83,23 @@ run on the server (leaving the page doesn't stop them; restarting backtest-servi
 `SCAN_PARALLEL_RUNS` (3) runs at a time so a normal backtest still gets a slot. **Technical only** (news off,
 `news=false` on `/signal`) makes a scan fast and free; **Re-check with news** opens a finalist on the Backtest page.
 
+## Intraday strategies (backtest only)
+
+Two strategies trade within the day on 5-minute bars (Alpaca, years of history), one setup a day, every position
+closed by 15:55, long and short:
+
+- **Opening range breakout (`orb`)**: the published 5-minute ORB (Zarattini & Aziz, 2023): trade the first
+  candle's direction from 9:35, stop at its other end, target 10× the risk.
+- **ICT: sweep → shift → FVG (`ict_sweep_fvg`)**: 9:30-11:00 New York, price sweeps yesterday's or the opening
+  range's low, the first close above the last swing high leaves a fair value gap in discount; a limit at the gap's
+  middle, the stop under the sweep, the target the nearest liquidity paying ≥ 2× the risk. Shorts mirror it.
+
+decision-service `app/intraday_strategies.py` holds the rules and serves each day's order plan
+(`GET /intraday/plans`), built bar by bar from finished bars only (no look-ahead). backtest-service's
+`IntradayEngine` replays the plans on the 5-minute bars: limit and market fills, stop before target when a bar
+touches both, risk-based sizing (`risk_pct`, capped by the cash), slippage on market fills only (0.01% by default
+for intraday: with tight stops, costs decide a lot). Live bots can't run them yet.
+
 ## Live trading (paper first)
 
 Once a backtest convinces you, click **Trade this strategy** on its result, or open **Live trading → New bot**.

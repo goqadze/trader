@@ -1,11 +1,10 @@
 import { Alert, Button, Card, Checkbox, DatePicker, Form, Select, Space, Switch, Typography } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
-import { STRATEGIES, strategyInfo, type StrategyId } from "../strategies";
+import { STRATEGIES, STYLES, strategyInfo, type StrategyId } from "../strategies";
 import { SYMBOL_GROUPS, TWINS } from "../symbols";
 import type { RunSettings, ScanConfig } from "./types";
 
 const MUTED = "#8b98b5";
-const STYLES = ["trend", "momentum", "breakout", "mean reversion", "event"] as const;
 const NEEDS_NEWS: StrategyId = "news_catalyst"; // trades on news alone: nothing to do in a technical-only scan
 
 interface FormValues {
@@ -41,7 +40,8 @@ function estimate(v: Partial<FormValues>, combos: number): string | null {
 
 /** Each strategy on its own suggested settings (like Compare's default), with the same cash, sizing and breaker. */
 function settingsFor(id: StrategyId, news: boolean): RunSettings {
-  const g = strategyInfo(id)!.suggested;
+  const info = strategyInfo(id)!;
+  const g = info.suggested;
   return {
     strategy: id,
     initial_cash: 10000,
@@ -53,6 +53,7 @@ function settingsFor(id: StrategyId, news: boolean): RunSettings {
     decide_at: g.decide_at ?? "close",
     max_drawdown_pct: 0.2,
     news,
+    ...info.intraday, // intraday strategies: their own risk, sides and slippage
   };
 }
 
@@ -239,7 +240,8 @@ export default function ScanForm({ onRun, starting }: Props) {
         )}
 
         <Typography.Paragraph style={{ fontSize: 12, color: MUTED }}>
-          Each strategy runs on its own suggested settings, with $10,000, full position size and the 20% breaker.
+          Each strategy runs on its own suggested settings, with $10,000, full position size and the 20% breaker; the
+          intraday ones risk 1% a trade, long and short.
         </Typography.Paragraph>
         <Button type="primary" htmlType="submit" block loading={starting} disabled={!combos}>
           Scan {combos} combination{combos === 1 ? "" : "s"}

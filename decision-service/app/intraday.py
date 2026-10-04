@@ -1,5 +1,6 @@
-"""30-minute bars, for replaying a past moment of a session (a backtest deciding at 10:00, like a bot that
-checks after the open). Only regular hours (9:30-16:00 New York) count.
+"""Intraday bars: 30-minute ones for replaying a past moment of a session (a backtest deciding at 10:00, like a bot
+that checks after the open), 5-minute ones for the intraday strategies. Only regular hours (9:30-16:00 New York)
+count.
 
 Source: Alpaca's market data (years of history, free with the Alpaca keys the news already uses) when its keys
 are set, otherwise Yahoo Finance, which only keeps the last 60 days."""
@@ -16,17 +17,18 @@ import yfinance as yf
 from .tools import MARKET_TZ, yahoo_symbol
 
 BAR = timedelta(minutes=30)
+TIMEFRAMES = {"30Min": "30m", "5Min": "5m"}  # Alpaca's name -> Yahoo's interval
 SESSION_START, SESSION_END = dtime(9, 30), dtime(16, 0)
 ALPACA_BARS = "https://data.alpaca.markets/v2/stocks/{symbol}/bars"
 # Alpaca's free plan serves consolidated (SIP) prices once they are 15 minutes old
 ALPACA_DELAY = timedelta(minutes=16)
 CURRENT_MONTH_TTL_S = 1800  # a finished month never changes; the current one is re-fetched now and then
-_CACHE_MONTHS = 240
+_CACHE_MONTHS = 600  # a 5-minute month is ~1,600 bars: 600 of them stay well under 100 MB
 
 COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
-_cache: dict[tuple[str, int, int], tuple[float, pd.DataFrame]] = {}
+_cache: dict[tuple[str, str, int, int], tuple[float, pd.DataFrame]] = {}  # (symbol, timeframe, year, month)
 _lock = threading.Lock()  # guards _cache and _month_locks; never held during a download
-_month_locks: dict[tuple[str, int, int], threading.Lock] = {}
+_month_locks: dict[tuple[str, str, int, int], threading.Lock] = {}
 
 
 def _alpaca_headers() -> dict | None:
@@ -37,9 +39,9 @@ def _alpaca_headers() -> dict | None:
     return {"APCA-API-KEY-ID": os.environ["ALPACA_API_KEY"], "APCA-API-SECRET-KEY": os.environ["ALPACA_SECRET_KEY"]}
 
 
-def _from_alpaca(symbol: str, start: datetime, end: datetime, headers: dict) -> pd.DataFrame:
+def _from_alpaca(symbol: str, start: datetime, end: datetime, headers: dict, timeframe: str = "30Min") -> pd.DataFrame:
     """Split- and dividend-adjusted, like the daily bars from Yahoo. Pages until the whole range is in."""
-    params = {"timeframe": "30Min", "start": start.isoformat(), "end": end.isoformat(), "adjustment": "all",
+    params = {"timeframe": timeframe, "start": start.isoformat(), "end": end.isoformat(), "adjustment": "all",
               "feed": "sip", "limit": 10000}
     rows: list[dict] = []
     while True:
@@ -57,8 +59,9 @@ def _from_alpaca(symbol: str, start: datetime, end: datetime, headers: dict) -> 
     return df.rename(columns={"o": "Open", "h": "High", "l": "Low", "c": "Close", "v": "Volume"})[COLUMNS]
 
 
-def _from_yahoo(symbol: str, start: datetime, end: datetime) -> pd.DataFrame:
-    df = yf.download(yahoo_symbol(symbol), start=start.date(), end=end.date() + timedelta(days=1), interval="30m", progress=False, auto_adjust=True)
+def _from_yahoo(symbol: str, start: datetime, end: datetime, timeframe: str = "30Min") -> pd.DataFrame:
+    df = yf.download(yahoo_symbol(symbol), start=start.date(), end=end.date() + timedelta(days=1), interval=TIMEFRAMES[timeframe],
+                     progress=False, auto_adjust=True)
     if df.empty:
         return pd.DataFrame(columns=COLUMNS)
     if isinstance(df.columns, pd.MultiIndex):
@@ -68,23 +71,23 @@ def _from_yahoo(symbol: str, start: datetime, end: datetime) -> pd.DataFrame:
     return df.tz_convert(MARKET_TZ)[COLUMNS]
 
 
-def _download(symbol: str, first: date, last: date) -> pd.DataFrame:
-    """Regular-hours 30-minute bars for [first, last], indexed by each bar's START in New York time."""
+def _download(symbol: str, first: date, last: date, timeframe: str = "30Min") -> pd.DataFrame:
+    """Regular-hours bars (30- or 5-minute) for [first, last], indexed by each bar's START in New York time."""
     start = datetime.combine(first, dtime(0), tzinfo=MARKET_TZ)
     end = min(datetime.combine(last + timedelta(days=1), dtime(0), tzinfo=MARKET_TZ), datetime.now(MARKET_TZ) - ALPACA_DELAY)
     if end <= start:
         return pd.DataFrame(columns=COLUMNS)
     headers = _alpaca_headers()
-    df = _from_alpaca(symbol, start, end, headers) if headers else _from_yahoo(symbol, start, end)
+    df = _from_alpaca(symbol, start, end, headers, timeframe) if headers else _from_yahoo(symbol, start, end, timeframe)
     t = df.index.time
     return df[(t >= SESSION_START) & (t < SESSION_END)].dropna(subset=["Close"])  # Alpaca also sends pre/after-market
 
 
-def _month(symbol: str, day: date) -> pd.DataFrame:
+def _month(symbol: str, day: date, timeframe: str = "30Min") -> pd.DataFrame:
     """The bars of day's calendar month, through a cache: a backtest replays every morning of a year or more,
     one download per month instead of per day. Callers wanting the same month wait for one download; a cached
     month never waits behind another month's download (a scan runs several symbols at once)."""
-    key = (symbol, day.year, day.month)
+    key = (symbol, timeframe, day.year, day.month)
     first = day.replace(day=1)
     last = (first + timedelta(days=32)).replace(day=1) - timedelta(days=1)
 
@@ -101,7 +104,7 @@ def _month(symbol: str, day: date) -> pd.DataFrame:
         with _lock:
             if (df := cached()) is not None:  # downloaded by the caller we waited for
                 return df
-        df = _download(symbol, first, last)
+        df = _download(symbol, first, last, timeframe)
         with _lock:
             if len(_cache) >= _CACHE_MONTHS:
                 _cache.pop(next(iter(_cache)))
@@ -109,11 +112,13 @@ def _month(symbol: str, day: date) -> pd.DataFrame:
         return df
 
 
-def bars_between(symbol: str, first: date, last: date) -> pd.DataFrame:
-    """Regular-hours 30-minute bars from first to last (inclusive), New York time."""
+def bars_between(symbol: str, first: date, last: date, timeframe: str = "30Min") -> pd.DataFrame:
+    """Regular-hours bars (30- or 5-minute) from first to last (inclusive), New York time."""
+    if timeframe not in TIMEFRAMES:
+        raise ValueError(f"timeframe must be one of {list(TIMEFRAMES)}")
     months, d = [], first.replace(day=1)
     while d <= last:
-        months.append(_month(symbol, d))
+        months.append(_month(symbol, d, timeframe))
         d = (d + timedelta(days=32)).replace(day=1)
     df = pd.concat([m for m in months if not m.empty]) if any(not m.empty for m in months) else pd.DataFrame(columns=COLUMNS)
     return df[(df.index.date >= first) & (df.index.date <= last)] if not df.empty else df

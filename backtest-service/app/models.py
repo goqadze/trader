@@ -7,7 +7,11 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 # decision-service's strategies (GET /strategies there describes each one). Keep in sync with
 # decision-service/app/strategies.py STRATEGIES; validating here fails fast instead of a whole run of HOLDs.
 Strategy = Literal["sma_rsi", "trend_following", "momentum", "breakout", "mean_reversion", "range_trading",
-                   "ma_pullback", "reversal", "gap_and_go", "news_catalyst", "fibonacci"]
+                   "ma_pullback", "reversal", "gap_and_go", "news_catalyst", "fibonacci", "orb", "ict_sweep_fvg"]
+# Intraday strategies (decision-service/app/intraday_strategies.py): one setup a day on 5-minute bars, every
+# position closed by 15:55. They run in the intraday engine, not the daily one, and live bots can't run them yet.
+INTRADAY_STRATEGIES = {"orb", "ict_sweep_fvg"}
+INTRADAY_SLIPPAGE = 0.0001  # their default slippage per market fill (0.01%), see RunSettings._intraday_costs
 
 
 class RunSettings(BaseModel):
@@ -34,6 +38,18 @@ class RunSettings(BaseModel):
     # False = technical only: decision-service skips the news step (no news fetch, no sentiment LLM). Much faster and
     # free, for screening; News catalyst can't trade without news. Live bots always use news.
     news: bool = True
+    # Intraday strategies only. risk_pct: what one trade may lose (the stop decides the share count, capped by the
+    # cash: no leverage). sides: "both" lets them short (live, that needs a margin account), "long" doesn't.
+    risk_pct: float = Field(0.01, gt=0, le=0.05)
+    sides: Literal["long", "both"] = "both"
+
+    @model_validator(mode="after")
+    def _intraday_costs(self):
+        # Intraday strategies trade liquid ETFs with tight stops, where 0.05% a fill eats a third of a trade's risk:
+        # QQQ and SPY trade with a one-cent spread (~0.002%), so 0.01% is still on the cautious side. Unless asked
+        if self.strategy in INTRADAY_STRATEGIES and "slippage_pct" not in self.model_fields_set:
+            self.slippage_pct = INTRADAY_SLIPPAGE
+        return self
 
 
 class RunConfig(RunSettings):
