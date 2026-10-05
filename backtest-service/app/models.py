@@ -4,13 +4,17 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .futures import CONTRACTS
+
 # decision-service's strategies (GET /strategies there describes each one). Keep in sync with
 # decision-service/app/strategies.py STRATEGIES; validating here fails fast instead of a whole run of HOLDs.
 Strategy = Literal["sma_rsi", "trend_following", "momentum", "breakout", "mean_reversion", "range_trading",
-                   "ma_pullback", "reversal", "gap_and_go", "news_catalyst", "fibonacci", "orb", "ict_sweep_fvg"]
+                   "ma_pullback", "reversal", "gap_and_go", "news_catalyst", "fibonacci", "orb", "ict_sweep_fvg", "ict_amd"]
 # Intraday strategies (decision-service/app/intraday_strategies.py): one setup a day on 5-minute bars, every
 # position closed by 15:55. They run in the intraday engine, not the daily one, and live bots can't run them yet.
-INTRADAY_STRATEGIES = {"orb", "ict_sweep_fvg"}
+# They also trade index futures (NQ, MNQ, ES, MES, YM, MYM; futures.py), which the daily strategies don't.
+INTRADAY_STRATEGIES = {"orb", "ict_sweep_fvg", "ict_amd"}
+FUTURES_NEED_INTRADAY = "index futures (NQ, MNQ, ES, MES, YM, MYM) run with the intraday strategies only"
 INTRADAY_SLIPPAGE = 0.0001  # their default slippage per market fill (0.01%), see RunSettings._intraday_costs
 
 
@@ -42,6 +46,13 @@ class RunSettings(BaseModel):
     # cash: no leverage). sides: "both" lets them short (live, that needs a margin account), "long" doesn't.
     risk_pct: float = Field(0.01, gt=0, le=0.05)
     sides: Literal["long", "both"] = "both"
+    # The ICT strategies' way in: "limit" waits for the price to come back to the gap's middle (often it doesn't, and
+    # the order is cancelled at 11:00); "market" buys at the next bar's open right after the setup, at a worse price
+    # but every time. Same setup, stop and target. ORB always enters at market.
+    entry: Literal["limit", "market"] = "limit"
+    # The ICT strategies' higher-timeframe trend filter: only trade in the direction of the 1-hour, 4-hour or daily
+    # trend (its last finished close above / below its 20-bar average). Fewer setups, never more.
+    htf: Literal["off", "1h", "4h", "1d"] = "off"
 
     @model_validator(mode="after")
     def _intraday_costs(self):
@@ -55,9 +66,15 @@ class RunSettings(BaseModel):
 class RunConfig(RunSettings):
     """Everything the user configures from the frontend before starting a backtest."""
 
-    symbol: str = "AAPL"
+    symbol: str = "AAPL"  # a stock or ETF, or an index future (futures.CONTRACTS) for the intraday strategies
     start: date  # first day of the backtest window
     end: date  # last day of the backtest window
+
+    @model_validator(mode="after")
+    def _futures_intraday(self):
+        if self.symbol.upper() in CONTRACTS and self.strategy not in INTRADAY_STRATEGIES:
+            raise ValueError(FUTURES_NEED_INTRADAY)
+        return self
 
 
 def clean_symbols(v: list[str]) -> list[str]:
@@ -106,6 +123,8 @@ class ScanConfig(BaseModel):
             raise ValueError("each strategy at most once")
         if self.exam and self.exam.start <= self.practice.end:
             raise ValueError("the exam period must start after the practice period ends, or it isn't an unseen test")
+        if any(s in CONTRACTS for s in self.symbols) and any(r.strategy not in INTRADAY_STRATEGIES for r in self.runs):
+            raise ValueError(FUTURES_NEED_INTRADAY)
         return self
 
 

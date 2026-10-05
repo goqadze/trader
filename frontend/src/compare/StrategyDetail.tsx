@@ -17,7 +17,7 @@ const tradeColumns: ColumnsType<Trade & { key: number }> = [
   { title: "Date", dataIndex: "date", width: 110 },
   { title: "Side", dataIndex: "side", width: 70, render: (s: Trade["side"]) => <Tag color={s === "BUY" ? "green" : "red"}>{s}</Tag> },
   { title: "Price", dataIndex: "price", width: 90, render: (p: number) => `$${p.toFixed(2)}` },
-  { title: "Shares", dataIndex: "shares", width: 80 },
+  { title: "Qty", dataIndex: "shares", width: 80 }, // shares, or contracts for a future
   {
     title: "P&L",
     dataIndex: "pnl",

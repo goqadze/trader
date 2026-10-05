@@ -1,9 +1,10 @@
 """Intraday bars: 30-minute ones for replaying a past moment of a session (a backtest deciding at 10:00, like a bot
-that checks after the open), 5-minute ones for the intraday strategies. Only regular hours (9:30-16:00 New York)
-count.
+that checks after the open), 5-minute ones for the intraday strategies. Regular hours (9:30-16:00 New York) by
+default; `extended` adds the pre-market from 4:00 (the ICT Power of 3 strategy's accumulation range).
 
 Source: Alpaca's market data (years of history, free with the Alpaca keys the news already uses) when its keys
-are set, otherwise Yahoo Finance, which only keeps the last 60 days."""
+are set, otherwise Yahoo Finance, which only keeps the last 60 days. Index futures (NQ, MES, ...) are rebuilt from
+their ETFs (futures.py)."""
 
 import os
 import threading
@@ -14,11 +15,13 @@ import httpx
 import pandas as pd
 import yfinance as yf
 
+from .futures import FUTURES, rebuild
 from .tools import MARKET_TZ, yahoo_symbol
 
 BAR = timedelta(minutes=30)
 TIMEFRAMES = {"30Min": "30m", "5Min": "5m"}  # Alpaca's name -> Yahoo's interval
 SESSION_START, SESSION_END = dtime(9, 30), dtime(16, 0)
+PREMARKET_START = dtime(4, 0)  # Alpaca's pre-market data starts at 4:00 New York
 ALPACA_BARS = "https://data.alpaca.markets/v2/stocks/{symbol}/bars"
 # Alpaca's free plan serves consolidated (SIP) prices once they are 15 minutes old
 ALPACA_DELAY = timedelta(minutes=16)
@@ -61,7 +64,7 @@ def _from_alpaca(symbol: str, start: datetime, end: datetime, headers: dict, tim
 
 def _from_yahoo(symbol: str, start: datetime, end: datetime, timeframe: str = "30Min") -> pd.DataFrame:
     df = yf.download(yahoo_symbol(symbol), start=start.date(), end=end.date() + timedelta(days=1), interval=TIMEFRAMES[timeframe],
-                     progress=False, auto_adjust=True)
+                     progress=False, auto_adjust=True, prepost=True)
     if df.empty:
         return pd.DataFrame(columns=COLUMNS)
     if isinstance(df.columns, pd.MultiIndex):
@@ -71,16 +74,24 @@ def _from_yahoo(symbol: str, start: datetime, end: datetime, timeframe: str = "3
     return df.tz_convert(MARKET_TZ)[COLUMNS]
 
 
+def _session(df: pd.DataFrame, extended: bool = False) -> pd.DataFrame:
+    """Only regular hours (9:30-16:00), or with `extended` the pre-market from 4:00 too."""
+    if df.empty:
+        return df
+    t = df.index.time
+    return df[(t >= (PREMARKET_START if extended else SESSION_START)) & (t < SESSION_END)]
+
+
 def _download(symbol: str, first: date, last: date, timeframe: str = "30Min") -> pd.DataFrame:
-    """Regular-hours bars (30- or 5-minute) for [first, last], indexed by each bar's START in New York time."""
+    """Pre-market and regular-hours bars (30- or 5-minute) for [first, last], indexed by each bar's START in New
+    York time. Callers pick the session they want with _session."""
     start = datetime.combine(first, dtime(0), tzinfo=MARKET_TZ)
     end = min(datetime.combine(last + timedelta(days=1), dtime(0), tzinfo=MARKET_TZ), datetime.now(MARKET_TZ) - ALPACA_DELAY)
     if end <= start:
         return pd.DataFrame(columns=COLUMNS)
     headers = _alpaca_headers()
     df = _from_alpaca(symbol, start, end, headers, timeframe) if headers else _from_yahoo(symbol, start, end, timeframe)
-    t = df.index.time
-    return df[(t >= SESSION_START) & (t < SESSION_END)].dropna(subset=["Close"])  # Alpaca also sends pre/after-market
+    return _session(df, extended=True).dropna(subset=["Close"])  # both also send after-hours: never used
 
 
 def _month(symbol: str, day: date, timeframe: str = "30Min") -> pd.DataFrame:
@@ -112,16 +123,19 @@ def _month(symbol: str, day: date, timeframe: str = "30Min") -> pd.DataFrame:
         return df
 
 
-def bars_between(symbol: str, first: date, last: date, timeframe: str = "30Min") -> pd.DataFrame:
-    """Regular-hours bars (30- or 5-minute) from first to last (inclusive), New York time."""
+def bars_between(symbol: str, first: date, last: date, timeframe: str = "30Min", extended: bool = False) -> pd.DataFrame:
+    """Regular-hours bars (30- or 5-minute) from first to last (inclusive), New York time; with `extended` the
+    pre-market from 4:00 as well. A future (NQ, MES, ...) comes rebuilt from its ETF's bars."""
     if timeframe not in TIMEFRAMES:
         raise ValueError(f"timeframe must be one of {list(TIMEFRAMES)}")
+    if symbol in FUTURES:
+        return rebuild(FUTURES[symbol], bars_between(FUTURES[symbol].etf, first, last, timeframe, extended))
     months, d = [], first.replace(day=1)
     while d <= last:
         months.append(_month(symbol, d, timeframe))
         d = (d + timedelta(days=32)).replace(day=1)
     df = pd.concat([m for m in months if not m.empty]) if any(not m.empty for m in months) else pd.DataFrame(columns=COLUMNS)
-    return df[(df.index.date >= first) & (df.index.date <= last)] if not df.empty else df
+    return _session(df[(df.index.date >= first) & (df.index.date <= last)], extended) if not df.empty else df
 
 
 def rewind_to(df: pd.DataFrame, symbol: str, decided_at: datetime) -> tuple[pd.DataFrame, str]:
@@ -131,7 +145,7 @@ def rewind_to(df: pd.DataFrame, symbol: str, decided_at: datetime) -> tuple[pd.D
     at = decided_at.astimezone(MARKET_TZ)
     if df.empty or df.index[-1].date() != at.date():
         raise ValueError(f"No daily bar for {symbol} on {at.date()} to replay")
-    month = _month(symbol, at.date())
+    month = _session(_month(symbol, at.date()))  # regular hours: the pre-market isn't part of the day's bar
     day = month[(month.index.date == at.date()) & (month.index + BAR <= at)] if not month.empty else month
     if day.empty:
         source = "Alpaca" if _alpaca_headers() else "Yahoo (the last 60 days only; set the Alpaca keys for more)"

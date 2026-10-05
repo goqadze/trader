@@ -2,11 +2,15 @@ import { Form, InputNumber, DatePicker, Select, Button, Card, Switch } from "ant
 import dayjs, { Dayjs } from "dayjs";
 import { useEffect } from "react";
 import { CHECK_AT_OPTIONS, defaultRange } from "../checkAt";
-import { DEFAULT_STRATEGY, INTRADAY_DEFAULTS, STRATEGY_OPTIONS, isIntraday, strategyInfo, type IntradaySettings, type StrategyId, type StrategyInfo } from "../strategies";
+import {
+  DEFAULT_STRATEGY, ENTRY_OPTIONS, HTF_OPTIONS, INTRADAY_DEFAULTS, STRATEGY_OPTIONS, hasEntryChoice, isIntraday, strategyInfo, type IntradaySettings,
+  type StrategyId, type StrategyInfo,
+} from "../strategies";
 import type { DecideAt } from "../trading/types";
-import type { RunConfig } from "../types";
+import type { Entry, Htf, RunConfig } from "../types";
 import StrategyHelp from "./StrategyHelp";
 import SymbolSelect from "./SymbolSelect";
+import { isFuture } from "../symbols";
 
 // antd form values (dates are dayjs objects; we format them on submit).
 interface FormValues {
@@ -26,6 +30,8 @@ interface FormValues {
   risk_pct: number;
   sides: "long" | "both";
   slippage_pct: number;
+  entry: Entry;
+  htf: Htf;
 }
 
 interface Props {
@@ -53,6 +59,8 @@ function toFormValues(c: RunConfig): Partial<FormValues> {
     ...(c.risk_pct != null && { risk_pct: pct(c.risk_pct) }),
     ...(c.sides && { sides: c.sides }),
     ...(c.slippage_pct != null && { slippage_pct: pct(c.slippage_pct) }),
+    ...(c.entry && { entry: c.entry }),
+    ...(c.htf && { htf: c.htf }),
   };
 }
 
@@ -94,6 +102,7 @@ export default function ConfigForm({ onRun, running, prefill }: Props) {
       max_drawdown_pct: v.max_drawdown_pct / 100,
       news: v.news,
       ...(isIntraday(v.strategy) && { risk_pct: v.risk_pct / 100, sides: v.sides, slippage_pct: v.slippage_pct / 100 }),
+      ...(hasEntryChoice(v.strategy) && { entry: v.entry, htf: v.htf }),
     });
   };
 
@@ -126,13 +135,27 @@ export default function ConfigForm({ onRun, running, prefill }: Props) {
           risk_pct: INTRADAY_DEFAULTS.risk_pct * 100,
           sides: INTRADAY_DEFAULTS.sides,
           slippage_pct: INTRADAY_DEFAULTS.slippage_pct * 100,
+          entry: "limit",
+          htf: "off",
         }}
       >
         <Form.Item name="strategy" label="Strategy">
           <Select options={STRATEGY_OPTIONS} popupMatchSelectWidth={false} listHeight={420} />
         </Form.Item>
         <StrategyHelp id={strategy} onApply={applySuggested} onApplyIntraday={applyIntraday} />
-        <Form.Item name="symbol" label="Symbol" rules={[{ required: true }]}>
+        <Form.Item
+          name="symbol"
+          label="Symbol"
+          dependencies={["strategy"]}
+          rules={[
+            { required: true },
+            ({ getFieldValue }) => ({
+              validator: (_, v?: string) => (isFuture(v) && !isIntraday(getFieldValue("strategy"))
+                ? Promise.reject(new Error("Futures run with the intraday strategies only"))
+                : Promise.resolve()),
+            }),
+          ]}
+        >
           <SymbolSelect />
         </Form.Item>
         <Form.Item name="range" label="Date range" rules={[{ required: true }]}>
@@ -140,13 +163,31 @@ export default function ConfigForm({ onRun, running, prefill }: Props) {
         </Form.Item>
         {intraday && (
           <>
-            <Form.Item name="risk_pct" label="Risk per trade" tooltip="What one trade may lose, as a share of the account: the distance from the entry to the setup's stop decides how many shares. Capped by the cash (no leverage).">
+            <Form.Item name="risk_pct" label="Risk per trade" tooltip="What one trade may lose, as a share of the account: the distance from the entry to the setup's stop decides how many shares (or contracts). Shares are capped by the cash (no leverage); futures by their margin, 10% of each contract's value.">
               <InputNumber min={0.1} max={5} step={0.25} addonAfter="%" style={{ width: "100%" }} />
             </Form.Item>
+            {hasEntryChoice(strategy) && (
+              <Form.Item
+                name="entry"
+                label="Entry"
+                tooltip="Limit: wait for the price to come back to the fair value gap's middle (a better price, but often it never comes back and the order is cancelled at 11:00). At market: in at the next 5-minute bar's open as soon as the setup completes (every setup trades, at a worse price, so each win pays less). Same setup, stop and target either way."
+              >
+                <Select options={ENTRY_OPTIONS} popupMatchSelectWidth={false} />
+              </Form.Item>
+            )}
+            {hasEntryChoice(strategy) && (
+              <Form.Item
+                name="htf"
+                label="Higher-timeframe trend"
+                tooltip="Like an ICT trader reading the bigger picture first: only take longs while that timeframe trends up and shorts while it trends down (up = its last finished candle closed above the average of its last 20). Built from regular hours. It only removes setups, so expect fewer trades."
+              >
+                <Select options={HTF_OPTIONS} />
+              </Form.Item>
+            )}
             <Form.Item name="sides" label="Trade" tooltip="Long and short takes the bearish setups too (live, shorting needs a margin account).">
               <Select options={[{ value: "both", label: "Long and short" }, { value: "long", label: "Long only" }]} />
             </Form.Item>
-            <Form.Item name="slippage_pct" label="Slippage per market fill" tooltip="How much worse than the price a market order fills (entries at the open, stops, the 15:55 exit). QQQ and SPY trade with a one-cent spread (~0.002%); with tight intraday stops this number decides a lot, so try 0 and 0.05% too. Limit fills (entries at a price, targets) have none.">
+            <Form.Item name="slippage_pct" label="Slippage per market fill" tooltip="How much worse than the price a market order fills (entries at the open, stops, the 15:55 exit). QQQ and SPY trade with a one-cent spread (~0.002%); with tight intraday stops this number decides a lot, so try 0 and 0.05% too. Limit fills (entries at a price, targets) have none. Futures ignore it: a tick per market fill and a fee per contract.">
               <InputNumber min={0} max={1} step={0.005} addonAfter="%" style={{ width: "100%" }} />
             </Form.Item>
           </>

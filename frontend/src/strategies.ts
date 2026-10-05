@@ -16,7 +16,8 @@ export type StrategyId =
   | "news_catalyst"
   | "fibonacci"
   | "orb"
-  | "ict_sweep_fvg";
+  | "ict_sweep_fvg"
+  | "ict_amd";
 
 export interface StrategyInfo {
   id: StrategyId;
@@ -144,6 +145,14 @@ export const STRATEGIES: StrategyInfo[] = [
     bestFor: "QQQ and SPY (stand-ins for NQ and ES); ICT made into exact rules: unproven, which is what the test is for",
     suggested: { rebalance_days: 1, stop_pct: 0.01, target_pct: 0.02 }, intraday: INTRADAY_DEFAULTS,
   },
+  {
+    id: "ict_amd", name: "ICT Power of 3 (accumulation → manipulation → distribution)", style: "intraday",
+    summary: "Accumulation: the pre-market range. Manipulation: in the first hour price runs one side of it and closes back inside. Distribution: a shift through the swing high with a fair value gap in discount; buy back into the gap, target the other side of the range. Only longs when the day opens in the lower half of yesterday's range, only shorts in the upper half.",
+    buy: "opened in discount, swept the pre-market low by 10:30 and closed back above, then closed above the swing high: limit at the move's first FVG (in discount), stop under the sweep, target the pre-market high or yesterday's high (the nearer paying ≥ 2× the risk)",
+    sell: "the mirror: opened in premium, swept the pre-market high, broke the swing low, FVG in premium",
+    bestFor: "MNQ / MES (or QQQ / SPY): about one setup a month per index in 2023–26, so it trades rarely; ICT made into exact rules, unproven",
+    suggested: { rebalance_days: 1, stop_pct: 0.01, target_pct: 0.02 }, intraday: INTRADAY_DEFAULTS,
+  },
 ];
 
 const BY_ID = new Map(STRATEGIES.map((s) => [s.id, s]));
@@ -152,6 +161,21 @@ export const strategyInfo = (id: string): StrategyInfo | undefined => BY_ID.get(
 export const strategyName = (id: string) => strategyInfo(id)?.name ?? id;
 
 export const isIntraday = (id: string | undefined) => strategyInfo(id ?? "")?.style === "intraday";
+
+/** Intraday strategies with a limit-or-market choice of entry (ORB always enters at market). */
+export const hasEntryChoice = (id: string | undefined) => id === "ict_sweep_fvg" || id === "ict_amd";
+
+export const HTF_OPTIONS = [
+  { value: "off", label: "Off" },
+  { value: "1h", label: "With the 1-hour trend" },
+  { value: "4h", label: "With the 4-hour trend" },
+  { value: "1d", label: "With the daily trend" },
+];
+
+export const ENTRY_OPTIONS = [
+  { value: "limit", label: "Limit at the gap's middle (waits for a pullback)" },
+  { value: "market", label: "At market as soon as the setup completes" },
+];
 
 /** Select options grouped by style, for antd's <Select options>. */
 export const STRATEGY_OPTIONS = STYLES.map((style) => ({

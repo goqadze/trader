@@ -1,7 +1,8 @@
 """Tests for the 30-minute bars behind backtests that decide after the open: replaying 10:00 without look-ahead,
-the Alpaca source (paging, regular hours only), the Yahoo fallback, and the per-month cache. No network."""
+the Alpaca source (paging, regular hours plus the pre-market on request), futures rebuilt from their ETFs, the Yahoo
+fallback, and the per-month cache. No network."""
 
-from datetime import date, datetime
+from datetime import date, datetime, time
 
 import pandas as pd
 import pytest
@@ -111,7 +112,7 @@ class _Resp:
         return self._payload
 
 
-def test_alpaca_bars_are_paged_and_limited_to_regular_hours(monkeypatch):
+def test_alpaca_bars_are_paged_and_keep_the_pre_market_but_not_after_hours(monkeypatch):
     monkeypatch.setenv("ALPACA_API_KEY", "PK")
     monkeypatch.setenv("ALPACA_SECRET_KEY", "secret")
     bar = lambda t, c: {"t": t, "o": c, "h": c, "l": c, "c": c, "v": 100}  # noqa: E731
@@ -127,8 +128,8 @@ def test_alpaca_bars_are_paged_and_limited_to_regular_hours(monkeypatch):
 
     monkeypatch.setattr(intraday.httpx, "get", fake_get)
     df = intraday._download("AAPL", date(2025, 3, 3), date(2025, 3, 3))
-    assert list(df["Close"]) == [2.0, 3.0]  # 9:00 pre-market and 16:00 after-hours dropped
-    assert str(df.index[0]) == "2025-03-03 09:30:00-05:00"
+    assert list(df["Close"]) == [1.0, 2.0, 3.0]  # 9:00 pre-market kept (for the Power of 3), 16:00 after-hours dropped
+    assert str(df.index[1]) == "2025-03-03 09:30:00-05:00"
     assert seen[1]["page_token"] == "p2" and seen[0]["adjustment"] == "all" and seen[0]["timeframe"] == "30Min"
 
 
@@ -142,6 +143,30 @@ def test_five_minute_bars_are_cached_apart_from_thirty_minute_ones(monkeypatch):
     assert calls == ["5Min", "30Min"]
     with pytest.raises(ValueError):
         intraday.bars_between("AAPL", date(2025, 3, 3), date(2025, 3, 3), "1Min")
+    intraday._cache.clear()
+
+
+def test_regular_hours_unless_the_pre_market_is_asked_for(monkeypatch):
+    intraday._cache.clear()
+    day = date(2025, 3, 3)
+    pre = pd.DataFrame({c: [99.0] for c in intraday.COLUMNS}, index=[pd.Timestamp("2025-03-03 08:00", tz=MARKET_TZ)])
+    monkeypatch.setattr(intraday, "_download", lambda symbol, first, last, timeframe="30Min": pd.concat([pre, _half_hours(day)]))
+    assert intraday.bars_between("AAPL", day, day).index[0].time() == time(9, 30)
+    assert intraday.bars_between("AAPL", day, day, extended=True).index[0].time() == time(8, 0)
+    intraday._cache.clear()
+
+
+def test_a_future_is_rebuilt_from_its_etf(monkeypatch):
+    from app import futures
+
+    intraday._cache.clear()
+    asked = []
+    monkeypatch.setattr(intraday, "_download", lambda symbol, first, last, timeframe="30Min": asked.append(symbol) or _half_hours(date(2025, 3, 3)))
+    monkeypatch.setattr(futures, "closing_ratios", lambda f, first, last: pd.Series({date(2025, 2, 28): 40.1}))
+    df = intraday.bars_between("MNQ", date(2025, 3, 3), date(2025, 3, 3))
+    assert asked == ["QQQ"]
+    qqq = intraday.bars_between("QQQ", date(2025, 3, 3), date(2025, 3, 3))
+    assert df["Close"].iloc[0] == round(qqq["Close"].iloc[0] * 40.1 * 4) / 4  # on NQ's quarter-point tick
     intraday._cache.clear()
 
 

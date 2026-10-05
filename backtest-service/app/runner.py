@@ -127,7 +127,8 @@ def _five_minute_bars(symbol: str, start: date, end: date) -> pd.DataFrame:
 def _intraday_plans(cfg: RunConfig) -> list[dict]:
     """Each day's order plan from decision-service, which holds the intraday strategies' rules."""
     r = httpx.get(f"{DECISION_BASE}/intraday/plans", timeout=600, params={
-        "symbol": cfg.symbol, "start": str(cfg.start), "end": str(cfg.end), "strategy": cfg.strategy, "sides": cfg.sides})
+        "symbol": cfg.symbol, "start": str(cfg.start), "end": str(cfg.end), "strategy": cfg.strategy, "sides": cfg.sides,
+        "entry": cfg.entry, "htf": cfg.htf})
     if r.status_code != 200:
         raise ValueError(f"intraday plans for {cfg.symbol} unavailable: decision-service {r.status_code}: {r.text[:200]}")
     return r.json()

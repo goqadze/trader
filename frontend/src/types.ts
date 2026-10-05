@@ -27,7 +27,16 @@ export interface RunConfig {
   risk_pct?: number; // what one trade may lose, as a fraction of equity
   sides?: "long" | "both";
   slippage_pct?: number; // per market fill; omitted = 0.05% daily, 0.01% intraday
+  entry?: Entry; // the ICT strategies' way in; omitted = limit
+  htf?: Htf; // the ICT strategies' higher-timeframe trend filter; omitted = off
 }
+
+/** Only trade in the direction of this timeframe's trend (its last finished close above / below its 20-bar average). */
+export type Htf = "off" | "1h" | "4h" | "1d";
+
+/** The ICT strategies' way in: a limit at the gap's middle (fills only if the price comes back) or in at market right
+ *  after the setup (always fills, at a worse price). Same setup, stop and target. */
+export type Entry = "limit" | "market";
 
 export interface Trade {
   side: "BUY" | "SELL";
@@ -81,6 +90,14 @@ export interface Result {
   decision_errors?: number;
   no_news_decisions?: number;
   breaker_tripped_on?: string | null; // the day the drawdown breaker paused the run, if it did
+  // An index future (intraday strategies): how it was traded. Its prices were rebuilt from `etf`.
+  contract?: { root: string; name: string; etf: string; multiplier: number; tick: number; fee_per_side: number; margin_pct: number };
+  // Intraday strategies: days with a setup, and why some weren't traded (too_small, unfilled, target_first, beyond_stop)
+  setups?: number;
+  skips?: Record<string, number>;
+  // The setups too big for the account, with typical sizes: what one share or contract risked to the stop, what one
+  // trade may risk, what one ties up (a future's margin, a share's price), and how many failed on that instead
+  too_small?: { count: number; unit: "contract" | "share"; risk_per_unit: number; allowed_risk: number; margin_per_unit: number; by_margin: number };
   verdict?: Verdict; // the recommendation: a checklist and a grade (backtest-service/app/verdict.py)
 }
 

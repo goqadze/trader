@@ -1,7 +1,8 @@
 import { Alert, Button, Card, Checkbox, DatePicker, Form, Select, Space, Switch, Typography } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
-import { STRATEGIES, STYLES, strategyInfo, type StrategyId } from "../strategies";
+import { ENTRY_OPTIONS, HTF_OPTIONS, STRATEGIES, STYLES, hasEntryChoice, strategyInfo, type StrategyId } from "../strategies";
 import { SYMBOL_GROUPS, TWINS, symbolOptions } from "../symbols";
+import type { Entry, Htf } from "../types";
 import type { RunSettings, ScanConfig } from "./types";
 
 const MUTED = "#8b98b5";
@@ -11,6 +12,8 @@ interface FormValues {
   symbols: string[];
   strategies: StrategyId[];
   news: boolean;
+  entry: Entry; // the ICT strategies' way in
+  htf: Htf; // and their trend filter
   practice: [Dayjs, Dayjs];
   exam_on: boolean;
   exam: [Dayjs, Dayjs];
@@ -36,7 +39,7 @@ function estimate(v: Partial<FormValues>, combos: number): string | null {
 }
 
 /** Each strategy on its own suggested settings (like Compare's default), with the same cash, sizing and breaker. */
-function settingsFor(id: StrategyId, news: boolean): RunSettings {
+function settingsFor(id: StrategyId, news: boolean, entry: Entry, htf: Htf): RunSettings {
   const info = strategyInfo(id)!;
   const g = info.suggested;
   return {
@@ -51,6 +54,7 @@ function settingsFor(id: StrategyId, news: boolean): RunSettings {
     max_drawdown_pct: 0.2,
     news,
     ...info.intraday, // intraday strategies: their own risk, sides and slippage
+    ...(hasEntryChoice(id) && { entry, htf }),
   };
 }
 
@@ -58,7 +62,7 @@ function toConfig(v: FormValues): ScanConfig {
   const ids = v.strategies.filter((id) => v.news || id !== NEEDS_NEWS);
   return {
     symbols: v.symbols.map((s) => s.trim().toUpperCase()),
-    runs: ids.map((id) => settingsFor(id, v.news)),
+    runs: ids.map((id) => settingsFor(id, v.news, v.entry, v.htf)),
     practice: { start: fmt(v.practice[0]), end: fmt(v.practice[1]) },
     exam: v.exam_on ? { start: fmt(v.exam[0]), end: fmt(v.exam[1]) } : null,
     exam_all: v.exam_all,
@@ -104,6 +108,8 @@ export default function ScanForm({ onRun, starting }: Props) {
           symbols: ["QQQ", "SPY", "DIA", "IWM"],
           strategies: STRATEGIES.map((s) => s.id).filter((id) => id !== NEEDS_NEWS),
           news: false,
+          entry: "limit",
+          htf: "off",
           // Practice on three older years (2022's bear market included), sit the exam on the last three
           practice: [today.subtract(6, "year"), today.subtract(3, "year").subtract(1, "day")],
           exam_on: true,
@@ -202,6 +208,20 @@ export default function ScanForm({ onRun, starting }: Props) {
         >
           <Switch checkedChildren="with news" unCheckedChildren="technical only" />
         </Form.Item>
+        {v?.strategies?.some(hasEntryChoice) && (
+          <Form.Item
+            name="entry"
+            label="ICT entry"
+            extra="Limit waits for a pullback to the gap (often never comes); at market takes every setup at a worse price. Same setup, stop and target."
+          >
+            <Select options={ENTRY_OPTIONS} popupMatchSelectWidth={false} />
+          </Form.Item>
+        )}
+        {v?.strategies?.some(hasEntryChoice) && (
+          <Form.Item name="htf" label="ICT trend filter" extra="Only trade with that timeframe's trend: fewer setups, never more.">
+            <Select options={HTF_OPTIONS} />
+          </Form.Item>
+        )}
 
         <Form.Item name="practice" label="Practice period" rules={[{ required: true }]} tooltip="Where the strategies are tried. Include a bad year (2022) so you see how each handles a falling market.">
           <DatePicker.RangePicker style={{ width: "100%" }} />

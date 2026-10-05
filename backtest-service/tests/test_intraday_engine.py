@@ -130,3 +130,79 @@ def test_the_breaker_stops_new_trades():
     assert r["trades"][1]["price"] == 70.0 and r["trades"][1]["pnl"] == -750.0
     assert r["num_trades"] == 1 and r["breaker_tripped_on"] == "2025-03-04"
     assert "Paused" in [e for e in events if e["type"] == "step"][1]["reasoning"]
+
+
+# --- Index futures: whole contracts, points x multiplier, ticks and fees per contract ---------------------------
+
+def test_a_future_trades_whole_contracts_capped_by_the_margin():
+    # MNQ at 20,000: a 10-point stop risks $20 a contract, so 1% of $10,000 would be 5 contracts; the margin (10% of
+    # $40,000 a contract) allows only 2
+    bars = _flat(D1, price=20_000.0)
+    for j, row in enumerate([(20_005.0, 20_006.0, 19_999.0, 20_002.0), (20_002.0, 20_025.0, 20_001.0, 20_022.0)]):
+        bars.iloc[6 + j] = row
+    plan = _plan(entry=20_000.0, stop=19_990.0, target=20_020.0)
+    r, _ = _run(pd.concat([bars, _flat(D2, price=20_000.0)]), [plan], symbol="MNQ")
+    entry, exit_ = r["trades"]
+    assert entry["shares"] == 2 and exit_["reason"] == "target"
+    assert exit_["pnl"] == pytest.approx(20 * 2 * 2 - 4 * 0.62)  # 20 points x $2 x 2 contracts, $0.62 a contract a side
+    assert exit_["fee"] == pytest.approx(1.24) and r["contract"]["multiplier"] == 2 and r["contract"]["etf"] == "QQQ"
+
+
+def test_a_futures_market_order_slips_a_tick_not_a_percentage():
+    plan = _plan(side="short", order="market", entry=None, stop=20_010.0, target=None, target_r=10.0, placed="09:35", valid="09:40")
+    r, _ = _run(_two_days(_flat(D1, price=20_000.0)), [plan], symbol="MES")
+    entry, exit_ = r["trades"]
+    assert entry["price"] == 19_999.75 and exit_["price"] == 20_000.25  # one 0.25 tick worse each way
+    assert entry["shares"] == 1  # 10.25 points x $5 = $51.25 at risk; the margin on $100,000 a contract allows 1
+
+
+def test_futures_only_run_with_the_intraday_strategies():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="intraday strategies only"):
+        RunConfig(symbol="MNQ", start=D1, end=D2, strategy="sma_rsi")
+
+
+def test_a_market_entry_with_a_fixed_target_takes_profit_there():
+    # The ICT market entry: in at the next bar's open after the setup, the setup's own stop and target
+    bars = _with(D1, 6, [(100.3, 100.4, 100.2, 100.3), (100.3, 102.5, 100.2, 102.3)])
+    plan = _plan(order="market", entry=None, stop=99.0, target=102.0, valid="10:05")
+    r, _ = _run(_two_days(bars), [plan])
+    entry, exit_ = r["trades"]
+    assert entry["price"] == 100.3 and exit_["reason"] == "target" and exit_["price"] == 102.0
+    assert entry["shares"] == 76  # 1% of $10,000 over the 1.30 between the fill and the stop
+
+
+def test_the_entry_setting_reaches_decision_service(monkeypatch):
+    from app import runner
+
+    asked = {}
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return []
+
+    monkeypatch.setattr(runner.httpx, "get", lambda url, timeout, params: asked.update(params) or Resp())
+    runner._intraday_plans(RunConfig(symbol="MNQ", start=D1, end=D2, strategy="ict_amd", entry="market", htf="4h"))
+    assert asked["entry"] == "market" and asked["strategy"] == "ict_amd" and asked["htf"] == "4h"
+    assert RunConfig(symbol="QQQ", start=D1, end=D2, strategy="ict_sweep_fvg").entry == "limit"  # the default
+
+
+def test_skipped_setups_say_why_and_how_big_they_were():
+    flat = _two_days(_flat(D1, price=20_000.0))
+    # MNQ: a 100-point stop risks $200 a contract, more than the $100 (1%) allowed
+    wide = _plan(order="market", entry=None, stop=19_900.0, target=20_400.0, placed="09:35", valid="09:40")
+    r, events = _run(flat, [wide], symbol="MNQ")
+    assert r["num_trades"] == 0 and r["skips"] == {"too_small": 1}
+    small = r["too_small"]
+    assert (small["count"], small["unit"], small["by_margin"], small["allowed_risk"]) == (1, "contract", 0, 100.0)
+    assert small["risk_per_unit"] == pytest.approx(200.5)  # 100.25 points (a tick of slippage) x $2
+    logged = [d["reasoning"] for e in events if e["type"] == "step" for d in e["decisions"]][0]
+    assert logged.startswith("Not traded: too small for the account (one contract risks $200 to the stop, more than the $100 (1.0%)")
+    # NQ: $20 a point, so one contract at 20,000 ties up $40,000 of margin, more than the account
+    r, _ = _run(flat, [_plan(order="market", entry=None, stop=19_995.0, target=20_100.0, placed="09:35", valid="09:40")], symbol="NQ")
+    assert r["too_small"]["by_margin"] == 1 and r["too_small"]["margin_per_unit"] == pytest.approx(40_000.5, abs=1)
+    r, _ = _run(_two_days(_flat(D1, price=101.0)), [_plan()])
+    assert r["skips"] == {"unfilled": 1} and "too_small" not in r

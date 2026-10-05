@@ -44,6 +44,20 @@ export const SYMBOL_GROUPS: SymbolGroup[] = [
     ],
   },
   {
+    // Index futures for the intraday strategies (backtest-service/app/futures.py). This app's market data has no
+    // futures: their prices are rebuilt from the ETF on the same index, so MNQ and NQ trade QQQ's moves, at NQ's level.
+    label: "Index futures (priced from QQQ / SPY / DIA)",
+    short: "Futures",
+    symbols: [
+      { symbol: "MNQ", name: "Micro Nasdaq-100: $2 a point (from QQQ)" },
+      { symbol: "MES", name: "Micro S&P 500: $5 a point (from SPY)" },
+      { symbol: "MYM", name: "Micro Dow: $0.50 a point (from DIA)" },
+      { symbol: "NQ", name: "E-mini Nasdaq-100: $20 a point" },
+      { symbol: "ES", name: "E-mini S&P 500: $50 a point" },
+      { symbol: "YM", name: "E-mini Dow: $5 a point" },
+    ],
+  },
+  {
     label: "More index ETFs",
     short: "Dow & small caps",
     symbols: [
@@ -111,8 +125,10 @@ export const SYMBOL_GROUPS: SymbolGroup[] = [
  *  family repeats one result and makes one idea look like it worked on several symbols. The first of each is the
  *  one to keep (the most traded). */
 export const TWINS: { label: string; symbols: string[] }[] = [
-  { label: "the S&P 500", symbols: ["SPY", "VOO", "IVV"] },
-  { label: "the Nasdaq-100", symbols: ["QQQ", "QQQM"] },
+  // A future's prices are its ETF's, rebuilt (see the futures group): the same result again
+  { label: "the S&P 500", symbols: ["SPY", "VOO", "IVV", "MES", "ES"] },
+  { label: "the Nasdaq-100", symbols: ["QQQ", "QQQM", "MNQ", "NQ"] },
+  { label: "the Dow", symbols: ["DIA", "MYM", "YM"] },
   { label: "US large-cap growth", symbols: ["VUG", "IWF"] },
   { label: "US tech", symbols: ["XLK", "VGT"] },
   { label: "US mid caps", symbols: ["IJH", "VO"] },
@@ -135,3 +151,7 @@ export function symbolOptions<L>(render: (s: SymbolInfo) => L) {
 /** ETFs: on one of the ETF lists. Anything else (a company, or a typed ticker) may be a hindsight pick in a test of
  *  past years. */
 export const isListedEtf = (symbol: string) => SYMBOL_GROUPS.some((g) => g.label.includes("ETF") && g.symbols.some((s) => s.symbol === symbol));
+
+/** Index futures: they run with the intraday strategies only. */
+export const FUTURES = SYMBOL_GROUPS.find((g) => g.short === "Futures")!.symbols.map((s) => s.symbol);
+export const isFuture = (symbol: string | undefined) => FUTURES.includes((symbol ?? "").toUpperCase());

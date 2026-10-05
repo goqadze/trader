@@ -99,14 +99,38 @@ pick yesterday's winners in hindsight (survivorship bias), and the page warns wh
 
 ## Intraday strategies (backtest only)
 
-Two strategies trade within the day on 5-minute bars (Alpaca, years of history), one setup a day, every position
-closed by 15:55, long and short:
+Three strategies trade within the day on 5-minute bars (Alpaca, years of history), one setup a day at most, every
+position closed by 15:55, long and short:
 
 - **Opening range breakout (`orb`)**: the published 5-minute ORB (Zarattini & Aziz, 2023): trade the first
   candle's direction from 9:35, stop at its other end, target 10× the risk.
 - **ICT: sweep → shift → FVG (`ict_sweep_fvg`)**: 9:30-11:00 New York, price sweeps yesterday's or the opening
   range's low, the first close above the last swing high leaves a fair value gap in discount; a limit at the gap's
   middle, the stop under the sweep, the target the nearest liquidity paying ≥ 2× the risk. Shorts mirror it.
+
+- **ICT Power of 3 (`ict_amd`)**: accumulation = the pre-market range (4:00-9:30, Alpaca's extended hours);
+  manipulation = in the first hour price runs one side of it and closes back inside within 3 bars; distribution =
+  a close through the swing high with a fair value gap anywhere in that move, in its discount half. A limit at the
+  gap's middle, the stop beyond the sweep, the target the other side of the pre-market range or yesterday's extreme
+  (the nearer paying ≥ 2× the risk). Premium/discount picks the side: longs only when the day opens in the lower half
+  of yesterday's range, shorts only in the upper half.
+
+Both ICT strategies have an **entry** setting: `limit` (default) waits for the price to come back to the gap's middle
+until 11:00, which it often doesn't; `market` goes in at the next bar's open as soon as the setup completes, so every
+setup trades, at a worse price. Same setup, stop and target either way.
+
+They also have a **higher-timeframe trend filter** (`htf`: off, 1h, 4h, 1d): only longs while that timeframe trends up,
+only shorts while it trends down, where up = its last finished bar closed above the average of its last 20 closes
+(regular-hours bars built from the 5-minute ones). It only removes setups. A setup the account can't take (one
+contract or share risks more than `risk_pct` of equity, or a future's margin is more than the account) is skipped,
+and the Backtest page says so with the sizes.
+
+They also trade **index futures**: `MNQ` / `NQ`, `MES` / `ES`, `MYM` / `YM`. Alpaca has no futures, so their bars are
+rebuilt from the ETF on the same index (QQQ, SPY, DIA) times the previous day's future/ETF closing ratio from Yahoo,
+on the future's tick (decision-service `app/futures.py`). The engine trades them as contracts
+(backtest-service `app/futures.py`): risk = points to the stop × the multiplier, at most one contract per 10% of its
+value in margin, a tick of slippage per market fill and about IBKR's fee per contract ($0.62 a side for the micros,
+$2.25 for the minis). What the rebuild can't show: the overnight Globex session.
 
 decision-service `app/intraday_strategies.py` holds the rules and serves each day's order plan
 (`GET /intraday/plans`), built bar by bar from finished bars only (no look-ahead). backtest-service's
