@@ -1,4 +1,4 @@
-import { AppstoreOutlined, DownOutlined, ExportOutlined, FundOutlined, ReadOutlined } from "@ant-design/icons";
+import { AppstoreOutlined, ApartmentOutlined, DownOutlined, ExportOutlined, FundOutlined, ReadOutlined } from "@ant-design/icons";
 import { App as AntApp, Button, ConfigProvider, Dropdown, Layout, Menu, theme, type MenuProps } from "antd";
 import { BrowserRouter, Link, Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
 import { AccountMenu, UsersNavLabel } from "./auth/AccountMenu";
@@ -41,6 +41,7 @@ const GUIDES: NonNullable<MenuProps["items"]> = [
     children: [
       { key: "/guide", icon: <ReadOutlined />, label: <Link to="/guide">Trading Bot Lifecycle</Link> },
       { key: "/guide/strategies", icon: <FundOutlined />, label: <Link to="/guide/strategies">Trading Strategies</Link> },
+      { key: "/guide/architecture", icon: <ApartmentOutlined />, label: <Link to="/guide/architecture">Architecture & Stack</Link> },
     ],
   },
 ];
@@ -133,6 +134,7 @@ export default function App() {
                 <Route path="/trading/:id" element={<BotPage />} />
                 <Route path="/guide" element={<GuidePage guide="lifecycle" />} />
                 <Route path="/guide/strategies" element={<GuidePage guide="strategies" />} />
+                <Route path="/guide/architecture" element={<GuidePage guide="architecture" />} />
                 <Route path="/admin/users" element={<RequireAuth admin><UsersPage /></RequireAuth>} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Route>

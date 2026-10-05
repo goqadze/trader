@@ -1,0 +1,637 @@
+<!doctype html>
+<!-- Served by the dashboard at /guides/architecture.html and shown in-app at /guide/architecture.
+     data-theme="dark" pins the dark palette to match the dashboard (remove it to follow the OS theme). -->
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Architecture & Stack</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+  /* Same palette and type as the other guides (trading-bot-lifecycle.html) */
+  :root {
+    --bg: #eef2f8; --surface: #ffffff; --surface-2: #f5f7fb; --ink: #14203a; --muted: #56627c; --line: #d6ddea;
+    --accent: #2f6bff; --accent-soft: #e3ecff; --buy: #16875a; --buy-soft: #e0f4ea; --sell: #c63d3d; --sell-soft: #fbe6e5;
+    --warn: #a86c0a; --warn-soft: #fbf0d9; --code-bg: #eaf0fa; --violet: #7a4fd6; --violet-soft: #efe8fd;
+    --display: "IBM Plex Sans Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+    --body: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #0d1220; --surface: #161d2e; --surface-2: #1b2438; --ink: #e6ebf5; --muted: #8b98b5;
+      --line: #2a3550; --accent: #4f8cff; --accent-soft: #1d2a4a; --buy: #33c088; --buy-soft: #12301f;
+      --sell: #ef5b6b; --sell-soft: #3a1a20; --warn: #e0a441; --warn-soft: #33270f; --code-bg: #1f2940;
+      --violet: #a98bf0; --violet-soft: #251d3d;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0d1220; --surface: #161d2e; --surface-2: #1b2438; --ink: #e6ebf5; --muted: #8b98b5;
+    --line: #2a3550; --accent: #4f8cff; --accent-soft: #1d2a4a; --buy: #33c088; --buy-soft: #12301f;
+    --sell: #ef5b6b; --sell-soft: #3a1a20; --warn: #e0a441; --warn-soft: #33270f; --code-bg: #1f2940;
+    --violet: #a98bf0; --violet-soft: #251d3d;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.6 var(--body); padding-inline: 16px; padding-block: 28px 64px; }
+  .wrap { max-width: 1080px; margin: 0 auto; display: grid; gap: 48px; }
+  h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; line-height: 1.15; }
+  h1 { font-size: clamp(30px, 5vw, 44px); font-weight: 700; letter-spacing: -0.01em; }
+  h2 { font-size: 26px; font-weight: 600; }
+  h3 { font-size: 18px; font-weight: 600; }
+  p { margin: 0; }
+  code, .mono { font-family: var(--mono); font-size: 0.88em; }
+  code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  pre { margin: 0; background: var(--code-bg); border-radius: 8px; padding: 12px 14px; overflow-x: auto; font: 12.5px/1.55 var(--mono); }
+  pre code { background: none; padding: 0; }
+  .muted { color: var(--muted); }
+  .eyebrow { font: 600 12px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+  a { color: var(--accent); }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  header { display: grid; gap: 14px; }
+  header .lede { max-width: 70ch; color: var(--muted); font-size: 16.5px; }
+  nav.jump { display: flex; flex-wrap: wrap; gap: 8px; }
+  nav.jump a { font: 500 13px/1 var(--mono); text-decoration: none; color: var(--ink); border: 1px solid var(--line); background: var(--surface); padding: 8px 12px; border-radius: 999px; }
+  nav.jump a:hover { border-color: var(--accent); color: var(--accent); }
+
+  section { display: grid; gap: 18px; scroll-margin-top: 16px; }
+  .section-head { display: grid; gap: 6px; }
+  .section-head p { color: var(--muted); max-width: 72ch; }
+
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; display: grid; gap: 12px; align-content: start; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+  .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+  ul.plain { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+  ol.steps { margin: 0; padding-left: 22px; display: grid; gap: 7px; }
+  ol.steps li::marker { font: 600 13px var(--mono); color: var(--accent); }
+  .where { font: 12.5px/1.5 var(--mono); color: var(--muted); border-top: 1px dashed var(--line); padding-top: 10px; }
+  .note { font-size: 14px; border-radius: 8px; padding: 10px 12px; background: var(--warn-soft); border-left: 3px solid var(--warn); }
+  .note.safe { background: var(--buy-soft); border-left-color: var(--buy); }
+  .note.info { background: var(--accent-soft); border-left-color: var(--accent); }
+  .tag { display: inline-block; font: 600 11px/1 var(--mono); padding: 4px 7px; border-radius: 5px; letter-spacing: 0.04em; vertical-align: 2px; }
+  .tag.llm { background: var(--violet-soft); color: var(--violet); }
+  .tag.rule { background: var(--accent-soft); color: var(--accent); }
+  .tag.data { background: var(--buy-soft); color: var(--buy); }
+
+  /* ---------- tables ---------- */
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font: 600 12px/1.3 var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); background: var(--surface-2); }
+  tr:last-child td { border-bottom: none; }
+  td b { font-family: var(--display); font-size: 15px; }
+
+  /* ---------- the big picture ---------- */
+  .map { overflow-x: auto; }
+  .map-inner { min-width: 860px; display: grid; grid-template-columns: 1fr 34px 1.15fr 34px 1.25fr 34px 1.1fr; align-items: center; }
+  .col { display: grid; gap: 10px; }
+  .box { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: grid; gap: 2px; }
+  .box b { font-family: var(--display); font-size: 15.5px; }
+  .box .mono { color: var(--muted); font-size: 11.5px; }
+  .box.hub { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .box.ai { border-color: var(--violet); box-shadow: 0 0 0 3px var(--violet-soft); }
+  .box.store { background: var(--surface-2); border-style: dashed; }
+  .arr { display: grid; place-items: center; color: var(--muted); font: 18px var(--mono); }
+
+  /* ---------- the LangGraph pipeline ---------- */
+  .flow { overflow-x: auto; }
+  .flow-row { display: flex; align-items: stretch; min-width: 900px; }
+  .step { flex: 1; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: grid; gap: 6px; align-content: start; }
+  .step .n { font: 600 12px/1 var(--mono); color: var(--accent); }
+  .step b { font-family: var(--mono); font-size: 14px; }
+  .step p { font-size: 13.5px; color: var(--muted); }
+  .step.llm { border-color: var(--violet); }
+  .flow .arr { flex: 0 0 26px; }
+  .terminal { flex: 0 0 64px; display: grid; place-items: center; font: 600 12px var(--mono); color: var(--muted); border: 1px dashed var(--line); border-radius: 999px; }
+
+  dl.facts { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; }
+  dl.facts dt { font: 600 13px/1.5 var(--mono); color: var(--accent); }
+  dl.facts dd { margin: 0; }
+  @media (max-width: 640px) { dl.facts { grid-template-columns: 1fr; } dl.facts dd { margin-bottom: 6px; } }
+
+  footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <span class="eyebrow">Resources · Guide</span>
+  <h1>Architecture &amp; Stack</h1>
+  <p class="lede">How this app is put together: four services in Docker, a LangGraph pipeline that makes every
+    decision, LangChain for the two LLM calls, a news RAG on Postgres + pgvector, the data “tools” it reads from,
+    and the harnesses that test it. Plus the facts worth knowing before you change anything.</p>
+  <nav class="jump" aria-label="Sections">
+    <a href="#map">Big picture</a>
+    <a href="#services">Services</a>
+    <a href="#graph">LangGraph pipeline</a>
+    <a href="#langchain">LangGraph &amp; LangChain</a>
+    <a href="#rag">News RAG</a>
+    <a href="#tools">Tools &amp; data</a>
+    <a href="#backtest">Backtests</a>
+    <a href="#live">Live trading</a>
+    <a href="#observe">Observability</a>
+    <a href="#harness">Harnesses</a>
+    <a href="#facts">Facts &amp; gotchas</a>
+    <a href="#lessons">What we learned</a>
+  </nav>
+</header>
+
+<!-- ============================================================ -->
+<section id="map">
+  <div class="section-head">
+    <span class="eyebrow">01 · Big picture</span>
+    <h2>Who talks to whom</h2>
+    <p>The browser only talks to nginx. nginx checks the sign-in cookie, then forwards to the backtest or trading
+      service. Both of them ask decision-service for every BUY / SELL / HOLD, so a backtest and a live bot decide
+      with exactly the same code.</p>
+  </div>
+  <div class="map" role="img" aria-label="Browser to nginx to backtest and trading services, which call decision-service, which reads market data, news and OpenAI">
+    <div class="map-inner">
+      <div class="col">
+        <div class="box"><b>Browser</b><span class="mono">React 18 · antd 5 · Recharts</span></div>
+      </div>
+      <div class="arr">→</div>
+      <div class="col">
+        <div class="box hub"><b>frontend :8080</b><span class="mono">nginx: static app + proxy</span><span class="mono">auth_request → /auth/check</span></div>
+      </div>
+      <div class="arr">→</div>
+      <div class="col">
+        <div class="box"><b>backtest-service :8001</b><span class="mono">runs · scans · rotation · WebSocket</span></div>
+        <div class="box"><b>trading-service :8002</b><span class="mono">bots · scheduler · brokers · sign-in</span></div>
+        <div class="box store"><b>trading-db :5433</b><span class="mono">Postgres: bots, orders, equity, users</span></div>
+      </div>
+      <div class="arr">→</div>
+      <div class="col">
+        <div class="box ai"><b>decision-service :8000</b><span class="mono">FastAPI + LangGraph pipeline</span><span class="mono">strategies · news RAG · intraday plans</span></div>
+        <div class="box store"><b>news-db :5434</b><span class="mono">Postgres + pgvector: news, judgments</span></div>
+        <div class="box"><b>Outside</b><span class="mono">Yahoo · Alpaca data/news/broker · OpenAI · Polygon · Finnhub</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="note info">Side services: <b>Langfuse</b> :3000 (LLM traces), <b>GlitchTip</b> :8082 (errors),
+    <b>pgAdmin</b> :5050 (databases). Every port is bound to <code>127.0.0.1</code>: reachable from this machine only,
+    because the APIs spend OpenAI credits and can place orders.</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="services">
+  <div class="section-head">
+    <span class="eyebrow">02 · Services</span>
+    <h2>The four services and what each owns</h2>
+    <p>All Python services are FastAPI on uvicorn. Each one has a single job, so a bug in a backtest can't place an order.</p>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Service</th><th>Job</th><th>Main endpoints</th><th>Key files</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><b>decision-service</b><br><span class="muted mono">:8000 · Python</span></td>
+          <td>Decides. Prices → the strategy's indicators → news sentiment → BUY/SELL/HOLD with a confidence, a sized
+            position and an explanation. Also serves 5-minute bars and the intraday strategies' daily order plans.</td>
+          <td><code>POST /signal</code><br><code>GET /strategies</code><br><code>GET /bars/intraday</code><br><code>GET /intraday/plans</code></td>
+          <td class="mono">agent.py (LangGraph)<br>strategies.py · ta.py<br>news.py · news_store.py<br>intraday*.py · futures.py</td>
+        </tr>
+        <tr>
+          <td><b>backtest-service</b><br><span class="muted mono">:8001 · Python</span></td>
+          <td>Replays history. Walks day by day (or bar by bar), asks decision-service, simulates fills, fees, stops and
+            the breaker, streams progress over a WebSocket, and grades the result.</td>
+          <td><code>POST /runs</code> · <code>/runs/rotation</code><br><code>GET /runs/{id}</code><br><code>WS /ws/{id}</code><br><code>POST /scans</code></td>
+          <td class="mono">runner.py · scan.py<br>engines/simple.py<br>engines/intraday.py<br>engines/rotation.py · verdict.py</td>
+        </tr>
+        <tr>
+          <td><b>trading-service</b><br><span class="muted mono">:8002 · Python</span></td>
+          <td>Trades. A scheduler wakes every 30 s, runs each bot's decisions at its slots, places orders through a broker,
+            keeps the stop at the broker, records everything. Also owns sign-in and users.</td>
+          <td><code>/bots</code> (CRUD, pause, run, close)<br><code>/bots/rotation</code><br><code>/halt</code> · <code>/summary</code><br><code>/auth/*</code></td>
+          <td class="mono">scheduler.py · trader.py<br>rotation.py · market.py<br>brokers/ (paper, alpaca)<br>auth.py · models.py</td>
+        </tr>
+        <tr>
+          <td><b>frontend</b><br><span class="muted mono">:8080 · TypeScript</span></td>
+          <td>The dashboard. A Vite build of React + antd served by nginx, which also proxies the APIs and gates them
+            behind the session cookie.</td>
+          <td><code>/</code> Backtest · <code>/compare</code> · <code>/scan</code><br><code>/rotation</code> · <code>/trading</code><br><code>/guide/*</code></td>
+          <td class="mono">src/pages · src/scan<br>src/trading · src/compare<br>symbols.ts · strategies.ts<br>nginx.conf</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="graph">
+  <div class="section-head">
+    <span class="eyebrow">03 · The decision pipeline</span>
+    <h2>One <code>POST /signal</code>, five LangGraph nodes</h2>
+    <p>Every decision, from a backtest day or a live bot, runs the same compiled graph in
+      <code>decision-service/app/agent.py</code>. It's a straight line: each node reads the shared state and returns
+      only the keys it changes.</p>
+  </div>
+  <div class="flow">
+    <div class="flow-row">
+      <div class="terminal">START</div>
+      <div class="arr">→</div>
+      <div class="step"><span class="n">1 <span class="tag data">DATA</span></span><b>fetch_data</b>
+        <p>~420 days of daily bars from Yahoo up to <code>as_of</code>; a 10:00 replay rewinds the day to 30-minute bars.
+          The strategy's <code>analyze()</code> turns them into facts (SMA, RSI, ADX, swings...).</p></div>
+      <div class="arr">→</div>
+      <div class="step llm"><span class="n">2 <span class="tag llm">LLM</span></span><b>news_rag</b>
+        <p>Fetch news → embed → store in pgvector → retrieve the 8 most relevant + recent → the LLM labels it
+          bullish / bearish / neutral. Skipped when <code>news=false</code>.</p></div>
+      <div class="arr">→</div>
+      <div class="step"><span class="n">3 <span class="tag rule">RULE</span></span><b>decide</b>
+        <p>The strategy's <code>decide()</code> picks BUY / SELL / HOLD. News that agrees adds +0.15 confidence,
+          news that conflicts −0.15. <b>The LLM never decides the trade.</b></p></div>
+      <div class="arr">→</div>
+      <div class="step"><span class="n">4 <span class="tag rule">RULE</span></span><b>size_position</b>
+        <p>For a BUY: stop and target from the entry, shares from fixed-fractional risk (risk 2% of the
+          account to the stop).</p></div>
+      <div class="arr">→</div>
+      <div class="step llm"><span class="n">5 <span class="tag llm">LLM</span></span><b>explain</b>
+        <p>Two sentences for a human. Backtests send <code>explain=false</code> and get the rule text instead
+          (thousands of decisions, no token bill).</p></div>
+      <div class="arr">→</div>
+      <div class="terminal">END</div>
+    </div>
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <h3>The state that flows through</h3>
+      <pre><code>class State(TypedDict, total=False):
+    symbol, as_of, decided_at, strategy
+    account_balance, stop_pct, target_pct
+    use_news, llm_explanation     # switches
+    indicators                    # node 1
+    headlines, catalysts, sentiment  # node 2
+    action, confidence            # node 3
+    position                      # node 4
+    reasoning                     # node 5
+    steps: list[str]              # "show your work"</code></pre>
+      <p class="muted">The <code>steps</code> trail is what the activity log shows: every node appends one line.</p>
+    </div>
+    <div class="card">
+      <h3>Why a workflow, not an “agent”</h3>
+      <p>An autonomous agent lets the LLM choose which tool to call next, in a loop. Here the <b>code</b> fixes the
+        order and the <b>rules</b> decide; the LLM only reads headlines and writes prose. That makes decisions:</p>
+      <ul class="plain">
+        <li><b>reproducible</b>: same settings, same result (temperature 0, saved news judgments)</li>
+        <li><b>testable</b>: a rule is a pure function of the facts</li>
+        <li><b>cheap</b>: one small LLM call per symbol-day, none when technical only</li>
+        <li><b>safe</b>: a hallucination can tilt confidence by 0.15, never flip a rule</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="langchain">
+  <div class="section-head">
+    <span class="eyebrow">04 · LangGraph &amp; LangChain</span>
+    <h2>What each library does here (and what it doesn't)</h2>
+    <p>Both are used lightly on purpose. Pinned to the 0.3 generation (<code>langgraph&lt;0.3</code>,
+      <code>langchain&lt;0.4</code>) because Langfuse v2's callback needs the old <code>langchain.callbacks</code> layout.</p>
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <h3>LangGraph: the pipeline's skeleton</h3>
+      <pre><code>from langgraph.graph import StateGraph, START, END
+
+g = StateGraph(State)
+g.add_node("fetch_data", fetch_data)
+...                                   # 5 nodes
+g.add_edge(START, "fetch_data")
+g.add_edge("fetch_data", "news_rag")  # a straight line
+...
+g.add_edge("explain", END)
+agent = g.compile()
+
+agent.invoke({"symbol": "AAPL", "as_of": day, ...})</code></pre>
+      <ul class="plain">
+        <li>A <b>node</b> is a plain function <code>state → partial update</code>; LangGraph merges the updates.</li>
+        <li>A node's name can't also be a state key: that's why the switch is <code>use_news</code>, not <code>news</code>,
+          and <code>llm_explanation</code>, not <code>explain</code>.</li>
+        <li>No branches, loops or checkpoints are used; adding a conditional edge (e.g. skip news for crypto) is the
+          natural next step if the graph grows.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>LangChain: the two LLM calls</h3>
+      <pre><code>from langchain_openai import ChatOpenAI
+
+class Sentiment(BaseModel):
+    label: str        # bullish | bearish | neutral
+    rationale: str
+
+llm = ChatOpenAI(model="gpt-4.1-nano", temperature=0,
+                 max_retries=6).with_structured_output(Sentiment)
+out = llm.invoke(prompt, config=trace_config())
+out.label  # a typed object, not free text</code></pre>
+      <ul class="plain">
+        <li><code>with_structured_output</code> makes the model answer in the Pydantic schema, so no parsing of prose.</li>
+        <li><code>temperature=0</code>: the same headlines classify the same way every run.</li>
+        <li><code>max_retries</code>: 6 for the sentiment (it feeds the decision), 1 for the explanation (only prose;
+          falls back to the rule text). The model comes from <code>LLM_MODEL</code>.</li>
+        <li><code>config={"callbacks": [langfuse]}</code> sends each call to Langfuse when its keys are set.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="note info"><b>Not LangChain on purpose:</b> embeddings call the OpenAI SDK directly
+    (<code>text-embedding-3-small</code>), and the vector store is ~130 lines of psycopg + pgvector instead of
+    LangChain's PGVector wrapper, so the search can filter by symbol and date <i>before</i> ranking (see below).</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="rag">
+  <div class="section-head">
+    <span class="eyebrow">05 · News RAG</span>
+    <h2>Retrieval-augmented sentiment, without look-ahead</h2>
+    <p>RAG = fetch relevant documents first, then let the LLM answer from them. Here the documents are news articles
+      and the answer is one word: bullish, bearish or neutral.</p>
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <h3>The steps (news.py)</h3>
+      <ol class="steps">
+        <li><b>Ingest</b>: pull 7 days of news from every source with a key (Alpaca, paged; Polygon; Finnhub), keep only
+          articles published before the decision moment (15:30 New York by default, or the bot's real time).</li>
+        <li><b>Embed</b>: only articles never seen before, into 1536-number vectors; re-running a window costs nothing.</li>
+        <li><b>Store</b>: one row per (article, symbol) in <code>news</code> on news-db.</li>
+        <li><b>Retrieve</b>: every article for the symbol in the window, with exact cosine similarity to
+          “<i>SYMBOL stock outlook, earnings, risks</i>”.</li>
+        <li><b>Re-rank</b>: score = similarity × 0.5^(age / half-life). Half-life 36 h, but 168 h for earnings,
+          guidance and M&amp;A. Keep the top 8, each tagged with its age.</li>
+        <li><b>Judge</b>: the LLM labels the 8; a regex flags fresh (&lt; 48 h) catalysts for the event strategies.</li>
+      </ol>
+    </div>
+    <div class="card">
+      <h3>Design choices worth knowing</h3>
+      <ul class="plain">
+        <li><b>No vector index (HNSW/IVFFlat).</b> The B-tree on <code>(symbol, published_at)</code> narrows to a few
+          hundred rows first, then distance is exact. An approximate index filters <i>after</i> picking neighbours and can
+          silently return too few.</li>
+        <li><b>Judged once, reused forever.</b> Each (symbol, cutoff) judgment is saved in <code>news_judgments</code>
+          (first write wins), so every backtest, comparison and restart sees the same news. Bump
+          <code>NEWS_JUDGMENT_VERSION</code> after changing how news is judged.</li>
+        <li><b>A live bot's judgment is saved under its slot</b> (10:00 or 15:30), so a later backtest of that day uses
+          the exact news the bot traded on.</li>
+        <li><b>Failures degrade, never break.</b> A source down → the others still count; the LLM rate-limited →
+          “decided without news”; nothing incomplete is cached.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="tools">
+  <div class="section-head">
+    <span class="eyebrow">06 · Tools &amp; data</span>
+    <h2>Where every number comes from</h2>
+    <p>In LLM jargon a “tool” is a function the model may call. In this app the model calls none; the code calls these
+      data tools (mostly <code>decision-service/app/tools.py</code>, <code>intraday.py</code>, <code>news.py</code>).</p>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Tool / source</th><th>Used for</th><th>Worth knowing</th></tr></thead>
+      <tbody>
+        <tr><td><b>Yahoo (yfinance)</b></td><td>Daily bars for decisions and backtests; rotation universes; futures/ETF
+          closing ratios; crypto daily bars; quotes for the built-in paper broker</td><td>Free, no key. Cached per symbol.
+          Share classes need a dash (<code>BRK-B</code>); the app writes a dot like Alpaca and converts.</td></tr>
+        <tr><td><b>Alpaca market data</b></td><td>30-minute bars (the 10:00 / 15:30 replays) and 5-minute bars (intraday
+          strategies), incl. pre-market from 4:00</td><td>Free plan, SIP feed for data older than 15 min. Cached per
+          (symbol, timeframe, month) in memory. Keys stay in decision-service.</td></tr>
+        <tr><td><b>Alpaca news</b> · Polygon · Finnhub</td><td>The news RAG</td><td>A key starting with <code>#</code>
+          counts as unset. Article ids are source-prefixed (<code>alpaca-4213</code>).</td></tr>
+        <tr><td><b>Alpaca trading API</b></td><td>Paper and live brokers: orders, positions, a GTC stop held at the
+          broker</td><td>Separate paper/live keys in trading-service. Crypto there is <code>BTC/USD</code>, no plain stop
+          orders: bots don't trade it yet.</td></tr>
+        <tr><td><b>OpenAI</b></td><td><code>gpt-4.1-nano</code> for sentiment + explanations;
+          <code>text-embedding-3-small</code> for news vectors</td><td>The project's tokens-per-minute cap caused 429s in
+          comparisons: retries with backoff, and backtests skip explanations.</td></tr>
+        <tr><td><b>exchange_calendars</b></td><td>NYSE trading days, holidays, early closes</td><td>Slots on half days move
+          to 12:30.</td></tr>
+        <tr><td><b>ta.py</b> (own code)</td><td>Wilder RSI / ADX / ATR, MACD, Bollinger, swings, candles</td><td>No TA-Lib
+          dependency; the guide charts are drawn from this same code (<code>make guide-charts</code>).</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="grid3">
+    <div class="card"><h3>Futures (rebuilt)</h3><p>No futures data here: NQ/MNQ, ES/MES, YM/MYM bars are QQQ / SPY /
+      DIA bars × the previous day's Yahoo future/ETF close ratio, on the contract's tick. No overnight session.</p></div>
+    <div class="card"><h3>Crypto (daily)</h3><p>Written like Yahoo (<code>BTC-USD</code>). Fractions of a coin,
+      0.25% fee per fill, decided on the daily close (00:00 UTC), ratios annualized over 365 days. Backtests only.</p></div>
+    <div class="card"><h3>Symbols</h3><p><code>frontend/src/symbols.ts</code> holds the suggested groups (top ETFs and
+      companies as of Oct 2026, sectors, futures, gold/silver, crypto) and the twin-ETF families.</p></div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="backtest">
+  <div class="section-head">
+    <span class="eyebrow">07 · Backtests</span>
+    <h2>Three engines, one grading</h2>
+    <p>The runner picks the engine from the strategy, the result goes through the same metrics and the same
+      recommendation checklist (<code>verdict.py</code>).</p>
+  </div>
+  <div class="grid3">
+    <div class="card">
+      <h3>Daily (simple.py)</h3>
+      <ul class="plain">
+        <li>Every <code>rebalance_days</code>: ask decision-service at the bot's slot, 15:30 and/or 10:00, replayed from
+          30-minute bars: <b>backtest = bot</b>.</li>
+        <li>Stops/targets checked on each stretch of the day; a gap fills at the open; both touched = the stop.</li>
+        <li>Slippage + fee on every fill, whole shares (coins in fractions), 20% drawdown breaker.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Intraday (intraday.py)</h3>
+      <ul class="plain">
+        <li>ORB, ICT sweep → FVG, ICT Power of 3 on 5-minute bars, one setup a day, flat by 15:55.</li>
+        <li>decision-service builds each day's plan bar by bar from finished bars only (no look-ahead).</li>
+        <li>Limit or market entries, risk-based sizing; futures as contracts with margin and per-contract fees.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Rotation (rotation.py)</h3>
+      <ul class="plain">
+        <li>Month-end momentum: hold the top N of a universe by 12-1 return (optionally only what rose).</li>
+        <li>Benchmark = the universe bought in equal parts on day one.</li>
+        <li>Runs straight on Yahoo closes; no decision-service calls.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="grid2">
+    <div class="card"><h3>Scans</h3><p>Symbols × strategies on a <b>practice</b> window; only the ones graded “Worth paper
+      trading” sit an unseen <b>exam</b> window. 3 runs in parallel inside the service's 4 slots, each keeping only its
+      last step in memory. The Scan page pools trades across symbols and counts twin ETFs once.</p></div>
+    <div class="card"><h3>Live progress</h3><p><code>POST /runs</code> returns an id; the browser opens
+      <code>/ws/{id}</code> and receives start / step / trade / done events as the engine emits them. A finished run's
+      socket replays its events and closes.</p></div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="live">
+  <div class="section-head">
+    <span class="eyebrow">08 · Live trading</span>
+    <h2>The scheduler and the brokers</h2>
+    <p>The full story is in the <a href="/guide" target="_top">Trading Bot Lifecycle</a> guide;
+      the architecture in short:</p>
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <h3>Every 30 seconds, per bot (scheduler.py)</h3>
+      <ol class="steps">
+        <li>Resolve orders still pending at the broker; keep the stop resting at the broker (Alpaca).</li>
+        <li>Market hours: check the real account matches the bot's records.</li>
+        <li>Every 5 min: refresh the price, record equity, enforce stop / target / drawdown breaker.</li>
+        <li>At its slot (30 min after the open and/or before the close): ask decision-service and trade.</li>
+      </ol>
+      <p class="muted">Restart-safe: “which slots are done” comes from the database, never from memory.</p>
+    </div>
+    <div class="card">
+      <h3>Brokers and safety</h3>
+      <ul class="plain">
+        <li><b>paper</b> (built-in, Yahoo quotes) · <b>alpaca-paper</b> · <b>alpaca-live</b>, behind one
+          <code>Broker</code> interface; live needs <code>confirm_live</code>.</li>
+        <li>Only one bot per symbol on a shared Alpaca account; rotation bots are paper-only.</li>
+        <li>Sign-in: Argon2id passwords, a JWT in an HttpOnly cookie, admin approval for new users; nginx asks
+          <code>/auth/check</code> before every API call.</li>
+        <li>Everything lands in trading-db: bots, decisions, orders, holdings, equity snapshots, an audit log.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="observe">
+  <div class="section-head">
+    <span class="eyebrow">09 · Observability &amp; admin</span>
+    <h2>Seeing inside, all self-hosted and free</h2>
+  </div>
+  <div class="grid3">
+    <div class="card"><h3>Langfuse :3000</h3><p>Every LangChain call with its exact prompt, response, latency and token
+      cost, via a callback handler. Off unless <code>LANGFUSE_PUBLIC_KEY</code>/<code>SECRET_KEY</code> are set; a Langfuse
+      outage never breaks a decision.</p></div>
+    <div class="card"><h3>GlitchTip :8082</h3><p>Sentry-compatible error tracking (<code>sentry-sdk</code> in each
+      service). Tests run with <code>SENTRY_DSN=</code> so test failures don't pollute it.</p></div>
+    <div class="card"><h3>pgAdmin :5050 · API docs</h3><p>Browse trading-db and news-db (servers preloaded). Each
+      service's interactive OpenAPI docs live at <code>/docs</code> (8000, 8001, 8002). All in the Resources menu for
+      admins.</p></div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="harness">
+  <div class="section-head">
+    <span class="eyebrow">10 · Harnesses</span>
+    <h2>The code around the code</h2>
+    <p>“Harness” means the scaffolding that runs something under control: the LLM inside the decision pipeline, the
+      services inside tests, and the coding agent that built them.</p>
+  </div>
+  <div class="grid3">
+    <div class="card">
+      <h3>The LLM harness</h3>
+      <p>Everything around the two model calls: a fixed LangGraph order, a typed output schema, temperature 0, retries
+        with backoff, a rule-text fallback, the judgment cache, a news cutoff that blocks look-ahead, and Langfuse
+        tracing. The model is a small replaceable part; the harness makes it dependable.</p>
+    </div>
+    <div class="card">
+      <h3>The test harness</h3>
+      <ul class="plain">
+        <li>pytest per service, run in a throwaway container with the source mounted: <code>make test</code>.</li>
+        <li>Real Postgres, separate databases (<code>news_test</code>, <code>trading_test</code>): real data is never touched.</li>
+        <li>Fakes at the edges: <code>FakeJudgments</code> (no fake “bullish” ever reaches news-db),
+          <code>FakeBroker</code> (fills, stops, misbehaviour on demand), scripted <code>decide()</code> functions for
+          the engines, monkeypatched downloads.</li>
+        <li>~480 tests: decision 193, backtest 118, trading 168; frontend type-checked with <code>tsc</code>.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>The build harness</h3>
+      <p>Built with Claude Code, a coding agent harness: a model plus tools to read and edit files, run shell
+        commands and tests, drive a browser, and keep notes in a memory folder between sessions. Typical loop: edit →
+        the backend hot-reloads → run the service's tests → call the API or run a scan to check real behaviour →
+        rebuild the frontend.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="facts">
+  <div class="section-head">
+    <span class="eyebrow">11 · Facts &amp; gotchas</span>
+    <h2>Worth knowing before you change anything</h2>
+  </div>
+  <div class="card">
+    <dl class="facts">
+      <dt>Hot reload</dt><dd>Each backend's <code>app/</code> folder is mounted and uvicorn runs with <code>--reload</code>.
+        Saving a file there restarts that service: <b>in-memory runs and scans are lost</b>, so don't edit
+        backtest-service while a long scan runs.</dd>
+      <dt>Frontend</dt><dd>A production nginx build, no hot reload. After changes: <code>docker compose build frontend</code>
+        then <code>docker compose up -d --no-deps --force-recreate frontend</code>. Type-check with
+        <code>npx tsc -p tsconfig.json --noEmit --incremental false</code>. <code>vite.config.js</code> shadows
+        <code>vite.config.ts</code> in dev: edit both.</dd>
+      <dt>Secrets</dt><dd><code>decision-service/.env</code> (OpenAI, Alpaca data/news, news keys) and
+        <code>trading-service/.env</code> (Alpaca broker keys, <code>JWT_SECRET</code>). Read only when a container is
+        <i>created</i>: recreate it after changing keys.</dd>
+      <dt>Databases</dt><dd>trading-db holds real history: <b>never TRUNCATE it</b>. <code>make backup-trading-db</code>
+        snapshots it (last 30 days kept). New columns are added at startup by <code>db._add_missing_columns()</code>.</dd>
+      <dt>Reproducible</dt><dd>Same settings → same result: saved news judgments, temperature 0, the 15:30 replay. Change
+        how news is judged → bump <code>NEWS_JUDGMENT_VERSION</code>.</dd>
+      <dt>Time</dt><dd>Market logic runs in New York time (<code>zoneinfo</code>, tzdata pinned); this laptop is UTC+4.
+        A year of timestamps mixes −04:00 and −05:00: parse with <code>utc=True</code>.</dd>
+      <dt>Symbols</dt><dd>App/Alpaca <code>BRK.B</code> ↔ Yahoo <code>BRK-B</code>; app/Yahoo <code>BTC-USD</code> ↔
+        Alpaca <code>BTC/USD</code>; <code>ES</code> in a backtest is the S&amp;P future, on Alpaca it's a utility's stock;
+        <code>GOLD</code> is a company, gold is <code>GLD</code>.</dd>
+      <dt>Speed</dt><dd>Technical-only decisions take ~10 ms (≈3.5 s per backtest-year); with news a decision takes
+        seconds (fetch + embed + LLM), so screen with news off and re-check the finalists with news on.</dd>
+      <dt>Git</dt><dd>Never <code>git stash</code> in the main checkout: the hot-reloading containers would run the stashed
+        state. No remote is configured.</dd>
+      <dt>Ports</dt><dd>8080 app · 8000/8001/8002 APIs · 5433 trading-db · 5434 news-db · 3000 Langfuse · 8082 GlitchTip ·
+        5050 pgAdmin. All localhost-only.</dd>
+    </dl>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="lessons">
+  <div class="section-head">
+    <span class="eyebrow">12 · What the tests taught us</span>
+    <h2>Findings from this app's own backtests</h2>
+    <p>Not advice, just what the tools measured (Oct 2020 – Sep 2026 unless noted). They're the reason the app judges
+      results with practice/exam windows and checklists instead of headline returns.</p>
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <ul class="plain">
+        <li><b>Holding is hard to beat.</b> Over 6 years none of the daily strategies beat buy &amp; hold on stocks,
+          ETFs or gold (only on a bond fund that fell 42%, by losing less).</li>
+        <li><b>Winners don't repeat.</b> Of 414 combinations, last month's top fifth did no better next month than the
+          bottom fifth. None averaged even 5% a month.</li>
+        <li><b>Hindsight flatters.</b> Rotating today's top 30 symbols made +1013%; the same rule on 2020's top 20 made
+          +218% with a 46% drop.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <ul class="plain">
+        <li><b>More history humbles.</b> Sector rotation looked great in 2023–26 (+99%) but over 2000–2020 made +267%
+          vs +342% for holding the sectors: smaller crash losses, missed recoveries.</li>
+        <li><b>Costs decide intraday.</b> ORB on TSLA: +321% at 0.01% slippage, +152% at 0.03%; ICT setups are rare
+          and mostly unfilled at the gap's middle.</li>
+        <li><b>Realistic numbers:</b> roughly 6–10% a year for stock strategies over the long run, with losing years.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<footer>Generated from the codebase on 2026-10-05. The source of truth is the code and <code>README.md</code>; this page
+  summarises them. Lives at <code>frontend/public/guides/architecture.html</code>.</footer>
+
+</div>
+</body>
+</html>

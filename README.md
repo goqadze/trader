@@ -308,6 +308,10 @@ Alpaca / Polygon / Finnhub optional for news RAG). Without news keys the agent u
 
 ## Architecture
 
+The dashboard's **Resources → Architecture & Stack** guide (`frontend/public/guides/architecture.html`) walks
+through all of this in more depth: the LangGraph pipeline, the LangChain calls, the news RAG, the data sources, the
+test harnesses and the gotchas worth knowing. Update it when the architecture changes.
+
 ```
 Browser ──► frontend :8080 (React + antd, nginx)
                 │  every API / WebSocket call: signed in?  ──► trading-service GET /auth/check (auth_request)

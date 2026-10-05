@@ -6,6 +6,7 @@ import { useLocation } from "react-router-dom";
 export const GUIDES = {
   lifecycle: { url: "/guides/trading-bot-lifecycle.html", title: "Trading Bot Lifecycle" },
   strategies: { url: "/guides/trading-strategies.html", title: "Trading Strategies" },
+  architecture: { url: "/guides/architecture.html", title: "Architecture & Stack" },
 } as const;
 
 /** In-app view of one guide. A #hash in the app URL (e.g. /guide/strategies#breakout) jumps to that section. */
