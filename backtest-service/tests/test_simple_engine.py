@@ -30,7 +30,7 @@ def _run(prices, decide, bars=None, slots=None, **overrides):
         position_pct=1.0, fee_pct=0.0, slippage_pct=0.0,
     )
     cfg_args.update(overrides)
-    cfg = RunConfig(**cfg_args)
+    cfg = RunConfig(**{k: v for k, v in cfg_args.items() if v is not None})
     events = []
 
     async def emit(ev):
@@ -465,3 +465,34 @@ def test_the_drawdown_breaker_stops_decisions_like_a_paused_bot():
 def test_the_breaker_can_be_turned_off():
     res, _ = _run(_prices([100, 90, 75, 70]), _const(BUY), max_drawdown_pct=0)
     assert res["breaker_tripped_on"] is None
+
+
+# --- crypto ------------------------------------------------------------------------------------------------------
+
+def test_crypto_is_bought_in_fractions_of_a_coin():
+    # $10,000 can't buy one bitcoin at $100,000: a stock-style whole-share rule would never trade
+    res, _ = _run(_prices([100_000, 110_000]), _const(BUY), symbol="BTC-USD", fee_pct=0.0)
+    assert res["trades"][0]["shares"] == 0.1
+    assert res["final_equity"] == 11_000.0
+    assert res["crypto"] == {"fee_pct": 0.0}
+    whole, _ = _run(_prices([100_000, 110_000]), _const(BUY), symbol="TEST")
+    assert whole["num_trades"] == 0 and "crypto" not in whole
+
+
+def test_crypto_pays_alpacas_fee_unless_the_run_sets_one():
+    res, _ = _run(_prices([100, 100]), _const(BUY), symbol="ETH-USD", fee_pct=None)  # None: as if not sent
+    assert res["crypto"]["fee_pct"] == 0.0025
+    assert res["trades"][0]["fee"] == round(10_000 / 1.0025 * 0.0025, 2)
+
+
+def test_crypto_stops_keep_their_decimals():
+    cfg = RunConfig(symbol="DOGE-USD", start=date(2025, 1, 1), end=date(2025, 2, 1), stop_pct=0.04, target_pct=0.08)
+    assert _exit_levels(cfg, {}, 0.2) == (0.192, 0.216)  # to the cent they'd be 0.19 / 0.22: a 5% stop, not 4%
+
+
+def test_prices_with_weekends_annualize_over_365_days():
+    week = [100, 101, 99, 102, 103]
+    weekdays, _ = _run(_prices(week), _const(BUY))  # Mon 6 Jan .. Fri 10 Jan: trading days
+    every_day = pd.Series([float(v) for v in week], index=[date(2025, 1, 9) + timedelta(days=i) for i in range(5)])  # Thu..Mon
+    crypto, _ = _run(every_day, _const(BUY), symbol="BTC-USD", fee_pct=0.0)
+    assert abs(crypto["buy_hold_volatility_pct"] - weekdays["buy_hold_volatility_pct"] * math.sqrt(365 / 252)) < 0.02  # both rounded

@@ -11,7 +11,7 @@ import yfinance as yf
 
 from .decision_client import BASE as DECISION_BASE, get_signal
 from .engines import IntradayEngine, RotationEngine, SimplePortfolioEngine
-from .models import INTRADAY_STRATEGIES, RotationConfig, RunConfig
+from .models import INTRADAY_STRATEGIES, RotationConfig, RunConfig, is_crypto
 
 
 class Run:
@@ -232,7 +232,8 @@ async def _execute(run: Run) -> None:
             # Each decision moment as the bot sees it (10:00 / 15:30). Without them a close decision falls back to the
             # finished day; a 10:00 decision can't be replayed at all
             try:
-                slots = await _load_prices(cfg.symbol, cfg.start, cfg.end, _fetch_slots)
+                # Crypto trades around the clock: no 10:00 or 15:30 moments, it decides on the daily close
+                slots = pd.DataFrame() if is_crypto(cfg.symbol) else await _load_prices(cfg.symbol, cfg.start, cfg.end, _fetch_slots)
             except ValueError:
                 if cfg.decide_at != "close":
                     raise

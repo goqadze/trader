@@ -1,7 +1,7 @@
 import { Alert, Button, Card, Checkbox, DatePicker, Form, Select, Space, Switch, Typography } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
-import { ENTRY_OPTIONS, HTF_OPTIONS, STRATEGIES, STYLES, hasEntryChoice, strategyInfo, type StrategyId } from "../strategies";
-import { SYMBOL_GROUPS, TWINS, symbolOptions } from "../symbols";
+import { ENTRY_OPTIONS, HTF_OPTIONS, STRATEGIES, STYLES, hasEntryChoice, isIntraday, strategyInfo, type StrategyId } from "../strategies";
+import { SYMBOL_GROUPS, TWINS, symbolClash, symbolOptions } from "../symbols";
 import type { Entry, Htf } from "../types";
 import type { RunSettings, ScanConfig } from "./types";
 
@@ -132,9 +132,21 @@ export default function ScanForm({ onRun, starting }: Props) {
           <Form.Item
             name="symbols"
             noStyle
+            dependencies={["strategies"]}
             rules={[
               { required: true, type: "array", min: 1, message: "Pick at least one symbol" },
               { type: "array", max: MAX_SYMBOLS, message: `At most ${MAX_SYMBOLS} symbols in one scan` },
+              // Futures need the intraday strategies and crypto the daily ones: scan them separately
+              ({ getFieldValue }) => ({
+                validator: (_, symbols: string[] = []) => {
+                  const ids: StrategyId[] = getFieldValue("strategies") ?? [];
+                  for (const sym of symbols) {
+                    const clash = ids.map((id) => symbolClash(sym, isIntraday(id))).find(Boolean);
+                    if (clash) return Promise.reject(new Error(`${sym}: ${clash}. Untick those strategies or scan it separately.`));
+                  }
+                  return Promise.resolve();
+                },
+              }),
             ]}
             normalize={(vals: string[]) => [...new Set(vals.map((s) => s.trim().toUpperCase()).filter(Boolean))]}
           >

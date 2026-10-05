@@ -1,13 +1,15 @@
 import { Button, Form, Select, Space } from "antd";
-import { SYMBOL_GROUPS, symbolOptions } from "../symbols";
+import { ROTATION_GROUPS, SYMBOL_GROUPS, isCrypto, symbolOptions, type SymbolGroup } from "../symbols";
 
 /** The 11 S&P 500 sector ETFs: a rotation's default universe (no hindsight in picking them, unlike today's top companies). */
 export const SECTORS = SYMBOL_GROUPS.find((g) => g.short === "Sector ETFs")!.symbols.map((s) => s.symbol);
-const OPTIONS = symbolOptions((s) => `${s.symbol} · ${s.name}`);
 
-/** A rotation's universe: pick or type tickers, or add a whole suggested group. Use inside a Form. */
-export default function UniverseField({ name, label = "Universe" }: { name: string; label?: string }) {
+/** A rotation's universe: pick or type tickers, or add a whole suggested group. Use inside a Form. `noCrypto` for a
+ *  live rotation bot, which can't trade crypto yet (a rotation backtest can). */
+export default function UniverseField({ name, label = "Universe", noCrypto = false }: { name: string; label?: string; noCrypto?: boolean }) {
   const form = Form.useFormInstance();
+  const groups: SymbolGroup[] = noCrypto ? ROTATION_GROUPS.filter((g) => g.short !== "Crypto") : ROTATION_GROUPS;
+  const options = symbolOptions((s) => `${s.symbol} · ${s.name}`, groups);
   const add = (more: string[]) => form.setFieldValue(name, [...new Set([...(form.getFieldValue(name) ?? []), ...more])]);
   return (
     <Form.Item
@@ -15,7 +17,7 @@ export default function UniverseField({ name, label = "Universe" }: { name: stri
       required
       extra={
         <Space size={0} wrap>
-          {SYMBOL_GROUPS.map((g) => (
+          {groups.map((g) => (
             <Button key={g.label} type="link" size="small" style={{ paddingInline: 4 }} onClick={() => add(g.symbols.map((s) => s.symbol))}>
               + {g.short}
             </Button>
@@ -29,10 +31,18 @@ export default function UniverseField({ name, label = "Universe" }: { name: stri
       <Form.Item
         name={name}
         noStyle
-        rules={[{ required: true, type: "array", min: 2, max: 60, message: "Pick 2 to 60 symbols" }]}
+        rules={[
+          { required: true, type: "array", min: 2, max: 60, message: "Pick 2 to 60 symbols" },
+          {
+            validator: (_, vals: string[] = []) => {
+              const coins = noCrypto ? vals.filter(isCrypto) : [];
+              return coins.length ? Promise.reject(new Error(`Bots can't trade crypto yet: ${coins.join(", ")}`)) : Promise.resolve();
+            },
+          },
+        ]}
         normalize={(vals: string[]) => [...new Set(vals.map((s) => s.trim().toUpperCase()).filter(Boolean))]}
       >
-        <Select mode="tags" options={OPTIONS} optionLabelProp="value" tokenSeparators={[",", " "]} placeholder="Pick or type tickers" />
+        <Select mode="tags" options={options} optionLabelProp="value" tokenSeparators={[",", " "]} placeholder="Pick or type tickers" />
       </Form.Item>
     </Form.Item>
   );

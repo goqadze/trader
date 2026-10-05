@@ -92,6 +92,7 @@ export interface Result {
   breaker_tripped_on?: string | null; // the day the drawdown breaker paused the run, if it did
   // An index future (intraday strategies): how it was traded. Its prices were rebuilt from `etf`.
   contract?: { root: string; name: string; etf: string; multiplier: number; tick: number; fee_per_side: number; margin_pct: number };
+  crypto?: { fee_pct: number }; // a crypto pair (BTC-USD): fractions of a coin, 7 days a week, this fee per fill
   // Intraday strategies: days with a setup, and why some weren't traded (too_small, unfilled, target_first, beyond_stop)
   setups?: number;
   skips?: Record<string, number>;

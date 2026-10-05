@@ -65,6 +65,11 @@ def test_invalid_parameters_are_rejected(client, bad):
     assert r.status_code == 422
 
 
+def test_crypto_is_for_backtests_only(client):
+    r = client.post("/bots", json={"symbol": "BTC-USD"})
+    assert r.status_code == 422 and "can't trade crypto yet" in r.text
+
+
 def test_unavailable_broker_is_rejected_with_the_reason(client):
     r = client.post("/bots", json={"symbol": "AAPL", "broker": "alpaca-paper"})
     assert r.status_code == 422 and "ALPACA_PAPER_KEY_ID" in r.text

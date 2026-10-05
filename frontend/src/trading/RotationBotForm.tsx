@@ -127,7 +127,7 @@ export default function RotationBotForm({ open, initial, brokers, onCancel, onSu
         </Form.Item>
 
         <Divider orientation="left" plain>Rotation</Divider>
-        <UniverseField name="universe" />
+        <UniverseField name="universe" noCrypto />
         <Row gutter={12}>
           <Col span={12}>
             <Form.Item

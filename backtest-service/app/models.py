@@ -16,6 +16,15 @@ Strategy = Literal["sma_rsi", "trend_following", "momentum", "breakout", "mean_r
 INTRADAY_STRATEGIES = {"orb", "ict_sweep_fvg", "ict_amd"}
 FUTURES_NEED_INTRADAY = "index futures (NQ, MNQ, ES, MES, YM, MYM) run with the intraday strategies only"
 INTRADAY_SLIPPAGE = 0.0001  # their default slippage per market fill (0.01%), see RunSettings._intraday_costs
+# Crypto pairs, written like Yahoo (BTC-USD), whose daily prices the backtests read (Alpaca calls the pair BTC/USD).
+# They trade around the clock, 7 days a week, in fractions of a coin, long only, and Alpaca charges a fee per trade:
+# 0.25% for a market order at the lowest volume tier, the default unless a run sets its own fee_pct.
+CRYPTO_FEE = 0.0025
+CRYPTO_NEEDS_DAILY = "crypto (e.g. BTC-USD) runs with the daily strategies only: the intraday ones trade New York's session"
+
+
+def is_crypto(symbol: str) -> bool:
+    return bool(re.fullmatch(r"[A-Z]+-USD", symbol.strip().upper()))
 
 
 class RunSettings(BaseModel):
@@ -76,6 +85,17 @@ class RunConfig(RunSettings):
             raise ValueError(FUTURES_NEED_INTRADAY)
         return self
 
+    @model_validator(mode="after")
+    def _crypto(self):
+        if not is_crypto(self.symbol):
+            return self
+        if self.strategy in INTRADAY_STRATEGIES:
+            raise ValueError(CRYPTO_NEEDS_DAILY)
+        self.decide_at = "close"  # it never closes, so there's no 10:00 open or 15:30 slot: it decides on the daily close
+        if "fee_pct" not in self.model_fields_set:
+            self.fee_pct = CRYPTO_FEE
+        return self
+
 
 def clean_symbols(v: list[str]) -> list[str]:
     """Upper-cased tickers in their given order, each once; anything that isn't a ticker is refused."""
@@ -125,6 +145,8 @@ class ScanConfig(BaseModel):
             raise ValueError("the exam period must start after the practice period ends, or it isn't an unseen test")
         if any(s in CONTRACTS for s in self.symbols) and any(r.strategy not in INTRADAY_STRATEGIES for r in self.runs):
             raise ValueError(FUTURES_NEED_INTRADAY)
+        if any(is_crypto(s) for s in self.symbols) and any(r.strategy in INTRADAY_STRATEGIES for r in self.runs):
+            raise ValueError(CRYPTO_NEEDS_DAILY)
         return self
 
 

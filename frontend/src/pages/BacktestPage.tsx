@@ -106,6 +106,16 @@ export default function BacktestPage() {
             value in margin. ${r.contract.etf} moves like the future during New York hours, but there is no overnight session here.`}
         />
       )}
+      {r?.crypto && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`${state.config?.symbol ?? "Crypto"}: daily prices, 7 days a week`}
+          description={`Decided on the daily close (00:00 UTC), bought in fractions of a coin, with a ${+(r.crypto.fee_pct * 100).toFixed(3)}% fee on
+            every buy and sell (Alpaca's crypto fee for a market order) plus the slippage. Long only: Alpaca can't short crypto.`}
+        />
+      )}
       {r && state.config && <SkippedSetups result={r} config={state.config} />}
       <Row gutter={[16, 16]}>
         <Col xs={24} md={7} lg={6}>

@@ -2,7 +2,8 @@ import { Button, Card, Checkbox, DatePicker, Form, InputNumber, Segmented, Selec
 import { Dayjs } from "dayjs";
 import { CHECK_AT_OPTIONS, defaultRange } from "../checkAt";
 import SymbolSelect from "../components/SymbolSelect";
-import { STRATEGIES, STYLES, strategyInfo, type StrategyId } from "../strategies";
+import { STRATEGIES, STYLES, isIntraday, strategyInfo, type StrategyId } from "../strategies";
+import { isCrypto, symbolClash } from "../symbols";
 import type { DecideAt } from "../trading/types";
 import type { RunConfig } from "../types";
 
@@ -137,7 +138,22 @@ export default function CompareForm({ onRun, running }: Props) {
             </Checkbox.Group>
           </Form.Item>
         </Form.Item>
-        <Form.Item name="symbol" label="Symbol" rules={[{ required: true }]}>
+        <Form.Item
+          name="symbol"
+          label="Symbol"
+          dependencies={["strategies"]}
+          rules={[
+            { required: true },
+            ({ getFieldValue }) => ({
+              validator: (_, v?: string) => {
+                const ids: StrategyId[] = getFieldValue("strategies") ?? [];
+                const clash = ids.map((id) => symbolClash(v, isIntraday(id))).find(Boolean);
+                return clash ? Promise.reject(new Error(clash)) : Promise.resolve();
+              },
+            }),
+          ]}
+          extra={isCrypto(values?.symbol) && "Crypto never closes: every strategy decides on the daily close (00:00 UTC), in fractions of a coin, with Alpaca's 0.25% fee on every buy and sell."}
+        >
           <SymbolSelect />
         </Form.Item>
         <Form.Item name="range" label="Date range" rules={[{ required: true }]}>
@@ -146,6 +162,7 @@ export default function CompareForm({ onRun, running }: Props) {
         <Form.Item
           name="decide_at"
           label="Check at (New York time)"
+          hidden={isCrypto(values?.symbol)}
           tooltip="When each decision day decides, like a trading bot's “Check at”. Suggested: Gap and go after the open (10:00), News catalyst at both times, the rest before the close (15:30). Pick one time to run every strategy on it."
         >
           <Select options={COMPARE_CHECK_AT} />

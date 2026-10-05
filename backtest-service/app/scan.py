@@ -52,7 +52,9 @@ class Scan:
         self.tasks: list[asyncio.Task] = []
 
     def run_config(self, cell: Cell, period) -> RunConfig:
-        return RunConfig(symbol=cell.symbol, start=period.start, end=period.end, **self.cfg.runs[cell.index].model_dump())
+        # Only what the scan set: a cost it left out keeps the symbol's own default (crypto pays Alpaca's crypto fee)
+        settings = self.cfg.runs[cell.index].model_dump(exclude_unset=True)
+        return RunConfig(symbol=cell.symbol, start=period.start, end=period.end, **settings)
 
     def stop(self) -> None:
         if self.status == "running":

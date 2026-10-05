@@ -1,6 +1,7 @@
 // Suggested symbols for the Symbol pickers (backtest, compare, bot, scan). Only a shortlist: any other ticker can
 // still be typed. Everything here trades on Alpaca and has Yahoo/Alpaca price history. Share classes are written
-// with a dot (BRK.B) like Alpaca; the services turn that into Yahoo's dash (BRK-B) themselves.
+// with a dot (BRK.B) like Alpaca; the services turn that into Yahoo's dash (BRK-B) themselves. Crypto is written
+// like Yahoo (BTC-USD), whose daily prices the backtests read; Alpaca calls the same pair BTC/USD.
 
 export interface SymbolInfo {
   symbol: string;
@@ -119,6 +120,27 @@ export const SYMBOL_GROUPS: SymbolGroup[] = [
       { symbol: "SLV", name: "Silver" },
     ],
   },
+  {
+    // Coins Alpaca trades against the dollar (checked on its crypto market data, 2026-10-05), largest first. Crypto
+    // trades around the clock, 7 days a week, in fractions of a coin, long only (no shorting, no margin), with a
+    // 0.15-0.25% fee per trade. Backtests only for now: the daily strategies, decided on the daily close (00:00 UTC).
+    label: "Crypto (backtests only for now)",
+    short: "Crypto",
+    symbols: [
+      { symbol: "BTC-USD", name: "Bitcoin" },
+      { symbol: "ETH-USD", name: "Ethereum" },
+      { symbol: "XRP-USD", name: "XRP" },
+      { symbol: "SOL-USD", name: "Solana" },
+      { symbol: "DOGE-USD", name: "Dogecoin (very volatile)" },
+      { symbol: "ADA-USD", name: "Cardano" },
+      { symbol: "LINK-USD", name: "Chainlink" },
+      { symbol: "AVAX-USD", name: "Avalanche" },
+      { symbol: "BCH-USD", name: "Bitcoin Cash" },
+      { symbol: "LTC-USD", name: "Litecoin" },
+      { symbol: "DOT-USD", name: "Polkadot" },
+      { symbol: "UNI-USD", name: "Uniswap" },
+    ],
+  },
 ];
 
 /** ETFs that track the same (or almost the same) index and so trade almost identically. Scanning several of one
@@ -140,9 +162,9 @@ export const familyOf = (symbol: string) => TWINS.find((t) => t.symbols.includes
 
 /** Grouped options for a symbol picker, each ticker once (XLK is both a top-20 ETF and a sector): its first group
  *  wins. `render` builds an option's label. */
-export function symbolOptions<L>(render: (s: SymbolInfo) => L) {
+export function symbolOptions<L>(render: (s: SymbolInfo) => L, groups: SymbolGroup[] = SYMBOL_GROUPS) {
   const seen = new Set<string>();
-  return SYMBOL_GROUPS.map((g) => ({
+  return groups.map((g) => ({
     label: g.label,
     options: g.symbols.filter((s) => !seen.has(s.symbol) && seen.add(s.symbol)).map((s) => ({ value: s.symbol, label: render(s), name: s.name })),
   }));
@@ -155,3 +177,21 @@ export const isListedEtf = (symbol: string) => SYMBOL_GROUPS.some((g) => g.label
 /** Index futures: they run with the intraday strategies only. */
 export const FUTURES = SYMBOL_GROUPS.find((g) => g.short === "Futures")!.symbols.map((s) => s.symbol);
 export const isFuture = (symbol: string | undefined) => FUTURES.includes((symbol ?? "").toUpperCase());
+
+/** Crypto pairs, written like Yahoo (BTC-USD): any ticker ending in -USD. Backtests run them with the daily
+ *  strategies only; live bots can't trade them yet. */
+export const isCrypto = (symbol: string | undefined) => /^[A-Z]+-USD$/.test((symbol ?? "").trim().toUpperCase());
+
+/** What a live bot can trade: no futures (on Alpaca "ES" is a utility's stock, not the future) and no crypto yet. */
+export const BOT_GROUPS = SYMBOL_GROUPS.filter((g) => g.short !== "Futures" && g.short !== "Crypto");
+
+/** The groups a rotation can hold: daily closes from Yahoo, so no futures (their prices are rebuilt intraday only). */
+export const ROTATION_GROUPS = SYMBOL_GROUPS.filter((g) => g.short !== "Futures");
+
+/** Why this symbol can't run with these strategies, or null. Futures run with the intraday strategies only; crypto
+ *  with the daily ones only (the intraday ones are built around New York's 9:30 open, and crypto never closes). */
+export function symbolClash(symbol: string | undefined, intraday: boolean): string | null {
+  if (isFuture(symbol) && !intraday) return "Futures run with the intraday strategies only";
+  if (isCrypto(symbol) && intraday) return "Crypto runs with the daily strategies only (the intraday ones trade New York's session)";
+  return null;
+}

@@ -80,3 +80,16 @@ def test_intraday_strategies_default_to_the_slippage_of_liquid_etfs():
     scan = ScanConfig(symbols=["QQQ"], runs=[{"strategy": "ict_sweep_fvg"}],
                       practice={"start": "2022-01-01", "end": "2023-01-01"})
     assert scan.runs[0].slippage_pct == 0.0001  # kept when a scan builds each run from these settings
+
+
+def test_crypto_runs_daily_strategies_on_the_daily_close_with_alpacas_fee():
+    from app.models import ScanConfig
+
+    run = RunConfig(symbol="BTC-USD", start=date(2025, 1, 1), end=date(2025, 6, 1), strategy="gap_and_go", decide_at="open")
+    assert (run.decide_at, run.fee_pct) == ("close", 0.0025)  # it never closes: no 10:00 open to check at
+    assert RunConfig(symbol="BTC-USD", start=date(2025, 1, 1), end=date(2025, 6, 1), fee_pct=0.0015).fee_pct == 0.0015
+    assert RunConfig(start=date(2025, 1, 1), end=date(2025, 6, 1)).fee_pct == 0.0  # stocks: commission-free
+    with pytest.raises(ValidationError, match="daily strategies only"):
+        RunConfig(symbol="ETH-USD", start=date(2025, 1, 1), end=date(2025, 6, 1), strategy="orb")
+    with pytest.raises(ValidationError, match="daily strategies only"):
+        ScanConfig(symbols=["QQQ", "BTC-USD"], runs=[{"strategy": "orb"}], practice={"start": "2022-01-01", "end": "2023-01-01"})

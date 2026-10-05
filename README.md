@@ -138,6 +138,18 @@ decision-service `app/intraday_strategies.py` holds the rules and serves each da
 touches both, risk-based sizing (`risk_pct`, capped by the cash), slippage on market fills only (0.01% by default
 for intraday: with tight stops, costs decide a lot). Live bots can't run them yet.
 
+## Crypto (backtest only)
+
+The symbol pickers suggest 12 coins Alpaca trades against the dollar (BTC, ETH, XRP, SOL, DOGE, ...), written like
+Yahoo: `BTC-USD` (Alpaca calls the pair `BTC/USD`). Backtests read Yahoo's daily prices, which include weekends, and
+run them with the daily strategies only (the intraday ones trade New York's session). Crypto never closes, so a
+decision day decides on the daily close (00:00 UTC) whatever "Check at" says, and "every N days" counts calendar days.
+The engine buys fractions of a coin (a $10,000 account can't buy a whole bitcoin) and charges Alpaca's crypto fee,
+0.25% a fill for a market order at the lowest volume tier, unless a run sets its own `fee_pct`. Long only: Alpaca
+can't short crypto or buy it on margin. Sharpe and volatility annualize over 365 days for prices with weekends.
+Live bots refuse crypto symbols for now: they follow the stock market's hours, buy whole shares and hold a stop
+order at the broker, and Alpaca's crypto orders take only market, limit and stop-limit.
+
 ## Live trading (paper first)
 
 Once a backtest convinces you, click **Trade this strategy** on its result, or open **Live trading → New bot**.

@@ -10,7 +10,7 @@ import type { DecideAt } from "../trading/types";
 import type { Entry, Htf, RunConfig } from "../types";
 import StrategyHelp from "./StrategyHelp";
 import SymbolSelect from "./SymbolSelect";
-import { isFuture } from "../symbols";
+import { isCrypto, symbolClash } from "../symbols";
 
 // antd form values (dates are dayjs objects; we format them on submit).
 interface FormValues {
@@ -72,6 +72,7 @@ export default function ConfigForm({ onRun, running, prefill }: Props) {
     if (prefill) form.setFieldsValue(toFormValues(prefill));
   }, [prefill, form]);
   const strategy = Form.useWatch("strategy", form);
+  const crypto = isCrypto(Form.useWatch("symbol", form));
   // The form shows percents; the catalog stores fractions
   const applySuggested = (g: StrategyInfo["suggested"]) =>
     form.setFieldsValue({
@@ -150,11 +151,13 @@ export default function ConfigForm({ onRun, running, prefill }: Props) {
           rules={[
             { required: true },
             ({ getFieldValue }) => ({
-              validator: (_, v?: string) => (isFuture(v) && !isIntraday(getFieldValue("strategy"))
-                ? Promise.reject(new Error("Futures run with the intraday strategies only"))
-                : Promise.resolve()),
+              validator: (_, v?: string) => {
+                const clash = symbolClash(v, isIntraday(getFieldValue("strategy")));
+                return clash ? Promise.reject(new Error(clash)) : Promise.resolve();
+              },
             }),
           ]}
+          extra={crypto && !intraday && "Crypto never closes: each decision day decides on the daily close (00:00 UTC), in fractions of a coin, with Alpaca's 0.25% fee on every buy and sell. “Every N days” counts all 7 days of the week."}
         >
           <SymbolSelect />
         </Form.Item>
@@ -194,7 +197,7 @@ export default function ConfigForm({ onRun, running, prefill }: Props) {
         )}
         {!intraday && (
           <>
-            <Form.Item name="decide_at" label="Check at (New York time)" tooltip="When a decision day decides, exactly like a trading bot's “Check at”: the day as it stood at 15:30 or 10:00, filled at that moment's price, then the stop and target guard the rest of the day. Both does the two.">
+            <Form.Item name="decide_at" label="Check at (New York time)" hidden={crypto} tooltip="When a decision day decides, exactly like a trading bot's “Check at”: the day as it stood at 15:30 or 10:00, filled at that moment's price, then the stop and target guard the rest of the day. Both does the two.">
               <Select options={CHECK_AT_OPTIONS} />
             </Form.Item>
             <Form.Item
@@ -215,7 +218,7 @@ export default function ConfigForm({ onRun, running, prefill }: Props) {
             <Form.Item name="min_confidence" label="Min confidence (0–1)">
               <InputNumber min={0} max={1} step={0.05} style={{ width: "100%" }} />
             </Form.Item>
-            <Form.Item name="rebalance_days" label="Rebalance every N trading days">
+            <Form.Item name="rebalance_days" label={crypto ? "Rebalance every N days" : "Rebalance every N trading days"}>
               <InputNumber min={1} style={{ width: "100%" }} />
             </Form.Item>
           </>

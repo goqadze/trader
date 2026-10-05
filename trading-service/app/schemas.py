@@ -31,6 +31,14 @@ class StrategyParams(BaseModel):
     max_drawdown_pct: float = Field(0.2, ge=0, le=1)  # 0 turns the breaker off
 
 
+def _no_crypto(symbols: list[str]) -> None:
+    """Crypto pairs (BTC-USD, as the backtests write them) can be backtested but not traded by a bot yet: Alpaca trades
+    them as BTC/USD, around the clock, in fractions, without stop orders, and the bots assume none of that."""
+    coins = [s for s in symbols if s.upper().endswith("-USD")]
+    if coins:
+        raise ValueError(f"bots can't trade crypto yet: {', '.join(coins)} (backtests can)")
+
+
 class BotCreate(StrategyParams):
     name: str | None = Field(None, max_length=80)
     symbol: str = Field(..., pattern=r"^[A-Za-z][A-Za-z.\-]{0,9}$")
@@ -38,6 +46,12 @@ class BotCreate(StrategyParams):
     allocated_cash: float = Field(10_000, ge=100, le=10_000_000)
     # A real-money bot must be confirmed explicitly by the caller, not just by choosing it in a dropdown
     confirm_live: bool = False
+
+    @field_validator("symbol")
+    @classmethod
+    def _tradable(cls, v: str) -> str:
+        _no_crypto([v])
+        return v
 
 
 class RotationBotCreate(BaseModel):
@@ -64,6 +78,7 @@ class RotationBotCreate(BaseModel):
             raise ValueError(f"not a ticker: {', '.join(bad)}")
         if len(out) < 2:
             raise ValueError("pick at least 2 symbols")
+        _no_crypto(out)
         return out
 
     @model_validator(mode="after")

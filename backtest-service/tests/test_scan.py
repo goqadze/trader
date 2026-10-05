@@ -135,3 +135,11 @@ def test_scan_runs_keep_only_their_latest_step():
 def monkey_slots():
     """A fresh semaphore inside this test's event loop (the module one may be bound to an earlier test's loop)."""
     scan_mod._scan_slots = asyncio.Semaphore(2)
+
+
+def test_a_scans_crypto_runs_pay_the_crypto_fee_unless_the_scan_sets_one():
+    cfg = ScanConfig(symbols=["BTC-USD", "SPY"], runs=[{"strategy": "sma_rsi"}, {"strategy": "breakout", "fee_pct": 0.001}],
+                     practice=PRACTICE)
+    s = scan_mod.Scan(cfg)
+    fees = {(c.symbol, cfg.runs[c.index].strategy): s.run_config(c, cfg.practice).fee_pct for c in s.cells}
+    assert fees == {("BTC-USD", "sma_rsi"): 0.0025, ("BTC-USD", "breakout"): 0.001, ("SPY", "sma_rsi"): 0.0, ("SPY", "breakout"): 0.001}

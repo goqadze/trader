@@ -3,7 +3,7 @@ from datetime import date
 
 import pandas as pd
 
-from ..models import RunConfig
+from ..models import RunConfig, is_crypto
 from ..verdict import judge
 from .base import BacktestEngine, DecideFn, EmitFn
 
@@ -22,13 +22,16 @@ class SimplePortfolioEngine(BacktestEngine):
         live bots (Alpaca holds the stop at the broker; targets are checked every few minutes). A 10:00 entry
         is checked against the rest of that day.
     Signal trades fill at the slot's price; stop/target exits at their level, or at the open when the price
-    gaps past it overnight. Slippage and fees apply to every fill. No leverage, no shorting."""
+    gaps past it overnight. Slippage and fees apply to every fill. No leverage, no shorting.
+    Crypto (BTC-USD) is bought in fractions of a coin (a $10,000 account can't buy one whole bitcoin) and trades
+    every day of the week; its days are calendar days."""
 
     name = "simple"
 
     async def run(self, cfg: RunConfig, prices: pd.Series, decide: DecideFn, emit: EmitFn,
                   bars: pd.DataFrame | None = None, slots: pd.DataFrame | None = None) -> dict:
         days: list[date] = list(prices.index)
+        crypto = is_crypto(cfg.symbol)
         cash = cfg.initial_cash
         position = 0.0  # shares held
         cost_basis = 0.0  # total cash spent to open the position (fill + buy fee), for honest PnL
@@ -84,7 +87,8 @@ class SimplePortfolioEngine(BacktestEngine):
                 spend = cash * cfg.position_pct
                 fill = price * (1 + cfg.slippage_pct)  # slippage: a buy fills a touch ABOVE the price (worse)
                 # Size so the shares plus their fee fit the budget: shares * fill * (1 + fee_pct) <= spend
-                shares = math.floor(spend / (fill * (1 + cfg.fee_pct)))  # whole shares only
+                units = spend / (fill * (1 + cfg.fee_pct))
+                shares = math.floor(units * 1e8) / 1e8 if crypto else math.floor(units)  # whole shares; coins in fractions
                 if shares > 0:
                     cost = shares * fill
                     fee = cost * cfg.fee_pct  # commission on the trade value
@@ -172,13 +176,16 @@ class SimplePortfolioEngine(BacktestEngine):
         result["decision_errors"] = decision_errors
         result["no_news_decisions"] = no_news
         result["breaker_tripped_on"] = paused_on.isoformat() if paused_on else None
+        if crypto:
+            result["crypto"] = {"fee_pct": cfg.fee_pct}
         result["verdict"] = judge(result, cfg)  # the recommendation: a checklist and a grade
         await emit({"type": "done", "result": result})
         return result
 
     def _metrics(self, cfg, prices, cash, position, cost_basis, trades, equity_curve, closed: list[dict] | None = None) -> dict:
         """Summary statistics the frontend shows in the results panel and the strategy comparison.
-        Ratios are annualized from daily closes (252 trading days), with a 0% risk-free rate; on a
+        Ratios are annualized from daily closes (252 trading days a year, 365 when the prices include weekends:
+        crypto), with a 0% risk-free rate; on a
         window of a few weeks they are noisy, so read them next to the return and drawdown.
         `closed` = the round trips' closing legs (default: the SELLs; the intraday engine passes its own, as a
         short closes with a BUY)."""
@@ -187,6 +194,7 @@ class SimplePortfolioEngine(BacktestEngine):
         final_equity = cash + position * last_price
         equity = [pt["equity"] for pt in equity_curve]
         closes = [pt["price"] for pt in equity_curve]
+        per_year = 365 if any(date.fromisoformat(pt["date"]).weekday() >= 5 for pt in equity_curve) else TRADING_DAYS
 
         # Buy & hold benchmark: what if you just bought on day 1 and did nothing?
         buy_hold_return = (last_price / first_price - 1) * 100
@@ -211,8 +219,8 @@ class SimplePortfolioEngine(BacktestEngine):
             "max_drawdown_pct": max_dd,
             "buy_hold_max_drawdown_pct": _max_drawdown(closes),
             # Risk-adjusted: return per unit of volatility (Sharpe) or of downside volatility only (Sortino)
-            **_risk_ratios(equity, prefix=""),
-            **_risk_ratios(closes, prefix="buy_hold_"),
+            **_risk_ratios(equity, prefix="", per_year=per_year),
+            **_risk_ratios(closes, prefix="buy_hold_", per_year=per_year),
             # Return earned per % of worst drawdown; None when the equity never fell
             "return_over_drawdown": round(strategy_return / -max_dd, 2) if max_dd < 0 else None,
             "num_trades": len(closed),
@@ -244,19 +252,21 @@ TRADING_DAYS = 252
 
 def _exit_levels(cfg: RunConfig, pos: dict, fill: float) -> tuple[float, float]:
     """The stop-loss and target for a new position, from the ACTUAL fill (slippage included) and rounded to the cent,
-    exactly as a live bot sets them. The distances are the run's stop_pct / target_pct, or else the ones
-    decision-service sized from its entry price. No position block from the signal = no stop, no target."""
+    exactly as a live bot sets them (crypto to 8 decimals: a coin can cost less than a cent). The distances are the
+    run's stop_pct / target_pct, or else the ones decision-service sized from its entry price. No position block from
+    the signal = no stop, no target."""
+    places = 8 if is_crypto(cfg.symbol) else 2
     entry = float(pos.get("entry") or 0)
     stop_pct = cfg.stop_pct if cfg.stop_pct is not None else (1 - float(pos["stop_loss"]) / entry if entry and pos.get("stop_loss") else None)
     target_pct = cfg.target_pct if cfg.target_pct is not None else (float(pos["target"]) / entry - 1 if entry and pos.get("target") else None)
     if stop_pct is None and pos.get("stop_loss"):  # a signal with levels but no entry price: take them as they are
         stop = float(pos["stop_loss"])
     else:
-        stop = round(fill * (1 - stop_pct), 2) if stop_pct is not None else 0.0
+        stop = round(fill * (1 - stop_pct), places) if stop_pct is not None else 0.0
     if target_pct is None and pos.get("target"):
         target = float(pos["target"])
     else:
-        target = round(fill * (1 + target_pct), 2) if target_pct is not None else math.inf
+        target = round(fill * (1 + target_pct), places) if target_pct is not None else math.inf
     return stop, target
 
 
@@ -290,7 +300,7 @@ def _max_drawdown(values: list[float]) -> float:
     return round(max_dd, 2)
 
 
-def _risk_ratios(values: list[float], prefix: str) -> dict:
+def _risk_ratios(values: list[float], prefix: str, per_year: int = TRADING_DAYS) -> dict:
     """Annualized volatility, Sharpe and Sortino of a daily value series (risk-free rate 0).
     A ratio is None when it can't be computed: too few days, or no (downside) movement at all."""
     rets = [b / a - 1 for a, b in zip(values, values[1:]) if a > 0]
@@ -299,7 +309,7 @@ def _risk_ratios(values: list[float], prefix: str) -> dict:
         mean = sum(rets) / len(rets)
         sd = math.sqrt(sum((r - mean) ** 2 for r in rets) / (len(rets) - 1))
         downside = math.sqrt(sum(min(r, 0) ** 2 for r in rets) / len(rets))
-        vol = round(sd * math.sqrt(TRADING_DAYS) * 100, 2)
-        sharpe = round(mean / sd * math.sqrt(TRADING_DAYS), 2) if sd > 1e-12 else None
-        sortino = round(mean / downside * math.sqrt(TRADING_DAYS), 2) if downside > 1e-12 else None
+        vol = round(sd * math.sqrt(per_year) * 100, 2)
+        sharpe = round(mean / sd * math.sqrt(per_year), 2) if sd > 1e-12 else None
+        sortino = round(mean / downside * math.sqrt(per_year), 2) if downside > 1e-12 else None
     return {f"{prefix}volatility_pct": vol, f"{prefix}sharpe": sharpe, f"{prefix}sortino": sortino}

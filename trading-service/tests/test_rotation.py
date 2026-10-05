@@ -274,6 +274,8 @@ def test_rotation_bots_are_checked_and_paper_only(api, monkeypatch):
     c, _, _ = api
     assert c.post("/bots/rotation", json={**BODY, "top_n": 5}).status_code == 422
     assert c.post("/bots/rotation", json={**BODY, "universe": ["A", "not one"]}).status_code == 422
+    r = c.post("/bots/rotation", json={**BODY, "universe": ["A", "BTC-USD"]})
+    assert r.status_code == 422 and "can't trade crypto yet: BTC-USD" in r.text
     r = c.post("/bots/rotation", json={**BODY, "universe": ["A", "B", "ZZZZ"]})
     assert r.status_code == 422 and "no prices for ZZZZ" in r.text
     monkeypatch.setattr(main, "catalog", lambda: [{**b, "available": True} for b in real_catalog()])
