@@ -49,6 +49,17 @@ def test_the_sentiment_call_retries_longer_than_the_explanation(monkeypatch):
     assert made[0]["max_retries"] > made[1]["max_retries"]
 
 
+def test_gpt6_answers_without_reasoning_so_temperature_zero_stays(monkeypatch):
+    made = []
+    monkeypatch.setattr("langchain_openai.ChatOpenAI", lambda **kw: made.append(kw))
+    monkeypatch.setenv("LLM_MODEL", "gpt-6-luna")
+    agent._chat(temperature=0)
+    monkeypatch.setenv("LLM_MODEL", "gpt-4.1-nano")
+    agent._chat(temperature=0)
+    assert made[0]["reasoning_effort"] == "none" and made[0]["temperature"] == 0  # with reasoning on, OpenAI refuses it
+    assert "reasoning_effort" not in made[1]  # older models don't take the parameter
+
+
 def test_a_failed_analysis_leaves_no_lock_behind(monkeypatch):
     monkeypatch.setattr(agent, "_news_enabled", lambda: True)
 

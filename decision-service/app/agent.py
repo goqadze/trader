@@ -71,7 +71,12 @@ EXPLAIN_RETRIES = 1  # the explanation is only prose: give up fast and use the r
 def _chat(**kw):
     from langchain_openai import ChatOpenAI
 
-    return ChatOpenAI(model=os.getenv("LLM_MODEL", "gpt-4.1-nano"), **kw)
+    model = os.getenv("LLM_MODEL", "gpt-6-luna")
+    # gpt-6 models reason before answering unless told not to. With reasoning on, OpenAI refuses temperature (the
+    # sentiment needs 0 for reproducible backtests) and bills the thinking as output: "none" turns it off.
+    if model.startswith("gpt-6"):
+        kw.setdefault("reasoning_effort", "none")
+    return ChatOpenAI(model=model, **kw)
 
 
 class Sentiment(BaseModel):
@@ -150,8 +155,9 @@ def _analyze_news(state: State) -> dict:
 # The news step doesn't depend on the strategy, and a day that's over doesn't change. So each (symbol, decision
 # moment) is judged once and saved in news-db (news_judgments): every backtest, comparison and restart then uses
 # the SAME headlines and sentiment, so the same settings give the same result everywhere. This dict is a fast
-# in-memory layer in front of it. Bump NEWS_JUDGMENT_VERSION after changing how news is fetched or judged.
-NEWS_JUDGMENT_VERSION = 1
+# in-memory layer in front of it. Bump NEWS_JUDGMENT_VERSION after changing how news is fetched or judged,
+# LLM_MODEL included (the key doesn't name the model). 1: gpt-4.1-nano, 2: gpt-6-luna.
+NEWS_JUDGMENT_VERSION = 2
 NEWS_CACHE_SIZE = 4096
 _news_cache: OrderedDict[tuple, dict] = OrderedDict()
 _news_inflight: dict[tuple, threading.Lock] = {}
