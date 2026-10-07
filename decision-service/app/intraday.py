@@ -29,6 +29,10 @@ ALPACA_DELAY = timedelta(minutes=16)
 CURRENT_MONTH_TTL_S = 1800  # a finished month never changes; the current one is re-fetched now and then
 _CACHE_MONTHS = 600  # a 5-minute month is ~1,600 bars: 600 of them stay well under 100 MB
 
+# A failed Alpaca request is tried again after these pauses (seconds): a network blip (a DNS lookup failing for a
+# moment, a dropped connection) or Alpaca busy (429, 5xx) shouldn't fail a whole backtest
+RETRY_WAITS_S = (1, 3, 9)
+
 COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
 _cache: dict[tuple[str, str, int, int], tuple[float, pd.DataFrame]] = {}  # (symbol, timeframe, year, month)
 _lock = threading.Lock()  # guards _cache and _month_locks; never held during a download
@@ -43,15 +47,29 @@ def _alpaca_headers() -> dict | None:
     return {"APCA-API-KEY-ID": os.environ["ALPACA_API_KEY"], "APCA-API-SECRET-KEY": os.environ["ALPACA_SECRET_KEY"]}
 
 
+def _get(url: str, params: dict, headers: dict) -> httpx.Response:
+    """httpx.get, tried again after RETRY_WAITS_S on a network error or a busy server; anything else fails at once."""
+    for wait in (*RETRY_WAITS_S, None):
+        try:
+            r = httpx.get(url, params=params, headers=headers, timeout=30)
+        except httpx.TransportError:
+            if wait is None:
+                raise
+        else:
+            if wait is None or not (r.status_code == 429 or r.status_code >= 500):
+                r.raise_for_status()
+                return r
+        time.sleep(wait)
+    raise AssertionError("unreachable")
+
+
 def _from_alpaca(symbol: str, start: datetime, end: datetime, headers: dict, timeframe: str = "30Min") -> pd.DataFrame:
     """Split- and dividend-adjusted, like the daily bars from Yahoo. Pages until the whole range is in."""
     params = {"timeframe": timeframe, "start": start.isoformat(), "end": end.isoformat(), "adjustment": "all",
               "feed": "sip", "limit": 10000}
     rows: list[dict] = []
     while True:
-        r = httpx.get(ALPACA_BARS.format(symbol=symbol), params=params, headers=headers, timeout=30)
-        r.raise_for_status()
-        data = r.json()
+        data = _get(ALPACA_BARS.format(symbol=symbol), params, headers).json()
         rows += data.get("bars") or []
         if not data.get("next_page_token"):
             break

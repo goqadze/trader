@@ -102,8 +102,9 @@ def test_bars_between_spans_months_and_trims_to_the_range(monkeypatch):
 
 
 class _Resp:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200):
         self._payload = payload
+        self.status_code = status_code
 
     def raise_for_status(self):
         pass
@@ -131,6 +132,41 @@ def test_alpaca_bars_are_paged_and_keep_the_pre_market_but_not_after_hours(monke
     assert list(df["Close"]) == [1.0, 2.0, 3.0]  # 9:00 pre-market kept (for the Power of 3), 16:00 after-hours dropped
     assert str(df.index[1]) == "2025-03-03 09:30:00-05:00"
     assert seen[1]["page_token"] == "p2" and seen[0]["adjustment"] == "all" and seen[0]["timeframe"] == "30Min"
+
+
+def test_a_network_blip_or_a_busy_alpaca_is_tried_again(monkeypatch):
+    import httpx
+
+    monkeypatch.setattr(intraday.time, "sleep", lambda s: waits.append(s))
+    waits = []
+    answers = [httpx.ConnectError("[Errno -5] No address associated with hostname"), _Resp({}, 503),
+               _Resp({"bars": [], "next_page_token": None})]
+
+    def flaky_get(url, params, headers, timeout):
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    monkeypatch.setattr(intraday.httpx, "get", flaky_get)
+    assert intraday._get("u", {}, {}).json() == {"bars": [], "next_page_token": None}
+    assert waits == [1, 3]
+
+    waits.clear()
+    monkeypatch.setattr(intraday.httpx, "get", lambda *a, **k: (_ for _ in ()).throw(httpx.ConnectError("down")))
+    with pytest.raises(httpx.ConnectError):  # still down after every retry: the error, as before
+        intraday._get("u", {}, {})
+    assert waits == list(intraday.RETRY_WAITS_S)
+
+    class _Refused(_Resp):
+        def raise_for_status(self):
+            raise httpx.HTTPStatusError("403", request=None, response=None)
+
+    waits.clear()
+    monkeypatch.setattr(intraday.httpx, "get", lambda *a, **k: _Refused({}, 403))
+    with pytest.raises(httpx.HTTPStatusError):  # wrong keys: no point asking again
+        intraday._get("u", {}, {})
+    assert waits == []
 
 
 def test_five_minute_bars_are_cached_apart_from_thirty_minute_ones(monkeypatch):
