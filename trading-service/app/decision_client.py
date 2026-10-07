@@ -32,3 +32,19 @@ def get_signal(bot, as_of: date, at: datetime | None = None) -> dict:
     if r.status_code != 200:
         raise SignalError(f"decision-service {r.status_code}: {r.text[:300]}")
     return r.json()
+
+
+def get_news(symbol: str, as_of: date, at: datetime | None = None) -> dict:
+    """decision-service's news verdict on a symbol (the dip bot asks before it buys): {"sentiment": bullish | bearish |
+    neutral | unavailable, "headlines", "catalysts", "steps"}. Only news published before `at` counts. Never raises: a
+    failure comes back as "unavailable" with the reason in "error", and the bot decides on the prices alone."""
+    params = {"symbol": symbol, "as_of": as_of.isoformat()}
+    if at is not None:
+        params["decided_at"] = at.isoformat()
+    try:
+        r = httpx.get(f"{settings.decision_service_url}/news/sentiment", params=params, timeout=90)
+    except httpx.HTTPError as e:
+        return {"sentiment": "unavailable", "error": f"decision-service unreachable: {e}"}
+    if r.status_code != 200:
+        return {"sentiment": "unavailable", "error": f"decision-service {r.status_code}: {r.text[:200]}"}
+    return r.json()

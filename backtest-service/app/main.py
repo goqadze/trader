@@ -1,11 +1,14 @@
 import asyncio
 import logging
 import os
+from datetime import timedelta
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+import pandas as pd
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 
-from .models import RotationConfig, RunConfig, RunSummary, ScanConfig
-from .runner import RUNS, start_rotation_run, start_run
+from .engines.dip import downsample, iso
+from .models import DipConfig, RotationConfig, RunConfig, RunSummary, ScanConfig
+from .runner import RUNS, start_dip_run, start_rotation_run, start_run
 from .scan import SCANS, scan_summary, scan_view, start_scan
 
 logger = logging.getLogger("backtest-service")
@@ -45,12 +48,25 @@ async def create_rotation_run(cfg: RotationConfig):
     return {"run_id": start_rotation_run(cfg).id}
 
 
+@app.post("/runs/dip")
+async def create_dip_run(cfg: DipConfig):
+    """Start a dip-buyer backtest over several symbols (one window). Its result comes from GET /runs/{id}."""
+    return {"run_id": start_dip_run(cfg).id}
+
+
+def _label(cfg) -> str:
+    if isinstance(cfg, DipConfig):
+        return f"dip buyer on {len(cfg.symbols)}"
+    if isinstance(cfg, RotationConfig):
+        return f"rotation of {len(cfg.symbols)}"
+    return cfg.symbol
+
+
 @app.get("/runs", response_model=list[RunSummary])
 def list_runs():
     """List every run (newest first) for the monitoring UI."""
     return [
-        RunSummary(run_id=r.id, symbol=getattr(r.cfg, "symbol", None) or f"rotation of {len(r.cfg.symbols)}", status=r.status,
-                   created_at=r.created_at)
+        RunSummary(run_id=r.id, symbol=_label(r.cfg), status=r.status, created_at=r.created_at)
         for r in sorted(RUNS.values(), key=lambda r: r.created_at, reverse=True)
     ]
 
@@ -63,6 +79,36 @@ def get_run(run_id: str):
         raise HTTPException(404, "run not found")
     error = next((e["message"] for e in reversed(run.events) if e["type"] == "error"), None)
     return {"run_id": run.id, "config": run.cfg, "status": run.status, "result": run.result, "error": error}
+
+
+@app.get("/runs/{run_id}/prices")
+def run_prices(run_id: str, symbol: str, start: str | None = None, end: str | None = None,
+               points: int = Query(800, ge=50, le=5000)):
+    """One symbol's prices from a dip-buyer run, for its chart: every check's close between start and end (dates, or
+    moments with their offset; default: the run's window), thinned to about `points` while keeping every stretch's
+    high and low. Gone after a restart, like the run itself."""
+    run = RUNS.get(run_id)
+    if not run:
+        raise HTTPException(404, "run not found (runs are forgotten when backtest-service restarts)")
+    if run.prices is None:
+        raise HTTPException(404, "this run kept no prices (only dip-buyer runs do)")
+    if symbol.upper() not in run.prices.columns:
+        raise HTTPException(404, f"{symbol.upper()} isn't in this run")
+    series = run.prices[symbol.upper()].dropna()
+    tz = series.index.tz
+
+    def moment(text: str | None, default, end_of_day: bool):
+        ts = pd.Timestamp(text) if text else pd.Timestamp(default)
+        if end_of_day and (not text or len(text) <= 10):
+            ts = ts + timedelta(days=1) - timedelta(microseconds=1)  # a date: all of that day
+        if tz is not None:
+            return ts.tz_localize(tz) if ts.tzinfo is None else ts.tz_convert(tz)
+        return ts.tz_convert(None) if ts.tzinfo is not None else ts
+
+    cut = series.loc[moment(start, run.cfg.start, False):moment(end, run.cfg.end, True)]
+    thin = downsample(cut, points)
+    return {"symbol": symbol.upper(), "interval": run.cfg.interval,
+            "points": [{"t": iso(t), "p": round(float(v), 4)} for t, v in thin.items()]}
 
 
 @app.websocket("/ws/{run_id}")

@@ -1,7 +1,9 @@
 import asyncio
+import math
 import os
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -10,8 +12,8 @@ import pandas as pd
 import yfinance as yf
 
 from .decision_client import BASE as DECISION_BASE, get_signal
-from .engines import IntradayEngine, RotationEngine, SimplePortfolioEngine
-from .models import INTRADAY_STRATEGIES, RotationConfig, RunConfig, is_crypto
+from .engines import DipEngine, IntradayEngine, RotationEngine, SimplePortfolioEngine
+from .models import INTRADAY_STRATEGIES, DipConfig, RotationConfig, RunConfig, is_crypto
 
 
 class Run:
@@ -32,6 +34,8 @@ class Run:
         # text) would fill the memory, so they keep only the latest step, for the progress
         self.keep_steps = keep_steps
         self.last_step: dict | None = None
+        # A dip-buyer run's prices (one column per symbol, one row per check), for its charts (GET /runs/{id}/prices)
+        self.prices: pd.DataFrame | None = None
 
     async def emit(self, ev: dict) -> None:
         """Record an event and fan it out to every connected monitor."""
@@ -200,6 +204,115 @@ async def _execute_rotation(run: Run) -> None:
             first = cfg.start - pd.DateOffset(months=cfg.lookback_months + cfg.skip_months) - timedelta(days=10)
             closes = await _load_prices(",".join(cfg.symbols), first.date(), cfg.end, _universe_closes)
             run.result = await RotationEngine().run(cfg, closes, run.emit)
+            run.status = "done"
+        except Exception as e:
+            run.status = "error"
+            await run.emit({"type": "error", "message": str(e)})
+
+
+# The dip buyer's check intervals -> the bars decision-service serves for them. Hourly checks are built from 30-minute
+# bars (a session's hours start at 9:30, Alpaca's hourly bars on the hour).
+DIP_TIMEFRAMES = {"5m": "5Min", "15m": "15Min", "30m": "30Min", "1h": "30Min"}
+DIP_DOWNLOADS = 4  # symbols downloaded at once (each is one request per month to decision-service)
+TREND_HISTORY_DAYS = 320  # calendar days before the start: 200+ trading days for the trend filter's 200-day average
+
+
+def _bar_closes(df: pd.DataFrame, minutes: int, step: int) -> pd.Series:
+    """Closes of `step`-minute bars (each indexed by its start), regrouped into bars of `minutes` from the 9:30 open,
+    each indexed by the moment it CLOSED: when a bot checking every `minutes` sees that price."""
+    if df.empty:
+        return pd.Series(dtype=float)
+    starts = df.index
+    if minutes == step:
+        return pd.Series(df["Close"].values, index=starts + pd.Timedelta(minutes=step))
+    opens = starts.normalize() + pd.Timedelta(hours=9, minutes=30)
+    bucket = opens + ((starts - opens) // pd.Timedelta(minutes=minutes)) * pd.Timedelta(minutes=minutes)
+    grouped = df.assign(bucket=bucket, done=starts + pd.Timedelta(minutes=step)).groupby("bucket")
+    last = grouped.agg(close=("Close", "last"), done=("done", "max"))
+    return pd.Series(last["close"].values, index=pd.DatetimeIndex(last["done"]))
+
+
+def _dip_closes(key: str, start: date, end: date) -> pd.DataFrame:
+    """The dip buyer's prices: one column per symbol, one row per check. key = "<interval>|A,B,C" (so the price cache
+    keys on the interval too). "1d": daily closes from Yahoo, indexed by day. Otherwise the closes of each bar of the
+    interval, indexed by the moment the bar closed (New York time), from decision-service's intraday bars."""
+    interval, symbols_key = key.split("|", 1)
+    symbols = symbols_key.split(",")
+    if interval == "1d":
+        close = _universe_closes(symbols_key, start, end)
+        close.index = pd.DatetimeIndex(close.index)
+        return close
+    minutes = {"5m": 5, "15m": 15, "30m": 30, "1h": 60}[interval]
+    timeframe = DIP_TIMEFRAMES[interval]
+    step = int(timeframe.removesuffix("Min"))
+
+    def one(sym: str) -> pd.Series:
+        return _bar_closes(_intraday_bars(sym, start, end, timeframe), minutes, step).rename(sym)
+
+    with ThreadPoolExecutor(DIP_DOWNLOADS) as pool:
+        columns = list(pool.map(one, symbols))
+    close = pd.concat(columns, axis=1).reindex(columns=symbols)
+    if close.dropna(how="all").empty:
+        raise ValueError(f"No {timeframe} prices for {', '.join(symbols)} in {start}..{end}")
+    return close.sort_index()
+
+
+def _dip_history_start(cfg: DipConfig) -> date:
+    """How far before the start to download: the first check needs a full window behind it (and the trend filter 200
+    days of daily closes)."""
+    days = cfg.lookback if cfg.lookback_unit == "days" else math.ceil(cfg.lookback / 6.5)
+    return cfg.start - timedelta(days=int(days * 7 / 5) + 10)
+
+
+def start_dip_run(cfg: DipConfig) -> Run:
+    """Create a dip-buyer run and execute it in the background. Its result comes from GET /runs/{id}."""
+    run = Run(cfg)
+    RUNS[run.id] = run
+    asyncio.create_task(_execute_dip(run))
+    return run
+
+
+NEWS_RETRY_DELAYS = (2.0, 5.0)
+
+
+async def _news(client: httpx.AsyncClient, symbol: str, day: date, at: datetime | None) -> dict:
+    """decision-service's news verdict for a symbol at a past moment (None: 15:30 on that day). Never raises: a
+    failure is {"sentiment": "unavailable", "error": True} and the dip is bought on the prices alone."""
+    params = {"symbol": symbol, "as_of": day.isoformat()}
+    if at is not None:
+        params["decided_at"] = at.isoformat()
+    for delay in (*NEWS_RETRY_DELAYS, None):
+        try:
+            r = await client.get(f"{DECISION_BASE}/news/sentiment", params=params, timeout=90)
+        except Exception:
+            r = None
+        if r is not None and r.status_code == 200:
+            return r.json()
+        if (r is not None and r.status_code < 500 and r.status_code != 429) or delay is None:
+            break
+        await asyncio.sleep(delay)
+    return {"sentiment": "unavailable", "error": True}
+
+
+async def _execute_dip(run: Run) -> None:
+    cfg: DipConfig = run.cfg
+    async with _slots:
+        run.status = "running"
+        try:
+            key = f"{cfg.interval}|{','.join(cfg.symbols)}"
+            trend_start = cfg.start - timedelta(days=TREND_HISTORY_DAYS)  # the 200-day average needs closes from way back
+            first = min(_dip_history_start(cfg), trend_start) if cfg.trend_filter and cfg.interval == "1d" else _dip_history_start(cfg)
+            closes = await _load_prices(key, first, cfg.end, _dip_closes)
+            run.prices = closes
+            daily = None
+            if cfg.trend_filter and cfg.interval != "1d":  # intraday checks: the trend filter's daily closes come apart
+                daily = (await _load_prices(",".join(cfg.symbols), trend_start, cfg.end, _universe_closes)).copy()
+                daily.index = pd.DatetimeIndex(daily.index)
+            async with httpx.AsyncClient() as client:
+                async def news(symbol: str, day: date, at: datetime | None) -> dict:
+                    return await _news(client, symbol, day, at)
+
+                run.result = await DipEngine().run(cfg, closes, run.emit, daily=daily, news_fn=news)
             run.status = "done"
         except Exception as e:
             run.status = "error"

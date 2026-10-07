@@ -13,6 +13,7 @@ Strategy = Literal["sma_rsi", "trend_following", "momentum", "breakout", "mean_r
                    "ma_pullback", "reversal", "gap_and_go", "news_catalyst", "fibonacci"]
 DecideAt = Literal["close", "open", "both"]  # which of the day's decision slots a bot uses (see market.slot_window)
 Rotation = Literal["momentum_rotation"]  # models.ROTATION: a rotation bot's strategy (see rotation.py)
+Dip = Literal["dip_buyer"]  # models.DIP: a dip buyer's strategy (see dip.py)
 TICKER = r"^[A-Z][A-Z.\-]{0,9}$"
 
 
@@ -54,6 +55,162 @@ class BotCreate(StrategyParams):
         return v
 
 
+def _tickers(v: list[str]) -> list[str]:
+    """Upper-cased tickers, each once, in the given order; crypto and anything that isn't a ticker is refused."""
+    out = list(dict.fromkeys(s.strip().upper() for s in v if s.strip()))
+    bad = [s for s in out if not re.match(TICKER, s)]
+    if bad:
+        raise ValueError(f"not a ticker: {', '.join(bad)}")
+    _no_crypto(out)
+    return out
+
+
+Interval = Literal["5m", "15m", "30m", "1h", "1d"]  # how often a dip bot checks (dip.INTERVAL_MINUTES)
+INTERVAL_MINUTES = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "1d": 390}
+# The longest window per interval in days: Yahoo, where the bot reads its bars, keeps 5- to 30-minute ones for 60 days
+MAX_LOOKBACK_DAYS = {"5m": 40, "15m": 40, "30m": 40, "1h": 250, "1d": 250}
+
+
+def check_window(interval: str, lookback: int, unit: str) -> None:
+    """A dip bot's window must make sense for its interval and fit the price history it can read."""
+    if interval == "1d" and unit == "hours":
+        raise ValueError("a once-a-day check measures the fall in days, not hours")
+    if unit == "hours" and lookback * 60 < INTERVAL_MINUTES[interval]:
+        raise ValueError("the window must be at least one check long")
+    days = lookback if unit == "days" else lookback / 6.5
+    if days > MAX_LOOKBACK_DAYS[interval]:
+        raise ValueError(f"with {interval} checks the window can be at most {MAX_LOOKBACK_DAYS[interval]} trading days "
+                         "(the live price feed keeps only so much history)")
+
+
+class DipRules(BaseModel):
+    """A dip buyer's rules: the backtest's DipConfig, same names and meaning, so a tested setup deploys 1:1."""
+
+    interval: Interval = "15m"  # check every ...
+    drop_pct: float = Field(0.05, gt=0, le=0.5)  # buy a fall this big ...
+    lookback: int = Field(5, ge=1, le=1600)  # ... during the last `lookback` ...
+    lookback_unit: Literal["days", "hours"] = "days"  # ... trading days or market hours
+    drop_from: Literal["high", "start"] = "high"  # measured from the window's highest close, or its first one
+    target_mode: Literal["reference", "percent"] = "reference"  # sell back at that price, or rise_pct above the buy
+    rise_pct: float = Field(0.05, gt=0, le=2)
+    stop_pct: float = Field(0.05, gt=0, le=0.5)  # sell this far under the buy, and blacklist the symbol
+    max_positions: int = Field(5, ge=1, le=20)  # slots: each buy gets 1/max_positions of the equity
+    max_hold_days: int = Field(0, ge=0, le=250)  # sell after this many trading days whatever the price; 0 = never
+    news: bool = False  # ask the news before a buy: bearish = not today
+    trend_filter: bool = False  # only buy dips of symbols in an uptrend (50-day average over the 200-day)
+    # Wait for the turn: buy a fall only once it is back up rebound_pct from its low (bearish turned bullish)
+    rebound: bool = True
+    rebound_pct: float = Field(0.01, gt=0, le=0.5)
+
+    @model_validator(mode="after")
+    def _window_fits(self):
+        check_window(self.interval, self.lookback, self.lookback_unit)
+        return self
+
+
+class DipBotCreate(DipRules):
+    """A dip buyer: its rules plus the watchlist, the broker and the capital."""
+
+    name: str | None = Field(None, max_length=80)
+    broker: str = "paper"
+    allocated_cash: float = Field(10_000, ge=100, le=10_000_000)
+    symbols: list[str] = Field(..., min_length=1, max_length=60)
+    fee_pct: float = Field(0.0, ge=0, le=0.05)
+    slippage_pct: float = Field(0.0005, ge=0, le=0.05)
+    max_drawdown_pct: float = Field(0.2, ge=0, le=1)
+
+    @field_validator("symbols")
+    @classmethod
+    def _clean(cls, v: list[str]) -> list[str]:
+        out = _tickers(v)
+        if not out:
+            raise ValueError("pick at least one symbol")
+        return out
+
+
+class DipBotUpdate(BaseModel):
+    """Change a dip buyer's rules while it runs; only the fields sent change. New rules apply from the next check; a
+    position already held keeps the target and stop it was bought with."""
+
+    name: str | None = Field(None, max_length=80)
+    interval: Interval | None = None
+    drop_pct: float | None = Field(None, gt=0, le=0.5)
+    lookback: int | None = Field(None, ge=1, le=1600)
+    lookback_unit: Literal["days", "hours"] | None = None
+    drop_from: Literal["high", "start"] | None = None
+    target_mode: Literal["reference", "percent"] | None = None
+    rise_pct: float | None = Field(None, gt=0, le=2)
+    stop_pct: float | None = Field(None, gt=0, le=0.5)
+    max_positions: int | None = Field(None, ge=1, le=20)
+    max_hold_days: int | None = Field(None, ge=0, le=250)
+    news: bool | None = None
+    trend_filter: bool | None = None
+    rebound: bool | None = None
+    rebound_pct: float | None = Field(None, gt=0, le=0.5)
+    fee_pct: float | None = Field(None, ge=0, le=0.05)
+    slippage_pct: float | None = Field(None, ge=0, le=0.05)
+    max_drawdown_pct: float | None = Field(None, ge=0, le=1)
+
+
+class WatchSymbols(BaseModel):
+    """Symbols to add to a dip bot's watchlist."""
+
+    symbols: list[str] = Field(..., min_length=1, max_length=60)
+
+    @field_validator("symbols")
+    @classmethod
+    def _clean(cls, v: list[str]) -> list[str]:
+        return _tickers(v)
+
+
+class WatchItemOut(BaseModel):
+    """One symbol on a dip bot's watchlist, as of its last check."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    status: str  # watching | blacklisted
+    added_at: datetime
+    blacklisted_at: datetime | None
+    blacklist_reason: str | None
+    checked_at: datetime | None
+    last_price: float | None
+    reference_price: float | None  # the window's high (or start)
+    drop: float | None  # 0.06 = 6% under the reference
+    buy_below: float | None = None  # the price at or under which it is in the buy zone
+    in_zone: bool
+    held: bool = False
+    # The fall being followed: where it started (the target), since when, its low, when it turned up (rebound)
+    dip_reference: float | None = None
+    armed_at: datetime | None = None
+    trough_price: float | None = None
+    trough_at: datetime | None = None
+    turned_at: datetime | None = None
+    rebound_at: float | None = None  # waiting for the turn: bought at or above this price (the low + rebound_pct)
+    sold_on: date | None
+    news_sentiment: str | None
+    news_at: datetime | None
+    news_blocked_on: date | None
+    trend_ok: bool | None
+
+
+class SignalOut(BaseModel):
+    """A dip bot's recommendation (models.SIGNAL_KINDS) and what the bot did about it."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    bot_id: int
+    created_at: datetime
+    symbol: str
+    kind: str  # down | rebound | up | stop | time | news
+    price: float | None
+    reference_price: float | None
+    change_pct: float | None
+    message: str
+    outcome: str
+
+
 class RotationBotCreate(BaseModel):
     """A momentum rotation bot: the backtest's RotationConfig (same names) plus the bot's broker and capital."""
 
@@ -72,13 +229,9 @@ class RotationBotCreate(BaseModel):
     @field_validator("universe")
     @classmethod
     def _clean(cls, v: list[str]) -> list[str]:
-        out = list(dict.fromkeys(s.strip().upper() for s in v if s.strip()))
-        bad = [s for s in out if not re.match(TICKER, s)]
-        if bad:
-            raise ValueError(f"not a ticker: {', '.join(bad)}")
+        out = _tickers(v)
         if len(out) < 2:
             raise ValueError("pick at least 2 symbols")
-        _no_crypto(out)
         return out
 
     @model_validator(mode="after")
@@ -106,7 +259,7 @@ class BotUpdate(BaseModel):
 
 
 class HoldingOut(BaseModel):
-    """One symbol a rotation bot holds, valued at its last price."""
+    """One symbol a rotation or dip bot holds, valued at its last price."""
 
     symbol: str
     shares: int
@@ -116,12 +269,19 @@ class HoldingOut(BaseModel):
     value: float
     weight_pct: float  # of the bot's equity
     unrealized_pnl: float
+    opened_at: datetime | None = None
+    # --- dip bots only ---
+    entry_price: float | None = None
+    reference_price: float | None = None  # the price the fall started from
+    target_price: float | None = None
+    stop_price: float | None = None
+    on_watchlist: bool = True  # False: removed from the watchlist; held until it exits
 
 
 class BotOut(StrategyParams):
     model_config = ConfigDict(from_attributes=True)
 
-    strategy: Strategy | Rotation
+    strategy: Strategy | Rotation | Dip
     id: int
     name: str
     symbol: str
@@ -159,6 +319,21 @@ class BotOut(StrategyParams):
     abs_filter: bool | None = None
     holdings: list[HoldingOut] = []
     rebalancing: bool = False  # a rebalance's orders are still being sent (sells first, then the buys)
+    # --- dip buyers only (None / empty on the others); `universe` = the starting watchlist (the benchmark) ---
+    interval: Interval | None = None
+    drop_pct: float | None = None
+    lookback: int | None = None
+    lookback_unit: str | None = None
+    drop_from: str | None = None
+    target_mode: str | None = None
+    rise_pct: float | None = None
+    max_positions: int | None = None
+    max_hold_days: int | None = None
+    news: bool | None = None
+    trend_filter: bool | None = None
+    rebound: bool | None = None
+    rebound_pct: float | None = None
+    watchlist: list[WatchItemOut] = []
 
 
 class DecisionOut(BaseModel):

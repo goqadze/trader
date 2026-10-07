@@ -9,7 +9,9 @@
                                                            before the close, see market.slot_window)
 Momentum rotation bots (see rotation.py) take the same steps their own way: no stop-loss to keep at the broker,
 prices and the account check every RISK_CHECK_MINUTES, a rebalance at each month's last close, and the orders of a
-rebalance still in progress sent on the following ticks.
+rebalance still in progress sent on the following ticks. Dip buyers (see dip.py) too: prices and the account every
+RISK_CHECK_MINUTES, and a check of every watched symbol at the end of each bar of their interval (paused ones only
+check their holdings' exits).
 
 Restart-safe by design: "which slots are already done?" comes from the database (Bot.last_decision_at),
 not from memory, so a restart at 15:40 doesn't decide twice. If the service is down for a slot's whole
@@ -28,8 +30,8 @@ from .config import settings
 from .db import SessionLocal, utcnow
 from .decision_client import get_signal
 from .market import NY, is_open, ny_date, session_bounds, sessions_since, slot_window
-from . import rotation
-from .models import ROTATION, Bot
+from . import dip, rotation
+from .models import DIP, ROTATION, Bot
 from .trader import bot_lock, evaluate, log_event, protect, reconcile, sync_pending, watch
 
 logger = logging.getLogger("trading-service")
@@ -99,6 +101,8 @@ def next_decision_at(bot: Bot, now: datetime) -> datetime | None:
     """When the scheduler will next decide for this bot (the dashboard shows it). None unless active."""
     if bot.strategy == ROTATION:
         return rotation.next_rebalance_at(bot, now)
+    if bot.strategy == DIP:
+        return dip.next_check_at(bot, now)
     if bot.status != "active":
         return None
     last = _last_decided(bot)
@@ -114,9 +118,11 @@ def next_decision_at(bot: Bot, now: datetime) -> datetime | None:
     return None
 
 
-def process_bot(bot_id: int, now: datetime, signal_fn=get_signal, broker_factory=get_broker, closes_fn=None) -> None:
+def process_bot(bot_id: int, now: datetime, signal_fn=get_signal, broker_factory=get_broker, closes_fn=None,
+                dip_fns: dict | None = None) -> None:
     """One scheduler pass for one bot. Never raises: one broken bot must not stop the others.
-    closes_fn: the rotation bots' daily price download (tests pass a fake)."""
+    closes_fn: the rotation bots' daily price download; dip_fns: the dip bots' bars_fn / news_fn / trend_fn (tests
+    pass fakes)."""
     lock = bot_lock(bot_id)
     if not lock.acquire(blocking=False):
         return  # busy: an API action or a slow LLM decision from the previous tick; try next tick
@@ -130,6 +136,10 @@ def process_bot(bot_id: int, now: datetime, signal_fn=get_signal, broker_factory
                 sync_pending(session, bot, broker, now)
                 if bot.strategy == ROTATION:
                     _process_rotation(session, bot, broker, now, closes_fn)
+                    session.commit()
+                    return
+                if bot.strategy == DIP:
+                    _process_dip(session, bot, broker, now, closes_fn, dip_fns or {})
                     session.commit()
                     return
                 protect(session, bot, broker, now)
@@ -172,6 +182,23 @@ def _process_rotation(session, bot: Bot, broker, now: datetime, closes_fn) -> No
             _retry_after[bot.id] = now + SIGNAL_RETRY
     elif bot.rotation_plan:
         rotation.step(session, bot, broker, now)  # the rest of a rebalance whose first orders were still filling
+
+
+def _process_dip(session, bot: Bot, broker, now: datetime, closes_fn, fns: dict) -> None:
+    """The scheduler pass for a dip buyer, after its pending orders were synced: the account and the prices every few
+    minutes (like a rotation bot: its holdings and the starting watchlist's value), a check at each interval."""
+    if not is_open(now):
+        return
+    if now - _last_watch.get(bot.id, datetime.min.replace(tzinfo=now.tzinfo)) >= timedelta(minutes=settings.risk_check_minutes):
+        _last_watch[bot.id] = now
+        if not rotation.reconcile(session, bot, broker, now):
+            return
+        rotation.watch(session, bot, broker, now, closes_fn)
+    if dip.due(bot, now) and now >= _retry_after.get(bot.id, now):
+        before = bot.last_decision_at
+        dip.check(session, bot, broker, now, "scheduled", **fns)
+        if bot.last_decision_at == before:  # the price download failed
+            _retry_after[bot.id] = now + SIGNAL_RETRY
 
 
 def _log_error_throttled(session, bot_id: int, e: Exception, now: datetime) -> None:

@@ -28,7 +28,7 @@ from .brokers import Broker, BrokerError, BrokerOrder, Quote
 from .config import settings
 from .decision_client import SignalError, get_signal
 from .market import NY, ny_date
-from .models import OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, EquitySnapshot, Event, Holding, Order
+from .models import DIP, HOLDINGS_STRATEGIES, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, EquitySnapshot, Event, Holding, Order
 
 logger = logging.getLogger("trading-service")
 
@@ -73,13 +73,13 @@ def resting_stop(session: Session, bot: Bot) -> Order | None:
 
 
 def holdings(session: Session, bot: Bot) -> list[Holding]:
-    """A rotation bot's positions (none for the other bots, whose one position lives on the Bot row)."""
+    """A rotation or dip bot's positions (none for the other bots, whose one position lives on the Bot row)."""
     return list(session.scalars(select(Holding).where(Holding.bot_id == bot.id).order_by(Holding.symbol)))
 
 
 def bot_equity(session: Session, bot: Bot, price: float | None) -> float:
-    """Cash plus what the bot holds: its position at `price`, or a rotation bot's holdings at their last prices."""
-    if bot.strategy == ROTATION:
+    """Cash plus what the bot holds: its position at `price`, or a rotation or dip bot's holdings at their last prices."""
+    if bot.strategy in HOLDINGS_STRATEGIES:
         return round(bot.cash + sum(h.shares * (h.last_price or h.cost_basis / h.shares) for h in holdings(session, bot)
                                     if h.shares), 2)
     return round(bot.cash + bot.shares * (price or 0.0), 2)
@@ -103,9 +103,9 @@ def fresh_quote(broker: Broker, bot: Bot, now: datetime) -> Quote:
 
 def submit_order(session: Session, bot: Bot, broker: Broker, side: str, qty: int, reason: str,
                  now: datetime, decision: Decision | None = None, stop_price: float | None = None,
-                 symbol: str | None = None) -> Order:
+                 symbol: str | None = None, reference_price: float | None = None) -> Order:
     """Write-ahead order submission (a market order, or a resting SELL stop when stop_price is given), for the
-    bot's symbol or, on a rotation bot, `symbol`:
+    bot's symbol or, on a rotation or dip bot, `symbol` (a dip buy carries its reference_price: the target to come):
     1. save the order as "new" and COMMIT, before the broker hears about it;
     2. send it with our client_order_id;
     3. book whatever the broker answered.
@@ -113,7 +113,7 @@ def submit_order(session: Session, bot: Bot, broker: Broker, side: str, qty: int
     the broker what happened to it -- so an order can be neither lost nor sent twice."""
     symbol = symbol or bot.symbol
     order = Order(bot_id=bot.id, decision_id=decision.id if decision else None, side=side, symbol=symbol, qty=qty,
-                  order_type="market" if stop_price is None else "stop", stop_price=stop_price,
+                  order_type="market" if stop_price is None else "stop", stop_price=stop_price, reference_price=reference_price,
                   reason=reason, status="new", client_order_id=f"bot{bot.id}-{uuid.uuid4().hex[:16]}",
                   created_at=now, updated_at=now)
     session.add(order)
@@ -152,7 +152,7 @@ def apply_broker_state(session: Session, bot: Bot, order: Order, bo: BrokerOrder
     order.filled_qty = bo.filled_qty
     order.avg_price = bo.avg_price
     order.fee = bo.fee
-    if bot.strategy == ROTATION:
+    if bot.strategy in HOLDINGS_STRATEGIES:
         _book_holding_fill(session, bot, order, now)
         mark_to_market(session, bot, bot.last_price or bot.allocated_cash, now)  # its "price": the universe's value
     else:
@@ -198,7 +198,7 @@ def _book_fill(bot: Bot, order: Order) -> None:
 
 
 def _book_holding_fill(session: Session, bot: Bot, order: Order, now: datetime) -> None:
-    """The same accounting for a rotation bot, on the Holding of the order's symbol."""
+    """The same accounting for a rotation or dip bot, on the Holding of the order's symbol."""
     qty, price, fee = order.filled_qty, order.avg_price, order.fee
     h = session.scalar(select(Holding).where(Holding.bot_id == bot.id, Holding.symbol == order.symbol))
     if order.side == "BUY":
@@ -206,6 +206,8 @@ def _book_holding_fill(session: Session, bot: Bot, order: Order, now: datetime) 
             h = Holding(bot_id=bot.id, symbol=order.symbol, shares=0, cost_basis=0.0, opened_at=now)
             session.add(h)
         bot.cash = round(bot.cash - qty * price - fee, 2)
+        if bot.strategy == DIP:
+            _set_dip_levels(bot, h, qty, price, order.reference_price)
         h.shares += qty
         h.cost_basis = round(h.cost_basis + qty * price + fee, 2)
     else:
@@ -223,6 +225,21 @@ def _book_holding_fill(session: Session, bot: Bot, order: Order, now: datetime) 
     if h.shares <= 0:
         session.delete(h)
     session.flush()
+
+
+def _set_dip_levels(bot: Bot, h: Holding, qty: int, price: float, reference: float | None) -> None:
+    """A dip bot's exit levels, from the ACTUAL fill (slippage can't quietly widen the risk), like the backtest: the stop
+    stop_pct under the average buy, the target back at the reference the fall started from (or rise_pct above the buy).
+    Called before the new shares are added to the holding."""
+    entry = (h.shares * (h.entry_price or price) + qty * price) / (h.shares + qty)
+    h.entry_price = round(entry, 4)
+    if reference is not None:
+        h.reference_price = round(reference, 2)
+    h.stop_price = round(entry * (1 - bot.stop_pct), 2)
+    if bot.target_mode == "percent" or h.reference_price is None:
+        h.target_price = round(entry * (1 + (bot.rise_pct or bot.drop_pct or 0.05)), 2)
+    else:
+        h.target_price = h.reference_price
 
 
 def sync_pending(session: Session, bot: Bot, broker: Broker, now: datetime) -> None:
@@ -358,7 +375,9 @@ def mark_to_market(session: Session, bot: Bot, price: float, now: datetime) -> N
     if bot.status == "active" and bot.max_drawdown_pct > 0 and equity < floor:
         # Pause, don't panic-sell: the position keeps its stop-loss; you decide what happens next.
         bot.status = "paused"
-        after = ("no more rebalances; it keeps what it holds" if bot.strategy == ROTATION else "stop-loss still active")
+        after = ("no more rebalances; it keeps what it holds" if bot.strategy == ROTATION
+                 else "no more buys; its holdings' stop-loss and target are still checked" if bot.strategy == DIP
+                 else "stop-loss still active")
         log_event(session, bot.id, "risk",
                   f"Drawdown breaker: equity ${equity:,.2f} is more than {bot.max_drawdown_pct:.0%} below its peak "
                   f"${bot.peak_equity:,.2f}. Bot paused; {after}.", "error", now)

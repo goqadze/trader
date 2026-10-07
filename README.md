@@ -97,6 +97,42 @@ day one. The default universe is the 11 S&P sector ETFs: testing past years on t
 pick yesterday's winners in hindsight (survivorship bias), and the page warns when a universe holds stocks.
 **Paper trade this rotation** turns the tested rules into a rotation bot (see below).
 
+## Dip buyer (watchlist, backtest + bot)
+
+**Dip buyer** (`/dip`, `backtest-service/app/engines/dip.py`, `POST /runs/dip`; bot: `trading-service/app/dip.py`,
+`POST /bots/dip`) watches a list of symbols. At every check (the end of each 5/15/30/60-minute bar from the open, or
+once a day before the close) it:
+
+1. sells a holding at or under its **stop** (`stop_pct` under the buy) and **blacklists** the symbol until you
+   re-enable it; sells at its **target** (back at the price the fall started from, or `rise_pct` above the buy); or,
+   if set, after `max_hold_days`;
+2. measures each symbol against its **reference**: the highest close of the last `lookback` days (or hours), or the
+   close at that window's start (`drop_from`). At least `drop_pct` under it = the **buy zone**;
+3. buys the deepest falls first while slots are free (`max_positions`, each 1/N of the equity, whole shares).
+   **News on**: decision-service's `GET /news/sentiment` reads the headlines first; bearish news blocks that symbol
+   for the rest of the day. **Trend filter**: only symbols whose 50-day average is above the 200-day one.
+   **Wait for the turn** (`rebound`, on by default, x1 = `rebound_pct` 1%): a fall into the buy zone isn't bought
+   yet. The bot follows it (the reference it fell from, its lowest price since) and buys once the price is x1 above
+   that low, bearish turned bullish, still under the reference (a `rebound` signal). Back at the reference first =
+   that dip is over. Dip bots created before the option keep buying at once.
+
+The backtest replays every check on intraday bars from decision-service (Alpaca, years of history; 15-minute bars
+were added for this) or on Yahoo daily closes, with practice and exam windows and the usual recommendation. It counts
+the blacklist too: `reenable_days` stands in for you re-enabling a symbol (0 = never, like a bot you never touch).
+**Paper trade these rules** creates the bot with the same rules. The result's **Charts** tab draws each symbol's
+price with every trade on it: where the fall started (the window's high), its low where it turned, the buy and the
+sale, the bearish stretch shaded red and the bullish one green; click a trade to zoom in with its target and stop
+(`GET /runs/{id}/prices`: a run's prices stay in memory, thinned keeping each stretch's high and low). The live bot reads Yahoo's bars for the window (5- to
+30-minute bars only go back 60 days, so its window is at most 40 days there) and the broker's quote before each trade.
+While it runs you can add and remove symbols (a removed symbol that is held still exits), blacklist or re-enable
+them, sell one holding, and change any rule, including the news switch (`PATCH /bots/{id}/dip`).
+
+Every dip into the buy zone, recovery, stop-loss and news veto is saved as a **signal** (`GET /bots/{id}/signals`,
+`GET /signals`), whatever the bot did. The bell in the header polls them every 30 s and can show a pop-up, a desktop
+notification, play a sound (falling tones = down, rising = up) or read them aloud. A scheduled check that changed
+nothing leaves no decision row (a 15-minute bot checks 25 times a day); the watchlist shows the last check instead.
+The stop is checked at each check, not held at the broker. Paper accounts only for now.
+
 ## Intraday strategies (backtest only)
 
 Three strategies trade within the day on 5-minute bars (Alpaca, years of history), one setup a day at most, every

@@ -2,6 +2,7 @@
 // Same-origin: nginx (docker) or the Vite dev proxy forwards these to backtest-service.
 
 import { request } from "./http";
+import type { DipConfig } from "./dip/types";
 import type { RotationConfig } from "./rotation/types";
 import type { ScanConfig, ScanSummary, ScanView } from "./scan/types";
 import type { Result, RunConfig, RunEvent } from "./types";
@@ -27,3 +28,14 @@ export const getRun = (id: string) =>
 
 /** A momentum-rotation backtest over a universe of symbols (one window); poll getRun for its result. */
 export const createRotationRun = (cfg: RotationConfig) => request<{ run_id: string }>("POST", "/runs/rotation", cfg);
+
+/** A dip-buyer backtest over a watchlist (one window); poll getRun for its result. */
+export const createDipRun = (cfg: DipConfig) => request<{ run_id: string }>("POST", "/runs/dip", cfg);
+
+/** One symbol's prices from a dip-buyer run, for its chart: between start and end (default: the run's window), thinned
+ *  to about `points` while keeping every stretch's high and low. */
+export const getRunPrices = (id: string, symbol: string, start?: string, end?: string, points = 900) =>
+  request<{ symbol: string; interval: string; points: { t: string; p: number }[] }>(
+    "GET",
+    `/runs/${id}/prices?${new URLSearchParams({ symbol, points: String(points), ...(start && { start }), ...(end && { end }) })}`
+  );

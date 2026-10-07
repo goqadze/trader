@@ -1,4 +1,4 @@
-import { PlusOutlined, RetweetOutlined, StopOutlined } from "@ant-design/icons";
+import { FallOutlined, PlusOutlined, RetweetOutlined, StopOutlined } from "@ant-design/icons";
 import { Alert, App as AntApp, Badge, Button, Card, Col, List, Popconfirm, Row, Space, Statistic, Switch, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useMemo, useState } from "react";
@@ -6,9 +6,10 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { tradingApi } from "./api";
 import BotForm, { type BotFormInitial } from "./BotForm";
 import RotationBotForm, { type RotationBotInitial } from "./RotationBotForm";
+import { dipRules } from "../dip/DipParts";
 import { strategyName } from "../strategies";
 import {
-  STATUS_COLOR, botTitle, checkTimes, isRotation, localTime, nyTime, pct, pnlColor, relative, rotationRules, slotTimes, usd,
+  STATUS_COLOR, botTitle, checkTimes, holdsMany, isDip, isRotation, localTime, nyTime, pct, pnlColor, relative, rotationRules, slotTimes, usd,
 } from "./format";
 import type { Bot, BotCreate, RotationBotCreate, TradingEvent, TradingStatus } from "./types";
 import { usePolling } from "./usePolling";
@@ -26,6 +27,10 @@ export function MarketStatus({ status, bot }: { status: TradingStatus | null; bo
       <Tooltip
         title={bot && isRotation(bot)
           ? `A rebalance on each month's last trading day at ${t.close} ET (earlier on half days)`
+          : bot && isDip(bot)
+          ? bot.interval === "1d"
+            ? `A check of every watched symbol once a day at ${t.close} ET (earlier on half days)`
+            : `A check of every watched symbol at the end of each ${bot.interval} bar from the 9:30 open, until the close`
           : bot
           ? `Every ${bot.rebalance_days} trading day${bot.rebalance_days === 1 ? "" : "s"} at ${checkTimes(bot.decide_at, t)} (earlier on half days)`
           : `The soonest decision of any active bot. Bots check at ${t.open} and/or ${t.close} ET, as each is set (earlier on half days)`}
@@ -78,7 +83,7 @@ const columns: ColumnsType<Bot> = [
     key: "ret",
     align: "right",
     render: (_, b) => (
-      <Tooltip title={`${isRotation(b) ? `Its ${b.universe?.length} symbols held equally` : "Buy & hold"} since the bot started: ${pct(b.buy_hold_return_pct)}`}>
+      <Tooltip title={`${isRotation(b) ? `Its ${b.universe?.length} symbols held equally` : isDip(b) ? `Its starting ${b.universe?.length} symbols held equally` : "Buy & hold"} since the bot started: ${pct(b.buy_hold_return_pct)}`}>
         <span style={{ color: pnlColor(b.return_pct) }}>{pct(b.return_pct)}</span>
         <span style={{ color: "#8b98b5", fontSize: 12 }}> / B&amp;H {pct(b.buy_hold_return_pct)}</span>
       </Tooltip>
@@ -88,7 +93,7 @@ const columns: ColumnsType<Bot> = [
     title: "Position",
     key: "pos",
     render: (_, b) =>
-      isRotation(b) ? (
+      holdsMany(b) ? (
         b.holdings.length ? (
           <span>
             {b.holdings.map((h) => h.symbol).join(", ")} <span style={{ color: pnlColor(b.unrealized_pnl) }}>({usd(b.unrealized_pnl)})</span>
@@ -105,12 +110,14 @@ const columns: ColumnsType<Bot> = [
         <span style={{ color: "#8b98b5" }}>flat</span>
       ),
   },
-  { title: "Last price", key: "last_price", align: "right", render: (_, b) => (isRotation(b) ? "—" : usd(b.last_price)) },
+  { title: "Last price", key: "last_price", align: "right", render: (_, b) => (holdsMany(b) ? "—" : usd(b.last_price)) },
   {
     title: "Strategy",
     key: "params",
     render: (_, b) => (isRotation(b) ? (
       <span style={{ fontSize: 12, color: "#8b98b5" }}>Momentum rotation · {rotationRules(b)} · month ends at {slotTimes().close}</span>
+    ) : isDip(b) ? (
+      <span style={{ fontSize: 12, color: "#8b98b5" }}>Dip buyer on {b.watchlist.length} · {dipRules(b)}{b.news ? " · news on" : ""}</span>
     ) : (
       <span style={{ fontSize: 12, color: "#8b98b5" }}>
         {strategyName(b.strategy)} · conf ≥ {b.min_confidence} · every {b.rebalance_days}d at {checkTimes(b.decide_at, slotTimes())} · stop {+(b.stop_pct * 100).toFixed(1)}% / tgt {+(b.target_pct * 100).toFixed(1)}%
@@ -228,6 +235,11 @@ export default function TradingPage() {
             >
               <Button danger icon={<StopOutlined />} disabled={totals.active === 0}>Halt all</Button>
             </Popconfirm>
+            <Tooltip title="Watches a list of symbols, buys the ones that just fell and sells them once they're back (see the Dip buyer page)">
+              <Button icon={<FallOutlined />} onClick={() => navigate("/dip", { state: { newDipBot: true } })}>
+                New dip bot
+              </Button>
+            </Tooltip>
             <Tooltip title="Holds the strongest few of a group of symbols, rebalanced at each month's end (see the Rotation page)">
               <Button icon={<RetweetOutlined />} onClick={() => { setRotationInitial({}); setRotationOpen(true); }}>
                 New rotation bot

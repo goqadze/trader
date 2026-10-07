@@ -1,7 +1,7 @@
 // Formatting helpers shared by the trading pages. Market times are shown in New York time,
 // because that's the clock the exchange (and the bots' schedule) runs on.
 
-import { ROTATION, type Bot, type DecideAt, type TradingStatus } from "./types";
+import { DIP, ROTATION, type Bot, type DecideAt, type TradingStatus } from "./types";
 
 // Values within half a cent of zero print as $0.00 (float dust would otherwise show "-$0.00")
 export const usd = (v: number | null | undefined, digits = 2) =>
@@ -48,16 +48,19 @@ export function relative(iso: string | null | undefined): string {
 }
 
 export const isRotation = (b: Pick<Bot, "strategy">) => b.strategy === ROTATION;
+export const isDip = (b: Pick<Bot, "strategy">) => b.strategy === DIP;
+/** Bots that hold several symbols at once (their positions are `holdings`). */
+export const holdsMany = (b: Pick<Bot, "strategy">) => isRotation(b) || isDip(b);
 
-/** How a bot is named in headers and lists: its symbol, or "Rotation" for a rotation bot (whose symbol column is a placeholder). */
-export const botTitle = (b: Pick<Bot, "strategy" | "symbol">) => (isRotation(b) ? "Rotation" : b.symbol);
+/** How a bot is named in headers and lists: its symbol, or "Rotation" / "Dip buyer" (whose symbol column is a placeholder). */
+export const botTitle = (b: Pick<Bot, "strategy" | "symbol">) => (isRotation(b) ? "Rotation" : isDip(b) ? "Dip buyer" : b.symbol);
 
 /** "Top 3 of 11 · 12-1 momentum": a rotation bot's rules in a few words. */
 export const rotationRules = (b: Pick<Bot, "top_n" | "universe" | "lookback_months" | "skip_months">) =>
   `Top ${b.top_n} of ${b.universe?.length ?? 0} · ${b.lookback_months}${b.skip_months ? `-${b.skip_months}` : "-month"} momentum`;
 
 export const STATUS_COLOR: Record<string, string> = { active: "green", paused: "orange", archived: "default" };
-export const ACTION_COLOR: Record<string, string> = { BUY: "green", SELL: "red", HOLD: "default", ROTATE: "geekblue" };
+export const ACTION_COLOR: Record<string, string> = { BUY: "green", SELL: "red", HOLD: "default", ROTATE: "geekblue", TRADE: "purple" };
 export const SENTIMENT_COLOR: Record<string, string> = { bullish: "green", bearish: "red", neutral: "blue" };
 export const ORDER_STATUS_COLOR: Record<string, string> = {
   filled: "green",

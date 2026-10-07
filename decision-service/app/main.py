@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
-from .agent import agent  # the compiled LangGraph workflow
+from .agent import agent, news_rag  # the compiled LangGraph workflow, and its news step on its own
 from .futures import FUTURES
 from .intraday import bars_between
 from .intraday_strategies import HTF_HISTORY_DAYS, INTRADAY_STRATEGIES, plans as intraday_plans
@@ -56,9 +56,10 @@ def strategies():
 
 
 @app.get("/bars/intraday")
-def intraday_bars(symbol: str, start: date, end: date, timeframe: Literal["30Min", "5Min"] = "30Min"):
+def intraday_bars(symbol: str, start: date, end: date, timeframe: Literal["30Min", "15Min", "5Min"] = "30Min"):
     """Regular-hours bars (New York time, each stamped with its START). 30-minute ones for backtests that decide
-    after the open (each day's 10:00 price and the range around it), 5-minute ones for the intraday strategies.
+    after the open (each day's 10:00 price and the range around it), 5-minute ones for the intraday strategies,
+    15-minute (and 5- and 30-minute) ones for the dip buyer, which checks its symbols every few minutes.
     From Alpaca when its keys are set (years of history), else Yahoo (the last 60 days). The data keys stay here.
     Index futures (NQ, MNQ, ES, MES, YM, MYM) come rebuilt from their ETFs (futures.py)."""
     if end < start:
@@ -95,6 +96,39 @@ def intraday_plan_list(symbol: str, start: date, end: date, strategy: str, sides
         raise HTTPException(502, f"5-minute prices unavailable: {type(e).__name__}: {e}")
     future = FUTURES.get(symbol.upper())
     return intraday_plans(bars, strategy, start, end, sides, tick=future.tick if future else 0.01, entry=entry, htf=htf)
+
+
+class NewsSentiment(BaseModel):
+    """Shape of /news/sentiment: the news step alone, no strategy."""
+
+    symbol: str
+    as_of: date
+    sentiment: str  # bullish | bearish | neutral | unavailable (no keys, or a source / the LLM failed)
+    headlines: list[str]
+    catalysts: list[str]  # the fresh (<48h) company-specific events among them
+    steps: list[str]
+
+
+@app.get("/news/sentiment", response_model=NewsSentiment)
+def news_sentiment(symbol: str, as_of: date | None = None, decided_at: datetime | None = None):
+    """The news step of /signal on its own: the recent headlines about a symbol and the LLM's verdict on them. The dip
+    buyer asks this before it buys a drop: bearish news says the drop has a reason and may go on. Same rules as
+    /signal: only news published before decided_at (default 15:30 New York on as_of) counts, and a day that's over is
+    judged once and reused (news_judgments), so a backtest and a rerun see the same verdict."""
+    as_of = as_of or datetime.now(ZoneInfo("America/New_York")).date()
+    state = {"symbol": symbol.upper(), "as_of": as_of, "steps": [], "use_news": True}
+    if decided_at is not None:
+        decided_at = decided_at if decided_at.tzinfo else decided_at.replace(tzinfo=timezone.utc)
+        if decided_at.astimezone(ZoneInfo("America/New_York")).date() != as_of:
+            raise HTTPException(422, "decided_at must be on the as_of date (New York time)")
+        state["decided_at"] = decided_at
+    try:
+        out = news_rag(state)
+    except Exception as e:  # news_rag already turns source failures into "unavailable"; this is anything else
+        logger.exception("news sentiment failed for %s as_of=%s", symbol, as_of)
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+    return NewsSentiment(symbol=symbol.upper(), as_of=as_of, sentiment=out.get("sentiment", "unavailable"),
+                         headlines=out.get("headlines", []), catalysts=out.get("catalysts", []), steps=out.get("steps", []))
 
 
 @app.post("/signal", response_model=Signal)

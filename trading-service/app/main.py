@@ -1,5 +1,5 @@
-"""Trading API: create bots (one symbol + one parameter set each, or a momentum rotation across a universe), control
-them, read their history.
+"""Trading API: create bots (one symbol + one parameter set each, a momentum rotation across a universe, or a dip buyer
+watching a list of symbols), control them, read their history.
 
 The React dashboard reaches this through nginx at /api/trading/* (see frontend/nginx.conf), and nginx only
 lets signed-in users through. Sign-in and accounts are in auth.py (/auth/*).
@@ -15,14 +15,14 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import auth, rotation, scheduler
+from . import auth, dip, rotation, scheduler
 from .brokers import SHARED_ACCOUNT_BROKERS, BrokerError, catalog, get_broker
 from .config import settings
 from .db import get_session, init_db, utcnow
 from .market import is_open, next_decision_time, ny_date, session_bounds
-from .models import OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, EquitySnapshot, Event, Order
-from .schemas import (BotCreate, BotOut, BotUpdate, DecisionOut, EventOut, HoldingOut, OrderOut, RotationBotCreate,
-                      SnapshotOut, StatusOut)
+from .models import DIP, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, EquitySnapshot, Event, Order, Signal, WatchItem
+from .schemas import (BotCreate, BotOut, BotUpdate, DecisionOut, DipBotCreate, DipBotUpdate, EventOut, HoldingOut, OrderOut,
+                      RotationBotCreate, SignalOut, SnapshotOut, StatusOut, WatchItemOut, WatchSymbols, check_window)
 from .trader import bot_equity, bot_lock, close_position, evaluate, holdings, log_event, open_orders, resting_stop
 
 logger = logging.getLogger("trading-service")
@@ -70,12 +70,22 @@ def _bot_out(session: Session, bot: Bot) -> BotOut:
     equity = bot_equity(session, bot, price)
     live = next((b["live"] for b in catalog() if b["name"] == bot.broker), False)
     now = utcnow()
+    items = dip.watchlist(session, bot) if bot.strategy == DIP else []
+    watched = {i.symbol for i in items}
     rows = []
     for h in holdings(session, bot):
         value = round(h.shares * (h.last_price or h.cost_basis / h.shares), 2)
         rows.append(HoldingOut(symbol=h.symbol, shares=h.shares, cost_basis=h.cost_basis, last_price=h.last_price,
                                last_price_at=h.last_price_at, value=value, unrealized_pnl=round(value - h.cost_basis, 2),
-                               weight_pct=round(value / equity * 100, 1) if equity else 0.0))
+                               weight_pct=round(value / equity * 100, 1) if equity else 0.0, opened_at=h.opened_at,
+                               entry_price=h.entry_price, reference_price=h.reference_price, target_price=h.target_price,
+                               stop_price=h.stop_price, on_watchlist=bot.strategy != DIP or h.symbol in watched))
+    held = {r.symbol for r in rows}
+    watchlist = [WatchItemOut.model_validate(i).model_copy(update={
+        "held": i.symbol in held,
+        "buy_below": round(i.reference_price * (1 - bot.drop_pct), 2) if i.reference_price else None,
+        "rebound_at": round(i.trough_price * (1 + (bot.rebound_pct or 0.01)), 2)
+        if bot.rebound and i.dip_reference and i.trough_price else None}) for i in items]
     return BotOut.model_validate({
         **{c: getattr(bot, c) for c in BotOut.model_fields if hasattr(bot, c)},
         "live": live,
@@ -89,16 +99,23 @@ def _bot_out(session: Session, bot: Bot) -> BotOut:
         "next_decision_at": scheduler.next_decision_at(bot, now),
         "holdings": rows,
         "rebalancing": bot.rotation_plan is not None,
+        "watchlist": watchlist,
     })
 
 
-def _symbol_clash(session: Session, broker: str, symbols: list[str]) -> tuple[str, Bot] | None:
+def _symbol_clash(session: Session, broker: str, symbols: list[str], exclude: int | None = None) -> tuple[str, Bot] | None:
     """On a real (paper) account, another bot already trading one of these symbols: (symbol, that bot). Both would
-    buy and sell the same shares and corrupt each other's position. The simulator keeps every bot apart."""
+    buy and sell the same shares and corrupt each other's position. The simulator keeps every bot apart.
+    exclude: a bot that may trade them (a dip bot adding symbols to its own watchlist)."""
     if broker not in SHARED_ACCOUNT_BROKERS:
         return None
-    for other in session.scalars(select(Bot).where(Bot.broker == broker, Bot.status != "archived")):
-        theirs = set(other.universe or []) if other.strategy == ROTATION else {other.symbol}
+    for other in session.scalars(select(Bot).where(Bot.broker == broker, Bot.status != "archived", Bot.id != (exclude or 0))):
+        if other.strategy == ROTATION:
+            theirs = set(other.universe or [])
+        elif other.strategy == DIP:  # what it watches now, and what it still holds after a symbol was removed
+            theirs = {i.symbol for i in dip.watchlist(session, other)} | {h.symbol for h in holdings(session, other)}
+        else:
+            theirs = {other.symbol}
         for s in symbols:
             if s in theirs:
                 return s, other
@@ -247,6 +264,188 @@ def create_rotation_bot(body: RotationBotCreate, session: Session = Depends(get_
     return _bot_out(session, bot)
 
 
+def _paper_broker_or_422(name: str, what: str) -> None:
+    info = next((b for b in catalog() if b["name"] == name), None)
+    if info is None:
+        raise HTTPException(422, f"unknown broker '{name}'")
+    if not info["available"]:
+        raise HTTPException(422, f"broker '{name}' unavailable: {info['reason']}")
+    if info["live"]:
+        raise HTTPException(422, f"{what} trade on paper accounts only for now: paper-trade it first")
+
+
+def _prices_or_422(symbols: list[str]) -> dict[str, float]:
+    """Today's prices of these symbols (Yahoo's daily closes): they prove each symbol exists and has data."""
+    try:
+        prices = rotation.universe_prices(symbols, ny_date(utcnow()))
+    except BrokerError as e:
+        raise HTTPException(422, f"can't get prices for {', '.join(symbols)}: {e}")
+    if missing := [s for s in symbols if s not in prices]:
+        raise HTTPException(422, f"no prices for {', '.join(missing)} (unknown symbols?)")
+    return prices
+
+
+@app.post("/bots/dip", response_model=BotOut, status_code=201)
+def create_dip_bot(body: DipBotCreate, session: Session = Depends(get_session)):
+    """A dip buyer: watches `symbols` and buys any that fell drop_pct during the last `lookback` days (or hours),
+    selling it back up (dip.py). Paper accounts only for now. The watchlist can change while it runs."""
+    _paper_broker_or_422(body.broker, "dip bots")
+    if clash := _symbol_clash(session, body.broker, body.symbols):
+        raise HTTPException(409, f"bot #{clash[1].id} already trades {clash[0]} on {body.broker}; one bot per symbol "
+                                 "per real account, or their positions would mix")
+    prices = _prices_or_422(body.symbols)  # also the benchmark: the starting watchlist held in equal parts
+    now = utcnow()
+    params = body.model_dump(exclude={"name", "broker", "allocated_cash", "symbols"})
+    bot = Bot(name=body.name or f"Dip buyer on {len(body.symbols)} symbol{'s' if len(body.symbols) > 1 else ''}",
+              symbol="DIP", broker=body.broker, status="active", strategy=DIP, allocated_cash=body.allocated_cash,
+              cash=body.allocated_cash, peak_equity=body.allocated_cash, universe=body.symbols, benchmark_prices=prices,
+              benchmark_price=body.allocated_cash, last_price=body.allocated_cash, last_price_at=now, **params)
+    session.add(bot)
+    session.flush()
+    for s in body.symbols:
+        session.add(WatchItem(bot_id=bot.id, symbol=s, status="watching", added_at=now))
+    log_event(session, bot.id, "created", f"Created {bot.name}: dip buyer on {bot.broker} with ${bot.allocated_cash:,.2f}, "
+              f"watching {', '.join(body.symbols)}. {_dip_rules_text(bot)}", now=now)
+    session.commit()
+    return _bot_out(session, bot)
+
+
+def _dip_rules_text(bot: Bot) -> str:
+    sell = "back at that price" if bot.target_mode == "reference" else f"{bot.rise_pct:.1%} above the buy"
+    extras = [x for x in (f"waits to turn up {bot.rebound_pct:.1%} from the low" if bot.rebound else "",
+                          f"sell after {bot.max_hold_days} trading days" if bot.max_hold_days else "",
+                          "bearish news blocks a buy" if bot.news else "", "only in an uptrend" if bot.trend_filter else "") if x]
+    return (f"Checks every {bot.interval}; buys a {bot.drop_pct:.1%} fall under the {dip.window_label(bot)}, "
+            f"{bot.max_positions} slots; sells {sell}, stop {bot.stop_pct:.1%} (then blacklisted)"
+            + (f"; {', '.join(extras)}" if extras else "") + ".")
+
+
+def _dip_bot(session: Session, bot_id: int) -> Bot:
+    bot = _get_bot(session, bot_id)
+    if bot.strategy != DIP:
+        raise HTTPException(422, "not a dip bot")
+    if bot.status == "archived":
+        raise HTTPException(409, "bot is archived")
+    return bot
+
+
+def _watch_item(session: Session, bot: Bot, symbol: str) -> WatchItem:
+    item = session.scalar(select(WatchItem).where(WatchItem.bot_id == bot.id, WatchItem.symbol == symbol.upper()))
+    if item is None:
+        raise HTTPException(404, f"{symbol.upper()} isn't on the watchlist")
+    return item
+
+
+@app.patch("/bots/{bot_id}/dip", response_model=BotOut)
+def update_dip_bot(bot_id: int, body: DipBotUpdate, session: Session = Depends(get_session)):
+    """Change a dip buyer's rules (the news switch, the interval, the fall, ...) while it runs. From the next check on;
+    a held position keeps the target and stop it was bought with."""
+    with _Locked(bot_id):
+        bot = _dip_bot(session, bot_id)
+        fields = body.model_dump(exclude_unset=True, exclude_none=True)
+        merged = {k: fields.get(k, getattr(bot, k)) for k in ("interval", "lookback", "lookback_unit")}
+        try:
+            check_window(merged["interval"], merged["lookback"], merged["lookback_unit"])
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        changes = []
+        for field, value in fields.items():
+            old = getattr(bot, field)
+            if old != value:
+                setattr(bot, field, value)
+                changes.append(f"{field} {old} → {value}")
+        if changes:
+            log_event(session, bot.id, "params", "Changed: " + ", ".join(changes))
+            session.commit()
+        return _bot_out(session, bot)
+
+
+@app.post("/bots/{bot_id}/watchlist", response_model=BotOut)
+def add_to_watchlist(bot_id: int, body: WatchSymbols, session: Session = Depends(get_session)):
+    """Add symbols to a dip bot's watchlist while it runs: checked from the next check on."""
+    with _Locked(bot_id):
+        bot = _dip_bot(session, bot_id)
+        have = {i.symbol for i in dip.watchlist(session, bot)}
+        new = [s for s in body.symbols if s not in have]
+        if not new:
+            raise HTTPException(409, "already on the watchlist")
+        if len(have) + len(new) > 60:
+            raise HTTPException(422, "a watchlist holds at most 60 symbols")
+        if clash := _symbol_clash(session, bot.broker, new, exclude=bot.id):
+            raise HTTPException(409, f"bot #{clash[1].id} already trades {clash[0]} on {bot.broker}; one bot per symbol "
+                                     "per real account, or their positions would mix")
+        _prices_or_422(new)
+        now = utcnow()
+        for s in new:
+            session.add(WatchItem(bot_id=bot.id, symbol=s, status="watching", added_at=now))
+        log_event(session, bot.id, "params", f"Watchlist: added {', '.join(new)}", now=now)
+        session.commit()
+        return _bot_out(session, bot)
+
+
+@app.delete("/bots/{bot_id}/watchlist/{symbol}", response_model=BotOut)
+def remove_from_watchlist(bot_id: int, symbol: str, session: Session = Depends(get_session)):
+    """Stop watching a symbol. If the bot holds it, the position stays and still exits at its target or stop (or sell it
+    now from the holdings); it just won't be bought again."""
+    with _Locked(bot_id):
+        bot = _dip_bot(session, bot_id)
+        item = _watch_item(session, bot, symbol)
+        held = any(h.symbol == item.symbol for h in holdings(session, bot))
+        session.delete(item)
+        log_event(session, bot.id, "params", f"Watchlist: removed {item.symbol}"
+                  + (" (still held: it exits at its target or stop)" if held else ""))
+        session.commit()
+        return _bot_out(session, bot)
+
+
+@app.post("/bots/{bot_id}/watchlist/{symbol}/enable", response_model=BotOut)
+def enable_symbol(bot_id: int, symbol: str, session: Session = Depends(get_session)):
+    """Take a symbol off the blacklist: the bot may buy its dips again from the next check."""
+    with _Locked(bot_id):
+        bot = _dip_bot(session, bot_id)
+        item = _watch_item(session, bot, symbol)
+        if item.status != "blacklisted":
+            raise HTTPException(409, f"{item.symbol} isn't blacklisted")
+        item.status, item.blacklisted_at, item.blacklist_reason = "watching", None, None
+        dip.end_fall(item)  # a fall still under way is followed afresh from the next check
+        log_event(session, bot.id, "params", f"{item.symbol} re-enabled by user")
+        session.commit()
+        return _bot_out(session, bot)
+
+
+@app.post("/bots/{bot_id}/watchlist/{symbol}/blacklist", response_model=BotOut)
+def blacklist_symbol(bot_id: int, symbol: str, session: Session = Depends(get_session)):
+    """Blacklist a symbol by hand: no more buys until you re-enable it (a held position still exits as usual)."""
+    with _Locked(bot_id):
+        bot = _dip_bot(session, bot_id)
+        item = _watch_item(session, bot, symbol)
+        if item.status == "blacklisted":
+            raise HTTPException(409, f"{item.symbol} is already blacklisted")
+        dip.blacklist(session, bot, item, utcnow(), "by you")
+        session.commit()
+        return _bot_out(session, bot)
+
+
+@app.post("/bots/{bot_id}/holdings/{symbol}/sell", response_model=OrderOut)
+def sell_holding(bot_id: int, symbol: str, session: Session = Depends(get_session)):
+    """Sell one of a dip bot's holdings at market now (manual). It stays on the watchlist: buyable again tomorrow."""
+    with _Locked(bot_id):
+        bot = _dip_bot(session, bot_id)
+        now = utcnow()
+        if not is_open(now):
+            raise HTTPException(409, "market is closed; orders are only sent during regular hours")
+        if any(o.symbol == symbol.upper() for o in open_orders(session, bot)):
+            raise HTTPException(409, "an order for it is already pending")
+        broker = _broker_or_400(bot)
+        try:
+            order = dip.sell_one(session, bot, broker, symbol.upper(), now)
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+        log_event(session, bot.id, "order", f"Sell {symbol.upper()} requested by user", now=now)
+        session.commit()
+        return order
+
+
 # A rotation bot's universe and rules are fixed for its life, like a bot's symbol: create a new bot instead
 ROTATION_EDITABLE = {"name", "fee_pct", "slippage_pct", "max_drawdown_pct"}
 
@@ -267,6 +466,8 @@ def update_bot(bot_id: int, body: BotUpdate, session: Session = Depends(get_sess
         if bot.strategy == ROTATION and (fixed := sorted(set(fields) - ROTATION_EDITABLE)):
             raise HTTPException(422, f"a rotation bot can only change its name, slippage, fee and breaker, not "
                                      f"{', '.join(fixed)}; create a new bot for other settings")
+        if bot.strategy == DIP and (other := sorted(set(fields) - ROTATION_EDITABLE - {"stop_pct"})):
+            raise HTTPException(422, f"a dip bot's rules change through PATCH /bots/{bot_id}/dip, not {', '.join(other)}")
         changes = []
         for field, value in fields.items():
             old = getattr(bot, field)
@@ -330,6 +531,8 @@ def run_now(bot_id: int, session: Session = Depends(get_session)):
         kind = "manual" if is_open(now) and bot.status == "active" else "preview"
         if bot.strategy == ROTATION:
             return rotation.rebalance(session, bot, broker, now, kind)
+        if bot.strategy == DIP:
+            return dip.check(session, bot, broker, now, kind)
         return evaluate(session, bot, broker, now, kind)
 
 
@@ -342,7 +545,7 @@ def close_now(bot_id: int, session: Session = Depends(get_session)):
         now = utcnow()
         if not is_open(now):
             raise HTTPException(409, "market is closed; orders are only sent during regular hours")
-        if bot.strategy == ROTATION:
+        if bot.strategy in (ROTATION, DIP):
             if not holdings(session, bot):
                 raise HTTPException(409, "no open positions")
             if open_orders(session, bot):
@@ -407,6 +610,21 @@ def list_bot_events(bot_id: int, limit: int = Query(200, le=1000), offset: int =
 def list_equity(bot_id: int, session: Session = Depends(get_session)):
     _get_bot(session, bot_id)
     return list(session.scalars(select(EquitySnapshot).where(EquitySnapshot.bot_id == bot_id).order_by(EquitySnapshot.day)))
+
+
+@app.get("/bots/{bot_id}/signals", response_model=list[SignalOut])
+def list_bot_signals(bot_id: int, limit: int = Query(200, le=1000), after_id: int = 0, session: Session = Depends(get_session)):
+    """A dip bot's recommendations, newest first. after_id: only newer ones (the dashboard's notifications poll this)."""
+    _get_bot(session, bot_id)
+    q = select(Signal).where(Signal.bot_id == bot_id, Signal.id > after_id).order_by(Signal.id.desc()).limit(limit)
+    return list(session.scalars(q))
+
+
+@app.get("/signals", response_model=list[SignalOut])
+def list_signals(limit: int = Query(100, le=1000), after_id: int = 0, session: Session = Depends(get_session)):
+    """Every dip bot's recommendations, newest first (the Dip buyer page's feed and notifications)."""
+    q = select(Signal).where(Signal.id > after_id).order_by(Signal.id.desc()).limit(limit)
+    return list(session.scalars(q))
 
 
 @app.get("/events", response_model=list[EventOut])

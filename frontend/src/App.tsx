@@ -5,8 +5,10 @@ import { AccountMenu, UsersNavLabel } from "./auth/AccountMenu";
 import { AuthProvider, RequireAuth, useAuth } from "./auth/AuthContext";
 import { LoginPage, SignupPage } from "./auth/AuthPages";
 import UsersPage from "./auth/UsersPage";
+import SignalBell from "./dip/SignalBell";
 import BacktestPage from "./pages/BacktestPage";
 import ComparePage from "./pages/ComparePage";
+import DipPage from "./pages/DipPage";
 import RotationPage from "./pages/RotationPage";
 import ScanPage from "./pages/ScanPage";
 import GuidePage from "./pages/GuidePage";
@@ -72,6 +74,8 @@ function Header() {
           ? "scan"
           : pathname === "/rotation"
             ? "rotation"
+          : pathname === "/dip"
+            ? "dip"
         : pathname === "/"
           ? "backtest"
           : "";
@@ -88,6 +92,7 @@ function Header() {
           { key: "compare", label: <Link to="/compare">Compare strategies</Link> },
           { key: "scan", label: <Link to="/scan">Scan</Link> },
           { key: "rotation", label: <Link to="/rotation">Rotation</Link> },
+          { key: "dip", label: <Link to="/dip">Dip buyer</Link> },
           { key: "trading", label: <Link to="/trading">Live trading</Link> },
           ...(admin ? [{ key: "users", label: <Link to="/admin/users"><UsersNavLabel /></Link> }] : []),
         ]}
@@ -97,6 +102,7 @@ function Header() {
           Resources <DownOutlined style={{ fontSize: 10 }} />
         </Button>
       </Dropdown>
+      <SignalBell />
       <AccountMenu />
     </Layout.Header>
   );
@@ -130,6 +136,7 @@ export default function App() {
                 <Route path="/compare" element={<ComparePage />} />
                 <Route path="/scan" element={<ScanPage />} />
                 <Route path="/rotation" element={<RotationPage />} />
+                <Route path="/dip" element={<DipPage />} />
                 <Route path="/trading" element={<TradingPage />} />
                 <Route path="/trading/:id" element={<BotPage />} />
                 <Route path="/guide" element={<GuidePage guide="lifecycle" />} />

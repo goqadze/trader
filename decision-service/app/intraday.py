@@ -1,6 +1,7 @@
 """Intraday bars: 30-minute ones for replaying a past moment of a session (a backtest deciding at 10:00, like a bot
-that checks after the open), 5-minute ones for the intraday strategies. Regular hours (9:30-16:00 New York) by
-default; `extended` adds the pre-market from 4:00 (the ICT Power of 3 strategy's accumulation range).
+that checks after the open), 5-minute ones for the intraday strategies, 15-minute ones for the dip buyer's checks.
+Regular hours (9:30-16:00 New York) by default; `extended` adds the pre-market from 4:00 (the ICT Power of 3
+strategy's accumulation range).
 
 Source: Alpaca's market data (years of history, free with the Alpaca keys the news already uses) when its keys
 are set, otherwise Yahoo Finance, which only keeps the last 60 days. Index futures (NQ, MES, ...) are rebuilt from
@@ -19,7 +20,7 @@ from .futures import FUTURES, rebuild
 from .tools import MARKET_TZ, yahoo_symbol
 
 BAR = timedelta(minutes=30)
-TIMEFRAMES = {"30Min": "30m", "5Min": "5m"}  # Alpaca's name -> Yahoo's interval
+TIMEFRAMES = {"30Min": "30m", "15Min": "15m", "5Min": "5m"}  # Alpaca's name -> Yahoo's interval
 SESSION_START, SESSION_END = dtime(9, 30), dtime(16, 0)
 PREMARKET_START = dtime(4, 0)  # Alpaca's pre-market data starts at 4:00 New York
 ALPACA_BARS = "https://data.alpaca.markets/v2/stocks/{symbol}/bars"
@@ -83,7 +84,7 @@ def _session(df: pd.DataFrame, extended: bool = False) -> pd.DataFrame:
 
 
 def _download(symbol: str, first: date, last: date, timeframe: str = "30Min") -> pd.DataFrame:
-    """Pre-market and regular-hours bars (30- or 5-minute) for [first, last], indexed by each bar's START in New
+    """Pre-market and regular-hours bars (30-, 15- or 5-minute) for [first, last], indexed by each bar's START in New
     York time. Callers pick the session they want with _session."""
     start = datetime.combine(first, dtime(0), tzinfo=MARKET_TZ)
     end = min(datetime.combine(last + timedelta(days=1), dtime(0), tzinfo=MARKET_TZ), datetime.now(MARKET_TZ) - ALPACA_DELAY)
@@ -124,7 +125,7 @@ def _month(symbol: str, day: date, timeframe: str = "30Min") -> pd.DataFrame:
 
 
 def bars_between(symbol: str, first: date, last: date, timeframe: str = "30Min", extended: bool = False) -> pd.DataFrame:
-    """Regular-hours bars (30- or 5-minute) from first to last (inclusive), New York time; with `extended` the
+    """Regular-hours bars (30-, 15- or 5-minute) from first to last (inclusive), New York time; with `extended` the
     pre-market from 4:00 as well. A future (NQ, MES, ...) comes rebuilt from its ETF's bars."""
     if timeframe not in TIMEFRAMES:
         raise ValueError(f"timeframe must be one of {list(TIMEFRAMES)}")

@@ -1,3 +1,4 @@
+import math
 import re
 from datetime import date
 from typing import Literal
@@ -181,6 +182,84 @@ class RotationConfig(BaseModel):
         if self.top_n > len(self.symbols):
             raise ValueError("top_n can't be more than the number of symbols")
         return self
+
+
+# The dip buyer's check intervals: how often it looks at its symbols. "1d" = once a day, on the close (a live bot: in
+# the last 30 minutes before it). Minutes of each: a check happens at the end of each bar of that length.
+DIP_INTERVALS = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "1d": 390}
+
+
+class DipConfig(BaseModel):
+    """Buy the dip: watch several symbols; whenever one has fallen `drop_pct` during the last `lookback` days (or
+    hours) -- and, with `rebound`, then turned up `rebound_pct` from its low -- buy it, and sell when it is back at the
+    price the fall started from (or up `rise_pct` from the buy). A
+    stop-loss `stop_pct` below the buy sells it and blacklists the symbol: the bot never buys it again until you
+    re-enable it. Every `interval` it checks all of them, like the trading-service's dip bot (same names there).
+    Judged against holding all the symbols in equal parts."""
+
+    strategy: Literal["dip_buyer"] = "dip_buyer"
+    symbols: list[str] = Field(min_length=1, max_length=60)
+    start: date
+    end: date
+    interval: Literal["5m", "15m", "30m", "1h", "1d"] = "15m"
+    drop_pct: float = Field(0.05, gt=0, le=0.5)  # x: how far it must fall to be bought
+    lookback: int = Field(5, ge=1, le=250)  # y: the window the fall is measured in ...
+    lookback_unit: Literal["days", "hours"] = "days"  # ... in trading days, or market hours
+    # The price the fall is measured from (and, with target_mode "reference", the price to get back to): the highest
+    # close in the window (it rose, then turned down) or the close at its start (down x% over the last y days)
+    drop_from: Literal["high", "start"] = "high"
+    target_mode: Literal["reference", "percent"] = "reference"  # back at the starting price, or up rise_pct from the buy
+    rise_pct: float = Field(0.05, gt=0, le=2)
+    stop_pct: float = Field(0.05, gt=0, le=0.5)  # z: sell this far below the buy, and blacklist the symbol
+    max_positions: int = Field(5, ge=1, le=20)  # each buy gets an equal slot of the equity: 1/max_positions
+    max_hold_days: int = Field(0, ge=0, le=250)  # sell after this many trading days whatever the price; 0 = never
+    # Wait for the turn (x1): after the fall, buy only once the price is back up rebound_pct from its lowest close since
+    # the fall reached drop_pct -- bearish turned bullish -- and still under the price the fall started from. Off: buy
+    # as soon as it has fallen drop_pct
+    rebound: bool = True
+    rebound_pct: float = Field(0.01, gt=0, le=0.5)
+    # Ask the news before each buy: bearish news (the fall has a reason) blocks buying that symbol for the rest of
+    # the day. Slower: one news call (+ the sentiment LLM) per buy
+    news: bool = False
+    trend_filter: bool = False  # only buy dips of symbols in a long-term uptrend: 50-day average above the 200-day
+    # Backtest only: re-enable a blacklisted symbol after this many trading days (stands in for you doing it).
+    # 0 = never, like a bot whose blacklist you never touch
+    reenable_days: int = Field(0, ge=0, le=500)
+    initial_cash: float = 10_000.0
+    slippage_pct: float = Field(0.0005, ge=0)
+    fee_pct: float = Field(0.0, ge=0)
+    max_drawdown_pct: float = Field(0.0, ge=0, lt=1)  # stop buying once equity is this far below its peak; 0 = off
+
+    @field_validator("symbols")
+    @classmethod
+    def _clean(cls, v: list[str]) -> list[str]:
+        out = clean_symbols(v)
+        if bad := [s for s in out if s in CONTRACTS or is_crypto(s)]:
+            raise ValueError(f"the dip buyer trades stocks and ETFs, not {', '.join(bad)}")
+        return out
+
+    @model_validator(mode="after")
+    def _check(self):
+        if self.end <= self.start:
+            raise ValueError("end must be after start")
+        if self.interval == "1d" and self.lookback_unit == "hours":
+            raise ValueError("a once-a-day check measures the fall in days, not hours")
+        if self.lookback_unit == "hours" and self.lookback * 60 < DIP_INTERVALS[self.interval]:
+            raise ValueError("the window must be at least one check long")
+        return self
+
+    @property
+    def minutes(self) -> int:
+        return DIP_INTERVALS[self.interval]
+
+    def window_bars(self) -> int:
+        """The window in checks: its length in bars of the check interval (a session has 390 minutes)."""
+        if self.interval == "1d":
+            return self.lookback
+        per_day = math.ceil(390 / self.minutes)
+        if self.lookback_unit == "days":
+            return self.lookback * per_day
+        return max(1, math.ceil(self.lookback * 60 / self.minutes))
 
 
 class RunSummary(BaseModel):

@@ -5,8 +5,9 @@ import { ROTATION_GROUPS, SYMBOL_GROUPS, isCrypto, symbolOptions, type SymbolGro
 export const SECTORS = SYMBOL_GROUPS.find((g) => g.short === "Sector ETFs")!.symbols.map((s) => s.symbol);
 
 /** A rotation's universe: pick or type tickers, or add a whole suggested group. Use inside a Form. `noCrypto` for a
- *  live rotation bot, which can't trade crypto yet (a rotation backtest can). */
-export default function UniverseField({ name, label = "Universe", noCrypto = false }: { name: string; label?: string; noCrypto?: boolean }) {
+ *  live rotation bot, which can't trade crypto yet (a rotation backtest can). `min`: the fewest symbols allowed (a dip
+ *  buyer's watchlist may have one). */
+export default function UniverseField({ name, label = "Universe", noCrypto = false, min = 2 }: { name: string; label?: string; noCrypto?: boolean; min?: number }) {
   const form = Form.useFormInstance();
   const groups: SymbolGroup[] = noCrypto ? ROTATION_GROUPS.filter((g) => g.short !== "Crypto") : ROTATION_GROUPS;
   const options = symbolOptions((s) => `${s.symbol} · ${s.name}`, groups);
@@ -32,7 +33,7 @@ export default function UniverseField({ name, label = "Universe", noCrypto = fal
         name={name}
         noStyle
         rules={[
-          { required: true, type: "array", min: 2, max: 60, message: "Pick 2 to 60 symbols" },
+          { required: true, type: "array", min, max: 60, message: `Pick ${min} to 60 symbols` },
           {
             validator: (_, vals: string[] = []) => {
               const coins = noCrypto ? vals.filter(isCrypto) : [];

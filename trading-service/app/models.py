@@ -1,8 +1,11 @@
 """Database tables: the trading history that survives restarts.
 
     Bot            one strategy running on one symbol with its own parameters and its own capital -- or a momentum
-                   rotation across a universe of symbols (strategy == ROTATION, see rotation.py)
-    Holding        a rotation bot's positions, one row per symbol it holds
+                   rotation across a universe of symbols (strategy == ROTATION, see rotation.py) -- or a dip buyer
+                   watching a list of symbols (strategy == DIP, see dip.py)
+    Holding        a rotation or dip bot's positions, one row per symbol it holds
+    WatchItem      a dip bot's watchlist, one row per symbol: watching or blacklisted, and where it stood at the last check
+    Signal         a dip bot's recommendations: a symbol fell into the buy zone, is back up, hit its stop
     Decision       every time a bot asked decision-service for a signal, and what it did about it
     Order          every order sent to a broker (write-ahead: saved BEFORE it is sent, see trader.submit_order)
     EquitySnapshot one row per bot per trading day, for the equity chart
@@ -54,6 +57,12 @@ BOT_STATUSES = ("active", "paused", "archived")
 # symbol column just says ROTATION; what it holds lives in Holding, and benchmark_price / last_price track the value
 # of the universe bought in equal parts at the start (beginning at allocated_cash) instead of one symbol's price.
 ROTATION = "momentum_rotation"
+# Bot.strategy of a dip buyer: one bot watching a list of symbols (WatchItem), buying any that fell drop_pct during
+# the last `lookback` days and selling it back at the price the fall started from (see dip.py). Like a rotation bot
+# its symbol column just says DIP, its positions live in Holding, and benchmark_price / last_price track the starting
+# watchlist held in equal parts (`universe` keeps that starting list; the watchlist itself can change).
+DIP = "dip_buyer"
+HOLDINGS_STRATEGIES = (ROTATION, DIP)  # the bots that hold several symbols at once (Holding rows)
 
 
 class Bot(Base):
@@ -111,13 +120,30 @@ class Bot(Base):
     # The rebalance in progress: {"decision_id", "targets": [[symbol, shares], ...], "rounds"}; NULL when done
     rotation_plan: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
+    # --- Dip buyers only (NULL on the others): same names as the backtest's DipConfig. stop_pct is the shared column ---
+    interval: Mapped[str | None] = mapped_column(String(4), nullable=True)  # how often it checks: 5m | 15m | 30m | 1h | 1d
+    drop_pct: Mapped[float | None] = mapped_column(Float, nullable=True)  # buy after a fall this big ...
+    lookback: Mapped[int | None] = mapped_column(Integer, nullable=True)  # ... during the last `lookback` ...
+    lookback_unit: Mapped[str | None] = mapped_column(String(8), nullable=True)  # ... days | hours
+    drop_from: Mapped[str | None] = mapped_column(String(8), nullable=True)  # high (the window's top) | start (its first close)
+    target_mode: Mapped[str | None] = mapped_column(String(10), nullable=True)  # reference (back to it) | percent (+rise_pct)
+    rise_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_positions: Mapped[int | None] = mapped_column(Integer, nullable=True)  # slots: each buy gets 1/max_positions of equity
+    max_hold_days: Mapped[int | None] = mapped_column(Integer, nullable=True)  # sell after this many trading days; 0 = never
+    news: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # ask the news before a buy: bearish = not today
+    trend_filter: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # only buy dips in an uptrend (SMA50 > SMA200)
+    # Wait for the turn: buy a fall only once it is back up rebound_pct from its low (NULL on bots from before = off)
+    rebound: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    rebound_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 
 
 class Holding(Base):
-    """One symbol a rotation bot holds right now (the row goes once it's sold). Same accounting as Bot's position:
-    cost_basis is what the shares still held cost, fees included; each sale books its slice as P&L."""
+    """One symbol a rotation or dip bot holds right now (the row goes once it's sold). Same accounting as Bot's position:
+    cost_basis is what the shares still held cost, fees included; each sale books its slice as P&L. A dip bot's holding
+    also carries its exit levels, set from the buy's fill (see trader._book_holding_fill)."""
 
     __tablename__ = "holdings"
     __table_args__ = (UniqueConstraint("bot_id", "symbol"),)
@@ -130,6 +156,76 @@ class Holding(Base):
     last_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_price_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
     opened_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    # --- Dip bots only ---
+    entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # average buy fill
+    reference_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # the price the fall started from
+    target_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # sell at or above (back at the reference)
+    stop_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # sell at or below, and blacklist the symbol
+
+
+# A watched symbol's status: watching -> blacklisted (a stop-loss sold it; it stays out until you re-enable it)
+WATCH_STATUSES = ("watching", "blacklisted")
+
+
+class WatchItem(Base):
+    """One symbol on a dip bot's watchlist. You add and remove them while the bot runs. The last-check columns are only
+    for the dashboard and the signals: a check recomputes everything from fresh prices."""
+
+    __tablename__ = "watch_items"
+    __table_args__ = (UniqueConstraint("bot_id", "symbol"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bot_id: Mapped[int] = mapped_column(ForeignKey("bots.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(12), default="watching")
+    added_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    blacklisted_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    blacklist_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # --- The last check ---
+    checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    last_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reference_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # the window's high (or start)
+    drop: Mapped[float | None] = mapped_column(Float, nullable=True)  # how far under it: 0.06 = 6% below
+    in_zone: Mapped[bool] = mapped_column(Boolean, default=False)  # at least drop_pct under: a new dip only when it enters
+    # The fall being followed (from the check it fell into the buy zone until it is bought or back up): the reference
+    # it fell from (the target to get back to; back there first = the dip is over, an "up" signal), its lowest price
+    # since, and when it first turned up rebound_pct from that low. NULL = no fall being followed.
+    dip_reference: Mapped[float | None] = mapped_column(Float, nullable=True)
+    armed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    trough_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trough_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    turned_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    sold_on: Mapped[date | None] = mapped_column(Date, nullable=True)  # sold today: not bought again until tomorrow
+    news_sentiment: Mapped[str | None] = mapped_column(String(16), nullable=True)  # the last news verdict asked for
+    news_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    news_blocked_on: Mapped[date | None] = mapped_column(Date, nullable=True)  # bearish news: no buy on this day
+    trend_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # the trend filter's last answer
+
+
+# Signal kinds -- a dip bot's recommendations, for your information whether or not it traded on them:
+#   down  the price fell into the buy zone (drop_pct under its reference): a buy -- or, waiting for the turn, a "get
+#         ready". Says whether the bot bought.
+#   rebound  waiting for the turn: back up rebound_pct from its low, bearish turned bullish: a buy
+#   up    back at the price the fall started from (or the target): a sell. Sold if the bot held it.
+#   stop  fell stop_pct under the buy: sold and blacklisted
+#   time  held max_hold_days: sold
+#   news  bearish news: the dip was not bought today
+SIGNAL_KINDS = ("down", "rebound", "up", "stop", "time", "news")
+
+
+class Signal(Base):
+    __tablename__ = "signals"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bot_id: Mapped[int] = mapped_column(ForeignKey("bots.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, index=True)
+    symbol: Mapped[str] = mapped_column(String(16))
+    kind: Mapped[str] = mapped_column(String(8))
+    price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reference_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    change_pct: Mapped[float | None] = mapped_column(Float, nullable=True)  # vs the reference (down) or the buy (exits)
+    message: Mapped[str] = mapped_column(Text, default="")  # the recommendation in words
+    outcome: Mapped[str] = mapped_column(Text, default="")  # what the bot did about it
 
 
 class Decision(Base):
@@ -140,7 +236,8 @@ class Decision(Base):
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, index=True)
     session_date: Mapped[date] = mapped_column(Date)  # the trading day this decision belongs to (New York date)
     kind: Mapped[str] = mapped_column(String(16))  # scheduled | manual (Run now, market open) | preview (market closed: no trading)
-    # BUY | SELL | HOLD (HOLD also when the signal call failed); rotation bots: ROTATE (the holdings change) | HOLD
+    # BUY | SELL | HOLD (HOLD also when the signal call failed); rotation bots: ROTATE (the holdings change) | HOLD;
+    # dip bots: one decision per check that traded (or Run now): BUY | SELL | TRADE (both) | HOLD
     action: Mapped[str] = mapped_column(String(8))
     confidence: Mapped[float] = mapped_column(Float, default=0.0)
     sentiment: Mapped[str] = mapped_column(String(32), default="")  # clipped in trader.evaluate (LLM output)
@@ -175,8 +272,10 @@ class Order(Base):
     # server_default: lets db.init_db add these columns to an existing orders table (old rows = market)
     order_type: Mapped[str] = mapped_column(String(8), default="market", server_default="market")
     stop_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # stop orders only: the trigger price
+    # A dip bot's BUY: the price the fall started from, which becomes the holding's target once it fills
+    reference_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     qty: Mapped[int] = mapped_column(Integer)  # requested shares
-    reason: Mapped[str] = mapped_column(String(16))  # signal | stop-loss | target | manual | rotation | rebalance
+    reason: Mapped[str] = mapped_column(String(16))  # signal | stop-loss | target | manual | rotation | rebalance | dip | time
     status: Mapped[str] = mapped_column(String(20), default="new", index=True)
     # Our own unique id, sent to the broker. If the network drops mid-submit we can ask the broker
     # "did you get order X?" instead of guessing -- and a retry can never create a duplicate order.

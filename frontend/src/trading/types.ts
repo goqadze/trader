@@ -1,5 +1,6 @@
 // Types mirroring trading-service's API (trading-service/app/schemas.py).
 
+import type { DipInterval, WatchItem } from "../dip/types";
 import type { StrategyId } from "../strategies";
 
 /** When a bot checks on a decision day: 30 min before the close, 30 min after the open, or both. */
@@ -32,6 +33,8 @@ export type BotUpdate = Partial<StrategyParams> & { name?: string };
 
 /** A momentum rotation bot's strategy: one bot holding the strongest few of a universe (trading-service rotation.py). */
 export const ROTATION = "momentum_rotation" as const;
+/** A dip buyer's strategy: one bot watching a list of symbols, buying falls and selling them back up (trading-service dip.py). */
+export const DIP = "dip_buyer" as const;
 
 /** A rotation bot: the backtest's rotation settings (same names) plus the bot's broker and capital. */
 export interface RotationBotCreate {
@@ -51,7 +54,7 @@ export interface RotationBotCreate {
 /** A rotation bot changes only these: its universe and rules are fixed for its life. */
 export type RotationBotUpdate = Partial<Pick<RotationBotCreate, "name" | "fee_pct" | "slippage_pct" | "max_drawdown_pct">>;
 
-/** One symbol a rotation bot holds. */
+/** One symbol a rotation or dip bot holds. */
 export interface Holding {
   symbol: string;
   shares: number;
@@ -61,10 +64,17 @@ export interface Holding {
   value: number;
   weight_pct: number; // of the bot's equity
   unrealized_pnl: number;
+  opened_at: string | null;
+  // Dip bots only: the exit levels, set from the buy's fill
+  entry_price: number | null;
+  reference_price: number | null; // the price the fall started from
+  target_price: number | null;
+  stop_price: number | null;
+  on_watchlist: boolean; // false: removed from the watchlist, held until it exits
 }
 
 export interface Bot extends Omit<StrategyParams, "strategy"> {
-  strategy: StrategyId | typeof ROTATION;
+  strategy: StrategyId | typeof ROTATION | typeof DIP;
   id: number;
   name: string;
   symbol: string;
@@ -102,6 +112,21 @@ export interface Bot extends Omit<StrategyParams, "strategy"> {
   abs_filter: boolean | null;
   holdings: Holding[];
   rebalancing: boolean; // a rebalance's orders are still going out (sells first, then the buys)
+  // Dip buyers only (null / empty on the others). Their `universe` is the starting watchlist: the benchmark holds it.
+  interval: DipInterval | null;
+  drop_pct: number | null;
+  lookback: number | null;
+  lookback_unit: "days" | "hours" | null;
+  drop_from: "high" | "start" | null;
+  target_mode: "reference" | "percent" | null;
+  rise_pct: number | null;
+  max_positions: number | null;
+  max_hold_days: number | null;
+  news: boolean | null;
+  trend_filter: boolean | null;
+  rebound: boolean | null; // null on dip bots from before the option: they buy at once
+  rebound_pct: number | null;
+  watchlist: WatchItem[];
 }
 
 export interface Decision {
@@ -109,7 +134,7 @@ export interface Decision {
   created_at: string;
   session_date: string;
   kind: "scheduled" | "manual" | "preview";
-  action: "BUY" | "SELL" | "HOLD" | "ROTATE"; // ROTATE: a rotation bot changed what it holds
+  action: "BUY" | "SELL" | "HOLD" | "ROTATE" | "TRADE"; // ROTATE: a rotation bot changed what it holds; TRADE: a dip check bought and sold
   confidence: number;
   sentiment: string;
   reasoning: string;
@@ -128,7 +153,8 @@ export interface Order {
   order_type: "market" | "stop"; // stop = the stop-loss resting at the broker until the price falls to it
   stop_price: number | null;
   qty: number;
-  reason: "signal" | "stop-loss" | "target" | "manual" | "rotation" | "rebalance"; // rotation: in or out; rebalance: a trim or top-up
+  // rotation: in or out; rebalance: a trim or top-up; dip: a dip bot's buy; time: held its max days
+  reason: "signal" | "stop-loss" | "target" | "manual" | "rotation" | "rebalance" | "dip" | "time";
   status: "new" | "submitted" | "filled" | "partially_filled" | "canceled" | "rejected" | "failed";
   client_order_id: string;
   broker_order_id: string | null;

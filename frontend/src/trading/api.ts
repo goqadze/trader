@@ -1,6 +1,7 @@
 // Typed client for trading-service. nginx (docker) or the Vite dev proxy forwards /api/trading/* to
 // trading-service with the prefix stripped.
 
+import type { DipBotCreate, DipBotUpdate, DipSignal } from "../dip/types";
 import { request as http } from "../http";
 import type {
   Bot, BotCreate, BotUpdate, Decision, Order, RotationBotCreate, RotationBotUpdate, Snapshot, TradingEvent, TradingStatus,
@@ -28,4 +29,15 @@ export const tradingApi = {
   events: (id: number) => request<TradingEvent[]>("GET", `/bots/${id}/events`),
   equity: (id: number) => request<Snapshot[]>("GET", `/bots/${id}/equity`),
   allEvents: () => request<TradingEvent[]>("GET", "/events"),
+  // Dip buyers (trading-service dip.py): rules, the watchlist (changes while it runs), the blacklist, signals
+  createDipBot: (body: DipBotCreate) => request<Bot>("POST", "/bots/dip", body),
+  updateDip: (id: number, body: DipBotUpdate) => request<Bot>("PATCH", `/bots/${id}/dip`, body),
+  addSymbols: (id: number, symbols: string[]) => request<Bot>("POST", `/bots/${id}/watchlist`, { symbols }),
+  removeSymbol: (id: number, symbol: string) => request<Bot>("DELETE", `/bots/${id}/watchlist/${encodeURIComponent(symbol)}`),
+  enableSymbol: (id: number, symbol: string) => request<Bot>("POST", `/bots/${id}/watchlist/${encodeURIComponent(symbol)}/enable`),
+  blacklistSymbol: (id: number, symbol: string) => request<Bot>("POST", `/bots/${id}/watchlist/${encodeURIComponent(symbol)}/blacklist`),
+  sellHolding: (id: number, symbol: string) => request<Order>("POST", `/bots/${id}/holdings/${encodeURIComponent(symbol)}/sell`),
+  botSignals: (id: number) => request<DipSignal[]>("GET", `/bots/${id}/signals`),
+  /** Every dip bot's signals, newest first; afterId = only newer ones (for notifications). */
+  signals: (afterId = 0, limit = 100) => request<DipSignal[]>("GET", `/signals?after_id=${afterId}&limit=${limit}`),
 };

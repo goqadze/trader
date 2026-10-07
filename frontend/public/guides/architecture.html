@@ -162,7 +162,7 @@
       </div>
       <div class="arr">→</div>
       <div class="col">
-        <div class="box"><b>backtest-service :8001</b><span class="mono">runs · scans · rotation · WebSocket</span></div>
+        <div class="box"><b>backtest-service :8001</b><span class="mono">runs · scans · rotation · dip · WebSocket</span></div>
         <div class="box"><b>trading-service :8002</b><span class="mono">bots · scheduler · brokers · sign-in</span></div>
         <div class="box store"><b>trading-db :5433</b><span class="mono">Postgres: bots, orders, equity, users</span></div>
       </div>
@@ -201,21 +201,21 @@
           <td><b>backtest-service</b><br><span class="muted mono">:8001 · Python</span></td>
           <td>Replays history. Walks day by day (or bar by bar), asks decision-service, simulates fills, fees, stops and
             the breaker, streams progress over a WebSocket, and grades the result.</td>
-          <td><code>POST /runs</code> · <code>/runs/rotation</code><br><code>GET /runs/{id}</code><br><code>WS /ws/{id}</code><br><code>POST /scans</code></td>
-          <td class="mono">runner.py · scan.py<br>engines/simple.py<br>engines/intraday.py<br>engines/rotation.py · verdict.py</td>
+          <td><code>POST /runs</code> · <code>/runs/rotation</code> · <code>/runs/dip</code><br><code>GET /runs/{id}</code><br><code>WS /ws/{id}</code><br><code>POST /scans</code></td>
+          <td class="mono">runner.py · scan.py<br>engines/simple.py<br>engines/intraday.py<br>engines/rotation.py · engines/dip.py · verdict.py</td>
         </tr>
         <tr>
           <td><b>trading-service</b><br><span class="muted mono">:8002 · Python</span></td>
           <td>Trades. A scheduler wakes every 30 s, runs each bot's decisions at its slots, places orders through a broker,
             keeps the stop at the broker, records everything. Also owns sign-in and users.</td>
-          <td><code>/bots</code> (CRUD, pause, run, close)<br><code>/bots/rotation</code><br><code>/halt</code> · <code>/summary</code><br><code>/auth/*</code></td>
-          <td class="mono">scheduler.py · trader.py<br>rotation.py · market.py<br>brokers/ (paper, alpaca)<br>auth.py · models.py</td>
+          <td><code>/bots</code> (CRUD, pause, run, close)<br><code>/bots/rotation</code> · <code>/bots/dip</code> (watchlist, signals)<br><code>/halt</code> · <code>/summary</code><br><code>/auth/*</code></td>
+          <td class="mono">scheduler.py · trader.py<br>rotation.py · dip.py · market.py<br>brokers/ (paper, alpaca)<br>auth.py · models.py</td>
         </tr>
         <tr>
           <td><b>frontend</b><br><span class="muted mono">:8080 · TypeScript</span></td>
           <td>The dashboard. A Vite build of React + antd served by nginx, which also proxies the APIs and gates them
             behind the session cookie.</td>
-          <td><code>/</code> Backtest · <code>/compare</code> · <code>/scan</code><br><code>/rotation</code> · <code>/trading</code><br><code>/guide/*</code></td>
+          <td><code>/</code> Backtest · <code>/compare</code> · <code>/scan</code><br><code>/rotation</code> · <code>/dip</code> · <code>/trading</code><br><code>/guide/*</code></td>
           <td class="mono">src/pages · src/scan<br>src/trading · src/compare<br>symbols.ts · strategies.ts<br>nginx.conf</td>
         </tr>
       </tbody>
@@ -433,7 +433,7 @@ out.label  # a typed object, not free text</code></pre>
 <section id="backtest">
   <div class="section-head">
     <span class="eyebrow">07 · Backtests</span>
-    <h2>Three engines, one grading</h2>
+    <h2>Four engines, one grading</h2>
     <p>The runner picks the engine from the strategy, the result goes through the same metrics and the same
       recommendation checklist (<code>verdict.py</code>).</p>
   </div>
@@ -461,6 +461,18 @@ out.label  # a typed object, not free text</code></pre>
         <li>Month-end momentum: hold the top N of a universe by 12-1 return (optionally only what rose).</li>
         <li>Benchmark = the universe bought in equal parts on day one.</li>
         <li>Runs straight on Yahoo closes; no decision-service calls.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Dip buyer (dip.py)</h3>
+      <ul class="plain">
+        <li>A watchlist checked every 5/15/30/60 min (or daily): buy a drop_pct fall under the window's high (by default
+          once it turns up rebound_pct from its low), sell back at it; a stop sells and blacklists the symbol.</li>
+        <li>Each trade carries its chart points (the fall's high, the low, buy, sale); <code>/runs/{id}/prices</code>
+          serves the prices around them.</li>
+        <li>Intraday bars from decision-service (5/15/30-min), each check on the bar that just closed; news verdicts
+          from <code>/news/sentiment</code> only at a buy.</li>
+        <li>Benchmark = the watchlist bought in equal parts at the first check.</li>
       </ul>
     </div>
   </div>
@@ -498,7 +510,10 @@ out.label  # a typed object, not free text</code></pre>
       <ul class="plain">
         <li><b>paper</b> (built-in, Yahoo quotes) · <b>alpaca-paper</b> · <b>alpaca-live</b>, behind one
           <code>Broker</code> interface; live needs <code>confirm_live</code>.</li>
-        <li>Only one bot per symbol on a shared Alpaca account; rotation bots are paper-only.</li>
+        <li>Only one bot per symbol on a shared Alpaca account (a dip bot's whole watchlist counts); rotation and dip
+          bots are paper-only.</li>
+        <li>Dip bots check at the end of each bar of their interval and post <b>signals</b> (down / rebound / up / stop / news) that
+          the header's bell turns into pop-ups, desktop notifications, a sound or speech.</li>
         <li>Sign-in: Argon2id passwords, a JWT in an HttpOnly cookie, admin approval for new users; nginx asks
           <code>/auth/check</code> before every API call.</li>
         <li>Everything lands in trading-db: bots, decisions, orders, holdings, equity snapshots, an audit log.</li>
@@ -624,12 +639,15 @@ out.label  # a typed object, not free text</code></pre>
         <li><b>Costs decide intraday.</b> ORB on TSLA: +321% at 0.01% slippage, +152% at 0.03%; ICT setups are rare
           and mostly unfilled at the gap's middle.</li>
         <li><b>Realistic numbers:</b> roughly 6–10% a year for stock strategies over the long run, with losing years.</li>
+        <li><b>A permanent blacklist kills a dip buyer.</b> 5% fall / 5 days / 5% stop with symbols blacklisted for good:
+          every symbol was blacklisted within about a year (sectors 2016–26: +7.5% vs +272% held). Letting symbols back
+          and a 10% stop: +104% vs +105% in 2021–26, smoother, but +30% vs +82% in 2016–20.</li>
       </ul>
     </div>
   </div>
 </section>
 
-<footer>Generated from the codebase on 2026-10-05. The source of truth is the code and <code>README.md</code>; this page
+<footer>Generated from the codebase on 2026-10-05, dip buyer added 2026-10-07. The source of truth is the code and <code>README.md</code>; this page
   summarises them. Lives at <code>frontend/public/guides/architecture.html</code>.</footer>
 
 </div>
