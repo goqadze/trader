@@ -20,9 +20,10 @@ from .brokers import SHARED_ACCOUNT_BROKERS, BrokerError, catalog, get_broker
 from .config import settings
 from .db import get_session, init_db, utcnow
 from .market import is_open, next_decision_time, ny_date, session_bounds
-from .models import DIP, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, EquitySnapshot, Event, Order, Signal, WatchItem
-from .schemas import (BotCreate, BotOut, BotUpdate, DecisionOut, DipBotCreate, DipBotUpdate, EventOut, HoldingOut, OrderOut,
-                      RotationBotCreate, SignalOut, SnapshotOut, StatusOut, WatchItemOut, WatchSymbols, check_window)
+from .models import DIP, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPreset, EquitySnapshot, Event, Order, Signal, WatchItem
+from .schemas import (BotCreate, BotOut, BotUpdate, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn, DipPresetOut, EventOut,
+                      HoldingOut, OrderOut, RotationBotCreate, SignalOut, SnapshotOut, StatusOut, WatchItemOut, WatchSymbols,
+                      check_window)
 from .trader import bot_equity, bot_lock, close_position, evaluate, holdings, log_event, open_orders, resting_stop
 
 logger = logging.getLogger("trading-service")
@@ -625,6 +626,35 @@ def list_signals(limit: int = Query(100, le=1000), after_id: int = 0, session: S
     """Every dip bot's recommendations, newest first (the Dip buyer page's feed and notifications)."""
     q = select(Signal).where(Signal.id > after_id).order_by(Signal.id.desc()).limit(limit)
     return list(session.scalars(q))
+
+
+@app.get("/dip/presets", response_model=list[DipPresetOut])
+def list_dip_presets(session: Session = Depends(get_session)):
+    """The dip buyer setups you saved, by name."""
+    return list(session.scalars(select(DipPreset).order_by(func.lower(DipPreset.name))))
+
+
+@app.post("/dip/presets", response_model=DipPresetOut)
+def save_dip_preset(body: DipPresetIn, session: Session = Depends(get_session)):
+    """Save a dip buyer setup under a name. Saving under a name that exists (ignoring case) replaces that setup."""
+    config = body.config.model_dump(mode="json")
+    preset = session.scalar(select(DipPreset).where(func.lower(DipPreset.name) == body.name.lower()))
+    if preset is None:
+        preset = DipPreset(name=body.name, config=config)
+        session.add(preset)
+    else:
+        preset.name, preset.config, preset.updated_at = body.name, config, utcnow()
+    session.commit()
+    return preset
+
+
+@app.delete("/dip/presets/{preset_id}", status_code=204)
+def delete_dip_preset(preset_id: int, session: Session = Depends(get_session)):
+    preset = session.get(DipPreset, preset_id)
+    if preset is None:
+        raise HTTPException(404, "saved setup not found")
+    session.delete(preset)
+    session.commit()
 
 
 @app.get("/events", response_model=list[EventOut])

@@ -71,14 +71,15 @@ INTERVAL_MINUTES = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "1d": 390}
 MAX_LOOKBACK_DAYS = {"5m": 40, "15m": 40, "30m": 40, "1h": 250, "1d": 250}
 
 
-def check_window(interval: str, lookback: int, unit: str) -> None:
-    """A dip bot's window must make sense for its interval and fit the price history it can read."""
+def check_window(interval: str, lookback: int, unit: str, live: bool = True) -> None:
+    """A dip bot's window must make sense for its interval and fit the price history it can read. live=False: a
+    backtest's window, which reads years of bars, so only has to make sense."""
     if interval == "1d" and unit == "hours":
         raise ValueError("a once-a-day check measures the fall in days, not hours")
     if unit == "hours" and lookback * 60 < INTERVAL_MINUTES[interval]:
         raise ValueError("the window must be at least one check long")
     days = lookback if unit == "days" else lookback / 6.5
-    if days > MAX_LOOKBACK_DAYS[interval]:
+    if live and days > MAX_LOOKBACK_DAYS[interval]:
         raise ValueError(f"with {interval} checks the window can be at most {MAX_LOOKBACK_DAYS[interval]} trading days "
                          "(the live price feed keeps only so much history)")
 
@@ -161,6 +162,59 @@ class WatchSymbols(BaseModel):
     @classmethod
     def _clean(cls, v: list[str]) -> list[str]:
         return _tickers(v)
+
+
+class DipPresetConfig(DipRules):
+    """What a saved setup keeps: the rules and the watchlist, plus the backtest's capital, blacklist and periods. Saved
+    from a backtest, so its window may be longer than a live bot's feed allows (the bot form says so when loaded)."""
+
+    symbols: list[str] = Field(..., min_length=1, max_length=60)
+    reenable_days: int = Field(0, ge=0, le=500)
+    initial_cash: float | None = Field(None, ge=100, le=10_000_000)
+    practice: tuple[date, date] | None = None
+    exam: tuple[date, date] | None = None  # None: no exam
+    period_months: int | None = Field(None, ge=1, le=120)  # "the last n months": the dashboard recounts from today
+
+    @field_validator("symbols")
+    @classmethod
+    def _clean(cls, v: list[str]) -> list[str]:
+        out = _tickers(v)
+        if not out:
+            raise ValueError("pick at least one symbol")
+        return out
+
+    @model_validator(mode="after")
+    def _window_fits(self):  # replaces DipRules' check: a backtest isn't limited by the live feed
+        check_window(self.interval, self.lookback, self.lookback_unit, live=False)
+        for period in (self.practice, self.exam):
+            if period and period[1] <= period[0]:
+                raise ValueError("a period must end after it starts")
+        return self
+
+
+class DipPresetIn(BaseModel):
+    """Save a dip buyer setup under a name; a name that exists (ignoring case) is replaced."""
+
+    name: str = Field(..., max_length=60)
+    config: DipPresetConfig
+
+    @field_validator("name")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = " ".join(v.split())
+        if not v:
+            raise ValueError("give it a name")
+        return v
+
+
+class DipPresetOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    config: dict  # as saved: DipPresetConfig (the dashboard fills any rule added since with its default)
+    created_at: datetime
+    updated_at: datetime
 
 
 class WatchItemOut(BaseModel):

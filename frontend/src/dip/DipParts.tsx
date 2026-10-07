@@ -11,9 +11,10 @@ import { BOT_GROUPS, symbolOptions } from "../symbols";
 import { tradingApi } from "../trading/api";
 import { frac, localTime, nyTime, pct, pnlColor, usd } from "../trading/format";
 import type { Bot, Holding } from "../trading/types";
+import PresetPicker from "./PresetPicker";
 import RulesFields, { type RulesForm, fromRulesForm, toRulesForm } from "./RulesFields";
 import { SignalLine } from "./SignalBell";
-import { type DipRules, type DipSignal, INTERVALS, type WatchItem, fallText, sellText } from "./types";
+import { type DipPresetConfig, type DipRules, type DipSignal, INTERVALS, type WatchItem, fallText, pickRules, sellText } from "./types";
 
 const MUTED = "#8b98b5";
 
@@ -348,10 +349,17 @@ export function DipEditForm({ open, bot, onCancel, onSaved }: { open: boolean; b
   };
 
   const pctInput = (max: number, step: number) => <InputNumber min={0} max={max} step={step} addonAfter="%" style={{ width: "100%" }} />;
+  const load = (c: DipPresetConfig) => {
+    form.setFieldsValue(toRulesForm(pickRules(c)));
+    void form.validateFields(["lookback"]).catch(() => undefined); // a backtest's window may be too long for a bot: say so now
+  };
   return (
     <Modal title="Edit dip buyer" open={open} onCancel={onCancel} onOk={submit} okText="Save" okButtonProps={{ loading: saving }} width={640} destroyOnClose>
       <Form<EditValues> form={form} layout="vertical" requiredMark={false}>
         <Form.Item name="name" label="Name" rules={[{ required: true, whitespace: true }]}><Input maxLength={80} /></Form.Item>
+        <Form.Item label="Rules from a saved setup" tooltip="Fills in its rules only: the watchlist stays as it is (change it on the Watchlist card)">
+          <PresetPicker onLoad={load} />
+        </Form.Item>
         <RulesFields forBot />
         <Row gutter={12}>
           <Col span={8}><Form.Item name="max_drawdown_pct" label="Drawdown breaker">{pctInput(100, 5)}</Form.Item></Col>

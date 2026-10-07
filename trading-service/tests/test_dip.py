@@ -566,3 +566,42 @@ def test_one_bot_per_symbol_on_a_real_account_counts_the_watchlist(api, monkeypa
     assert c.post("/bots", json={"symbol": "C", "broker": "alpaca-paper"}).status_code == 201
     r = c.post(f"/bots/{bot['id']}/watchlist", json={"symbols": ["C"]})
     assert r.status_code == 409 and "already trades C" in r.text
+
+
+SETUP = {"symbols": ["xlk", "XLF", "xlk"], "interval": "1d", "drop_pct": 0.07, "lookback": 60, "stop_pct": 0.1,
+         "reenable_days": 20, "initial_cash": 25_000, "practice": ["2016-01-01", "2020-12-31"], "exam": None,
+         "period_months": None}
+
+
+def test_a_setup_is_saved_under_a_name_and_replaced_by_saving_it_again(api):
+    c, _, _ = api
+    r = c.post("/dip/presets", json={"name": "  abc ", "config": SETUP})
+    assert r.status_code == 200, r.text
+    abc = r.json()
+    cfg = abc["config"]
+    assert abc["name"] == "abc" and cfg["symbols"] == ["XLK", "XLF"] and cfg["lookback"] == 60  # longer than a bot's feed
+    assert (cfg["practice"], cfg["exam"], cfg["rebound"], cfg["rebound_pct"]) == (["2016-01-01", "2020-12-31"], None, True, 0.01)
+    c.post("/dip/presets", json={"name": "Big dips", "config": {**SETUP, "drop_pct": 0.15}})
+    assert [p["name"] for p in c.get("/dip/presets").json()] == ["abc", "Big dips"]  # by name, ignoring case
+
+    again = c.post("/dip/presets", json={"name": "ABC", "config": {**SETUP, "stop_pct": 0.05, "period_months": 3}}).json()
+    assert again["id"] == abc["id"] and again["name"] == "ABC" and again["config"]["stop_pct"] == 0.05
+    assert again["config"]["period_months"] == 3  # "the last 3 months", recounted from the day it is loaded
+    assert len(c.get("/dip/presets").json()) == 2
+
+    assert c.delete(f"/dip/presets/{abc['id']}").status_code == 204
+    assert [p["name"] for p in c.get("/dip/presets").json()] == ["Big dips"]
+    assert c.delete(f"/dip/presets/{abc['id']}").status_code == 404
+
+
+def test_a_saved_setup_is_checked(api):
+    c, _, _ = api
+    assert c.post("/dip/presets", json={"name": " ", "config": SETUP}).status_code == 422
+    assert c.post("/dip/presets", json={"name": "x", "config": {**SETUP, "symbols": ["BTC-USD"]}}).status_code == 422
+    assert c.post("/dip/presets", json={"name": "x", "config": {**SETUP, "drop_pct": 0}}).status_code == 422
+    r = c.post("/dip/presets", json={"name": "x", "config": {**SETUP, "lookback_unit": "hours"}})
+    assert r.status_code == 422 and "not hours" in r.text
+    assert c.post("/dip/presets", json={"name": "x", "config": {**SETUP, "period_months": 0}}).status_code == 422
+    r = c.post("/dip/presets", json={"name": "x", "config": {**SETUP, "exam": ["2021-01-01", "2020-01-01"]}})
+    assert r.status_code == 422 and "end after it starts" in r.text
+    assert c.get("/dip/presets").json() == []

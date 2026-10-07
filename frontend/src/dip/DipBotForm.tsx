@@ -2,8 +2,9 @@ import { Alert, Col, Divider, Form, Input, InputNumber, Modal, Row, Select, Tool
 import { useEffect, useRef, useState } from "react";
 import UniverseField from "../rotation/UniverseField";
 import type { BrokerInfo } from "../trading/types";
+import PresetPicker from "./PresetPicker";
 import RulesFields, { type RulesForm, fromRulesForm, toRulesForm } from "./RulesFields";
-import { DEFAULT_RULES, type DipBotCreate } from "./types";
+import { DEFAULT_RULES, type DipBotCreate, type DipPresetConfig, pickRules } from "./types";
 
 const MUTED = "#8b98b5";
 const COSTS = ["fee_pct", "slippage_pct", "max_drawdown_pct"] as const;
@@ -86,6 +87,11 @@ export default function DipBotForm({ open, initial, brokers, onCancel, onSubmit 
 
   const pctInput = (min: number, max: number, step: number) => <InputNumber min={min} max={max} step={step} addonAfter="%" style={{ width: "100%" }} />;
 
+  const load = (c: DipPresetConfig) => {
+    form.setFieldsValue({ ...toRulesForm(pickRules(c)), symbols: c.symbols, ...(c.initial_cash && { allocated_cash: c.initial_cash }) });
+    void form.validateFields(["lookback"]).catch(() => undefined); // a backtest's window may be too long for a bot: say so now
+  };
+
   return (
     <Modal title="New dip buyer" open={open} onCancel={onCancel} onOk={submit} okText="Create bot" okButtonProps={{ loading: saving }} width={680} destroyOnClose>
       <Typography.Paragraph style={{ fontSize: 12, color: MUTED }}>
@@ -94,6 +100,9 @@ export default function DipBotForm({ open, initial, brokers, onCancel, onSubmit 
         re-enable blacklisted ones and switch the news on or off while it runs. Paper accounts only for now.
       </Typography.Paragraph>
       <Form<FormValues> form={form} layout="vertical" requiredMark={false}>
+        <Form.Item label="Start from a saved setup" tooltip="Fills in its rules, watchlist and capital (save setups on the Backtest tab)">
+          <PresetPicker onLoad={load} />
+        </Form.Item>
         <Row gutter={12}>
           <Col span={14}>
             <Form.Item name="broker" label="Broker">

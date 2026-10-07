@@ -6,6 +6,7 @@
     Holding        a rotation or dip bot's positions, one row per symbol it holds
     WatchItem      a dip bot's watchlist, one row per symbol: watching or blacklisted, and where it stood at the last check
     Signal         a dip bot's recommendations: a symbol fell into the buy zone, is back up, hit its stop
+    DipPreset      a dip buyer setup saved under a name (rules, watchlist, backtest periods), to load into a form later
     Decision       every time a bot asked decision-service for a signal, and what it did about it
     Order          every order sent to a broker (write-ahead: saved BEFORE it is sent, see trader.submit_order)
     EquitySnapshot one row per bot per trading day, for the equity chart
@@ -226,6 +227,19 @@ class Signal(Base):
     change_pct: Mapped[float | None] = mapped_column(Float, nullable=True)  # vs the reference (down) or the buy (exits)
     message: Mapped[str] = mapped_column(Text, default="")  # the recommendation in words
     outcome: Mapped[str] = mapped_column(Text, default="")  # what the bot did about it
+
+
+class DipPreset(Base):
+    """A dip buyer setup you saved under a name: schemas.DipPresetConfig as JSON. The dashboard loads it into the
+    backtest form or a new (or running) dip bot's rules."""
+
+    __tablename__ = "dip_presets"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(60), unique=True)
+    config: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
 class Decision(Base):

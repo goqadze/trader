@@ -1,7 +1,7 @@
 // Typed client for trading-service. nginx (docker) or the Vite dev proxy forwards /api/trading/* to
 // trading-service with the prefix stripped.
 
-import type { DipBotCreate, DipBotUpdate, DipSignal } from "../dip/types";
+import type { DipBotCreate, DipBotUpdate, DipPreset, DipPresetConfig, DipSignal } from "../dip/types";
 import { request as http } from "../http";
 import type {
   Bot, BotCreate, BotUpdate, Decision, Order, RotationBotCreate, RotationBotUpdate, Snapshot, TradingEvent, TradingStatus,
@@ -40,4 +40,8 @@ export const tradingApi = {
   botSignals: (id: number) => request<DipSignal[]>("GET", `/bots/${id}/signals`),
   /** Every dip bot's signals, newest first; afterId = only newer ones (for notifications). */
   signals: (afterId = 0, limit = 100) => request<DipSignal[]>("GET", `/signals?after_id=${afterId}&limit=${limit}`),
+  // Saved dip buyer setups: saving under a name that exists (ignoring case) replaces it
+  dipPresets: () => request<DipPreset[]>("GET", "/dip/presets"),
+  saveDipPreset: (name: string, config: DipPresetConfig) => request<DipPreset>("POST", "/dip/presets", { name, config }),
+  deleteDipPreset: (id: number) => request<void>("DELETE", `/dip/presets/${id}`),
 };

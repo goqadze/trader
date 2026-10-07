@@ -6,7 +6,7 @@ import DipBacktestForm from "../dip/DipBacktestForm";
 import DipBotForm, { type DipBotInitial } from "../dip/DipBotForm";
 import { SignalsList, dipRules } from "../dip/DipParts";
 import DipResultView from "../dip/DipResultView";
-import type { DipBotCreate, DipRules } from "../dip/types";
+import { type DipBotCreate, pickRules } from "../dip/types";
 import { useDip } from "../dip/useDip";
 import { isListedEtf } from "../symbols";
 import { tradingApi } from "../trading/api";
@@ -105,13 +105,8 @@ export default function DipPage() {
    *  defaults: a backtest runs without the drawdown breaker unless asked). */
   const paperTrade = () => {
     if (!cfg) return;
-    const rules: DipRules = {
-      interval: cfg.interval, drop_pct: cfg.drop_pct, lookback: cfg.lookback, lookback_unit: cfg.lookback_unit, drop_from: cfg.drop_from,
-      target_mode: cfg.target_mode, rise_pct: cfg.rise_pct, stop_pct: cfg.stop_pct, max_positions: cfg.max_positions,
-      max_hold_days: cfg.max_hold_days, news: cfg.news, trend_filter: cfg.trend_filter, rebound: cfg.rebound, rebound_pct: cfg.rebound_pct,
-    };
     setInitial({
-      ...rules, symbols: cfg.symbols, ...(cfg.initial_cash && { allocated_cash: cfg.initial_cash }),
+      ...pickRules(cfg), symbols: cfg.symbols, ...(cfg.initial_cash && { allocated_cash: cfg.initial_cash }),
       ...(cfg.slippage_pct != null && { slippage_pct: cfg.slippage_pct }),
     });
     setFormOpen(true);

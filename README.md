@@ -119,13 +119,20 @@ once a day before the close) it:
 The backtest replays every check on intraday bars from decision-service (Alpaca, years of history; 15-minute bars
 were added for this) or on Yahoo daily closes, with practice and exam windows and the usual recommendation. It counts
 the blacklist too: `reenable_days` stands in for you re-enabling a symbol (0 = never, like a bot you never touch).
-**Paper trade these rules** creates the bot with the same rules. The result's **Charts** tab draws each symbol's
+**Test the last** n months sets the periods for you: the exam is the last n months up to today, the practice the n
+months before (a setup saved that way counts back from the day it is loaded). **Paper trade these rules** creates
+the bot with the same rules. The result's **Charts** tab draws each symbol's
 price with every trade on it: where the fall started (the window's high), its low where it turned, the buy and the
 sale, the bearish stretch shaded red and the bullish one green; click a trade to zoom in with its target and stop
 (`GET /runs/{id}/prices`: a run's prices stay in memory, thinned keeping each stretch's high and low). The live bot reads Yahoo's bars for the window (5- to
 30-minute bars only go back 60 days, so its window is at most 40 days there) and the broker's quote before each trade.
 While it runs you can add and remove symbols (a removed symbol that is held still exits), blacklist or re-enable
 them, sell one holding, and change any rule, including the news switch (`PATCH /bots/{id}/dip`).
+
+**Saved setups**: liked a result? **Save** the backtest form under a name (the rules, the watchlist, the capital, the
+blacklist and the periods), then pick the name from the list to fill them all back in. The new-bot form loads a
+setup's rules, watchlist and capital; a running bot's Edit loads its rules only. Saving under an existing name
+replaces it. Kept in trading-db (`GET`/`POST /dip/presets`, `DELETE /dip/presets/{id}`), so every browser sees them.
 
 Every dip into the buy zone, recovery, stop-loss and news veto is saved as a **signal** (`GET /bots/{id}/signals`,
 `GET /signals`), whatever the bot did. The bell in the header polls them every 30 s and can show a pop-up, a desktop

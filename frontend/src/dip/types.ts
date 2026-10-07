@@ -54,6 +54,12 @@ export const DEFAULT_RULES: DipRules = {
   rebound_pct: 0.01,
 };
 
+const RULE_KEYS = Object.keys(DEFAULT_RULES) as (keyof DipRules)[];
+
+/** Just the rules out of something bigger (a backtest config, a saved setup); a missing one gets its default. */
+export const pickRules = (x: Partial<DipRules>): DipRules =>
+  Object.fromEntries(RULE_KEYS.map((k) => [k, x[k] ?? DEFAULT_RULES[k]])) as unknown as DipRules;
+
 /** "a 5% fall under the 5-day high, once it turns up 1% from its low" */
 export const fallText = (r: Pick<DipRules, "drop_pct" | "lookback" | "lookback_unit" | "drop_from" | "rebound" | "rebound_pct">) =>
   `a ${+(r.drop_pct * 100).toFixed(2)}% fall under the ${r.lookback}-${r.lookback_unit === "days" ? "day" : "hour"} ${r.drop_from === "high" ? "high" : "start"}` +
@@ -147,6 +153,26 @@ export interface DipRun {
   status: string;
   result: DipResult | null;
   error?: string;
+}
+
+// --- Saved setups (trading-service /dip/presets) ----------------------------------------------------------
+
+/** A setup saved under a name: the rules and the watchlist, plus the backtest's capital, blacklist and periods. */
+export interface DipPresetConfig extends DipRules {
+  symbols: string[];
+  reenable_days?: number;
+  initial_cash?: number | null;
+  practice?: [string, string] | null;
+  exam?: [string, string] | null; // null: no exam
+  period_months?: number | null; // "the last n months": loaded counting back from today, not the dates above
+}
+
+export interface DipPreset {
+  id: number;
+  name: string;
+  config: DipPresetConfig;
+  created_at: string;
+  updated_at: string;
 }
 
 // --- The live bot ---------------------------------------------------------------------------------------
