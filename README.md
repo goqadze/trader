@@ -283,7 +283,7 @@ Safety built in:
 - **History is never deleted**: bots are archived, not removed. Data lives in its own Postgres container
   (`trading-db`, Docker volume `trading-db`), separate from Langfuse's database.
 - **Every port listens on localhost only**: only the dashboard has a sign-in (see below), and it can place orders.
-  To reach a server, see [DEPLOY.md](DEPLOY.md) (SSH tunnel or Tailscale).
+  To reach a server, see [DEPLOY.md](DEPLOY.md) (SSH tunnel, Tailscale, or HTTPS on your own domain).
 - **Comes back by itself**: every container is `restart: unless-stopped`, so a crash, a Docker restart or a
   reboot doesn't leave bots without their decision-service.
 
@@ -296,7 +296,7 @@ Safety built in:
 | Quick look from the terminal | `docker compose exec trading-db psql -U trading trading` |
 | Back up | `make backup-trading-db` → `backups/trading-<timestamp>.sql.gz` (git-ignored; keeps 30 days) |
 | Restore | `gunzip -c backups/<file>.sql.gz \| docker compose exec -T trading-db psql -U trading trading` |
-| Daily on a server | a cron line runs `scripts/backup-trading-db.sh` (see [DEPLOY.md](DEPLOY.md#8-daily-backups)) |
+| Daily on a server | a cron line runs `scripts/backup-trading-db.sh` (see [DEPLOY.md](DEPLOY.md#9-daily-backups)) |
 
 ### News store (RAG)
 
@@ -347,7 +347,9 @@ On a fresh database, create the admin (see [Sign-in and users](#sign-in-and-user
 
 **Laptop or server?** Either one works. Bots only decide while the stack is running, so for real money use an
 always-on server. [DEPLOY.md](DEPLOY.md) covers both: keeping a Mac awake during market hours, and a
-step-by-step server setup (Docker, private access over SSH or Tailscale, daily backups).
+step-by-step server setup (Docker, private access over SSH or Tailscale or HTTPS on your own domain, daily backups).
+A server runs `docker-compose.server.yml`: built images, capped logs, and only the parts you pick with
+`COMPOSE_PROFILES` (the bots alone fit a 2 vCPU / 4 GB server).
 
 - Dashboard: http://localhost:8080 (Backtest and Live trading pages)
 - Backtest API docs: http://localhost:8001/docs

@@ -1,0 +1,15 @@
+# The dashboard on https://$DOMAIN (docker-compose.server.yml, profile public). Caddy gets and renews the
+# certificate from Let's Encrypt by itself, and redirects http to https.
+{$DOMAIN} {
+	encode zstd gzip
+	# nginx in the frontend container does the rest: the sign-in gate, the APIs, the app. Caddy sets X-Forwarded-For
+	# to the real client (it ignores one sent by the client), which the sign-in rate limits count by.
+	reverse_proxy frontend:80
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}

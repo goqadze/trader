@@ -1,0 +1,257 @@
+# The stack for a server (Hetzner and the like; DEPLOY.md walks through it). The same services as
+# docker-compose.yml, but run from their built images (no code mounts, no --reload), with capped logs, and only the
+# parts you choose:
+#
+#   always               trading-db, trading-service (the bots, email alerts), frontend (the dashboard)
+#   profile news         decision-service + news-db: the dip buyer's News switch, and the signal bots' decisions
+#   profile backtest     backtest-service (brings decision-service + news-db): the backtest pages
+#   profile monitoring   GlitchTip (errors) + Langfuse (LLM traces)
+#   profile pgadmin      pgAdmin
+#   profile full         all of the above: a 4 vCPU / 8 GB server (Hetzner CX33). The bots alone fit in 2 vCPU / 4 GB (CX23).
+#   profile public       Caddy: the dashboard at https://$DOMAIN for the whole internet (behind its sign-in)
+#
+# Choose them in the server's ./.env, so every `docker compose` command, and scripts/backup-trading-db.sh, uses this
+# file without typing -f:
+#   COMPOSE_FILE=docker-compose.server.yml
+#   COMPOSE_PROFILES=news                  # e.g. "" (just the bots), news, news,public, full
+#
+# Every port is bound to 127.0.0.1: reach the dashboard through an SSH tunnel or Tailscale. Only the public profile
+# opens 80 and 443 (Caddy). Docker's published ports bypass ufw, so never turn a binding into 0.0.0.0.
+
+x-defaults: &defaults
+  restart: unless-stopped               # back after a crash, a Docker restart or a reboot
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"                   # uncapped, the logs of a 15-minute bot fill a small disk within months
+      max-file: "3"
+
+services:
+  # --- Always: the bots and the dashboard ---------------------------------------------------------------
+
+  trading-db:
+    <<: *defaults
+    image: postgres:16
+    environment:
+      POSTGRES_USER: trading
+      POSTGRES_PASSWORD: trading        # no published port: only containers on this stack reach it
+      POSTGRES_DB: trading
+    volumes:
+      - trading-db:/var/lib/postgresql/data   # survives rebuilds and `down` (not `down -v`); back it up (DEPLOY.md)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trading -d trading"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  trading-service:
+    <<: *defaults
+    build: ./trading-service            # the image's own command: one uvicorn worker, so the scheduler runs once
+    env_file:
+      - ./trading-service/.env
+    ports:
+      - "127.0.0.1:8002:8000"           # for you on the server: curl localhost:8002/status
+    depends_on:
+      trading-db:
+        condition: service_healthy      # no scheduler before the database accepts connections
+    # No dependency on decision-service: the dip buyer runs without it (its News switch then reads "unavailable")
+
+  frontend:
+    <<: *defaults
+    build: ./frontend
+    ports:
+      - "127.0.0.1:8080:80"             # SSH tunnel / `tailscale serve 8080`; Caddy reaches it inside the stack
+    depends_on:
+      - trading-service                 # the backtest pages answer 502 when backtest-service isn't running
+
+  # --- profile news (also needed by backtest) --------------------------------------------------------------
+
+  decision-service:
+    <<: *defaults
+    profiles: [news, backtest, full]
+    build: ./decision-service
+    env_file:
+      - ./decision-service/.env         # OPENAI_API_KEY, ALPACA_* (news and intraday bars), LLM_MODEL
+    depends_on:
+      news-db:
+        condition: service_healthy
+
+  news-db:
+    <<: *defaults
+    profiles: [news, backtest, full]
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: news
+      POSTGRES_PASSWORD: news
+      POSTGRES_DB: news
+    volumes:
+      - news-db:/var/lib/postgresql/data  # a cache: news is fetched again when it's missing
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U news -d news"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # --- profile backtest ----------------------------------------------------------------------------------------
+
+  backtest-service:
+    <<: *defaults
+    profiles: [backtest, full]
+    build: ./backtest-service
+    env_file:
+      - ./backtest-service/.env
+    depends_on:
+      - decision-service                # intraday bars and the strategies' signals come from it
+
+  # --- profile monitoring --------------------------------------------------------------------------------------
+  # Without it, blank SENTRY_DSN in the three services' .env files and LANGFUSE_* in decision-service/.env on the
+  # server, or they keep trying to reach GlitchTip and Langfuse (harmless, but noisy logs).
+
+  langfuse-db:
+    <<: *defaults
+    profiles: [monitoring, full]
+    image: postgres:16
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse
+      POSTGRES_DB: langfuse
+    volumes:
+      - langfuse-db:/var/lib/postgresql/data
+
+  langfuse:
+    <<: *defaults
+    profiles: [monitoring, full]
+    image: langfuse/langfuse:2
+    depends_on:
+      - langfuse-db
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:                        # localhost-only, like on the laptop (see docker-compose.yml)
+      DATABASE_URL: postgresql://langfuse:langfuse@langfuse-db:5432/langfuse
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-local-dev-secret-change-me}
+      SALT: ${LANGFUSE_SALT:-local-dev-salt-change-me}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_INIT_ORG_ID: trading
+      LANGFUSE_INIT_ORG_NAME: Trading
+      LANGFUSE_INIT_PROJECT_ID: trading
+      LANGFUSE_INIT_PROJECT_NAME: Trading
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: pk-lf-local-dev
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: sk-lf-local-dev
+      LANGFUSE_INIT_USER_EMAIL: admin@local.dev
+      LANGFUSE_INIT_USER_NAME: Admin
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_ADMIN_PASSWORD:-langfuse123}
+
+  glitchtip-db:
+    <<: *defaults
+    profiles: [monitoring, full]
+    image: postgres:16
+    environment:
+      POSTGRES_USER: glitchtip
+      POSTGRES_PASSWORD: glitchtip
+      POSTGRES_DB: glitchtip
+    volumes:
+      - glitchtip-db:/var/lib/postgresql/data
+
+  glitchtip-redis:
+    <<: *defaults
+    profiles: [monitoring, full]
+    image: redis:7
+
+  glitchtip-web:
+    <<: *defaults
+    profiles: [monitoring, full]
+    image: glitchtip/glitchtip
+    depends_on:
+      - glitchtip-db
+      - glitchtip-redis
+    ports:
+      - "127.0.0.1:8082:8080"
+    environment: &glitchtip-env
+      DATABASE_URL: postgres://glitchtip:glitchtip@glitchtip-db:5432/glitchtip
+      SECRET_KEY: ${GLITCHTIP_SECRET_KEY:-local-dev-secret-change-me}
+      REDIS_URL: redis://glitchtip-redis:6379/0
+      PORT: "8080"
+      EMAIL_URL: consolemail://
+      GLITCHTIP_DOMAIN: http://localhost:8082
+      DEFAULT_FROM_EMAIL: admin@local.dev
+      ENABLE_OPEN_USER_REGISTRATION: "true"   # localhost only; sign up your first user, then you may turn it off
+      CELERY_WORKER_AUTOSCALE: "1,3"
+
+  glitchtip-worker:
+    <<: *defaults
+    profiles: [monitoring, full]
+    image: glitchtip/glitchtip
+    depends_on:
+      - glitchtip-db
+      - glitchtip-redis
+    command: ./bin/run-celery-with-beat.sh
+    environment: *glitchtip-env
+
+  glitchtip-migrate:
+    <<: *defaults
+    profiles: [monitoring, full]
+    image: glitchtip/glitchtip
+    depends_on:
+      - glitchtip-db
+    command: ./manage.py migrate
+    environment: *glitchtip-env
+    restart: on-failure                 # retries until the database is up, then exits
+
+  # --- profile pgadmin ---------------------------------------------------------------------------------------------
+
+  pgadmin:
+    <<: *defaults
+    profiles: [pgadmin, full]
+    image: dpage/pgadmin4:9
+    ports:
+      - "127.0.0.1:5050:80"             # through the SSH tunnel only: it can change every table
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@local.dev
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-}   # from ./.env; pgAdmin refuses to start without it
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+      PGADMIN_REPLACE_SERVERS_ON_STARTUP: "True"
+      PGPASS_FILE: /pgadmin4/pgpass
+      PGADMIN_DISABLE_POSTFIX: "true"
+    volumes:
+      - ./pgadmin/servers.json:/pgadmin4/servers.json:ro
+      - ./pgadmin/pgpass:/pgadmin4/pgpass:ro
+      - pgadmin:/var/lib/pgadmin
+    depends_on:
+      trading-db:
+        condition: service_started
+      news-db:
+        condition: service_started
+        required: false                 # news-db only runs with the news, backtest or full profile
+
+  # --- profile public ----------------------------------------------------------------------------------------------
+
+  # Caddy: HTTPS for the dashboard at https://$DOMAIN, its certificate from Let's Encrypt, renewed by itself. Needs
+  # DOMAIN in ./.env pointing at this server, ports 80 and 443 open in the cloud firewall, and COOKIE_SECURE=true +
+  # DASHBOARD_URL=https://$DOMAIN in trading-service/.env.
+  caddy:
+    <<: *defaults
+    profiles: [public]
+    image: caddy:2
+    ports:
+      - "80:80"                         # Let's Encrypt's check, and the redirect to https
+      - "443:443"
+      - "443:443/udp"                   # HTTP/3
+    environment:
+      DOMAIN: ${DOMAIN:-}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data                # the certificates: keep them, or Let's Encrypt's rate limit may bite
+      - caddy-config:/config
+    depends_on:
+      - frontend
+
+volumes:
+  trading-db:
+  news-db:
+  langfuse-db:
+  glitchtip-db:
+  pgadmin:
+  caddy-data:
+  caddy-config:
