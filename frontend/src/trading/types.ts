@@ -205,3 +205,37 @@ export interface TradingStatus {
   live_trading_allowed: boolean;
   brokers: BrokerInfo[];
 }
+
+// --- Email alerts (trading-service notify.py, /email-alerts) ---
+
+export type NotifyCategory = "trades" | "risk" | "problems" | "signals";
+
+export interface EmailAlertsSave {
+  enabled: boolean;
+  recipients: string[];
+  categories: NotifyCategory[];
+}
+
+export interface EmailAlerts extends EmailAlertsSave {
+  smtp_configured: boolean; // SMTP_HOST set in trading-service/.env: without it nothing is sent
+  smtp_server: string; // "smtp.gmail.com:587 (starttls)"
+  sender: string;
+  dashboard_url: string; // where the emails' links point
+  available: { key: NotifyCategory; label: string; description: string }[];
+}
+
+/** One email alert: queued with its event, then sent by a background loop (several at once go out as one email). */
+export interface EmailAlert {
+  id: number;
+  created_at: string;
+  bot_id: number | null;
+  category: NotifyCategory | "test";
+  kind: string;
+  subject: string;
+  body: string;
+  status: "pending" | "sent" | "failed" | "skipped";
+  attempts: number;
+  next_attempt_at: string | null;
+  sent_at: string | null;
+  error: string | null;
+}

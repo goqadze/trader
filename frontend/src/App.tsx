@@ -9,6 +9,7 @@ import SignalBell from "./dip/SignalBell";
 import BacktestPage from "./pages/BacktestPage";
 import ComparePage from "./pages/ComparePage";
 import DipPage from "./pages/DipPage";
+import EmailAlertsPage from "./pages/EmailAlertsPage";
 import RotationPage from "./pages/RotationPage";
 import ScanPage from "./pages/ScanPage";
 import GuidePage from "./pages/GuidePage";
@@ -139,6 +140,7 @@ export default function App() {
                 <Route path="/dip" element={<DipPage />} />
                 <Route path="/trading" element={<TradingPage />} />
                 <Route path="/trading/:id" element={<BotPage />} />
+                <Route path="/alerts" element={<EmailAlertsPage />} />
                 <Route path="/guide" element={<GuidePage guide="lifecycle" />} />
                 <Route path="/guide/strategies" element={<GuidePage guide="strategies" />} />
                 <Route path="/guide/architecture" element={<GuidePage guide="architecture" />} />

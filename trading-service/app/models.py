@@ -7,6 +7,8 @@
     WatchItem      a dip bot's watchlist, one row per symbol: watching or blacklisted, and where it stood at the last check
     Signal         a dip bot's recommendations: a symbol fell into the buy zone, is back up, hit its stop
     DipPreset      a dip buyer setup saved under a name (rules, watchlist, backtest periods), to load into a form later
+    Notification   an email alert: queued with the event it tells about, then sent (or retried) by notify.py
+    Setting        small settings changed on the dashboard (the email alerts' addresses and choices); secrets stay in .env
     Decision       every time a bot asked decision-service for a signal, and what it did about it
     Order          every order sent to a broker (write-ahead: saved BEFORE it is sent, see trader.submit_order)
     EquitySnapshot one row per bot per trading day, for the equity chart
@@ -239,6 +241,42 @@ class DipPreset(Base):
     name: Mapped[str] = mapped_column(String(60), unique=True)
     config: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+# What an email alert is about (notify.CATEGORIES describes each); you choose which ones you get
+NOTIFY_CATEGORIES = ("trades", "risk", "problems", "signals")
+# pending -> sent | failed (gave up after the retries) | skipped (alerts were turned off before it went out)
+NOTIFY_STATUSES = ("pending", "sent", "failed", "skipped")
+
+
+class Notification(Base):
+    """An email alert. Queued in the same transaction as the event it tells about (so a rolled-back event never
+    emails), then sent by notify.py's background loop: a slow or broken mail server never holds up trading."""
+
+    __tablename__ = "notifications"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, index=True)
+    bot_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)  # None: not about one bot (HALT ALL, a test)
+    category: Mapped[str] = mapped_column(String(16))  # NOTIFY_CATEGORIES, or "test"
+    kind: Mapped[str] = mapped_column(String(32))  # buy | sell | the event's kind | signal-<kind> | test
+    subject: Mapped[str] = mapped_column(String(200))  # one line: "SELL AAPL +$345.60 (+7.0%)"
+    body: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(12), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)  # after a failed send
+    sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)  # the last failed send's reason
+
+
+class Setting(Base):
+    """A setting changed on the dashboard, as JSON under a key (notify.KEY: the email alerts)."""
+
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSON)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 

@@ -1,6 +1,7 @@
-import { DownOutlined, KeyOutlined, LogoutOutlined, UserOutlined } from "@ant-design/icons";
+import { DownOutlined, KeyOutlined, LogoutOutlined, MailOutlined, UserOutlined } from "@ant-design/icons";
 import { Alert, App as AntApp, Badge, Button, Dropdown, Form, Input, Modal, Tag } from "antd";
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { usePolling } from "../trading/usePolling";
 import { authApi, onUsersChanged } from "./api";
 import { useAuth } from "./AuthContext";
@@ -40,6 +41,7 @@ export function AccountMenu() {
               ),
             },
             { type: "divider" },
+            { key: "alerts", icon: <MailOutlined />, label: <Link to="/alerts">Email alerts</Link> },
             { key: "password", icon: <KeyOutlined />, label: "Change password", onClick: () => setChanging(true) },
             { key: "signout", icon: <LogoutOutlined />, label: "Sign out", onClick: () => void signOut() },
           ],

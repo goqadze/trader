@@ -4,7 +4,8 @@
 import type { DipBotCreate, DipBotUpdate, DipPreset, DipPresetConfig, DipSignal } from "../dip/types";
 import { request as http } from "../http";
 import type {
-  Bot, BotCreate, BotUpdate, Decision, Order, RotationBotCreate, RotationBotUpdate, Snapshot, TradingEvent, TradingStatus,
+  Bot, BotCreate, BotUpdate, Decision, EmailAlert, EmailAlerts, EmailAlertsSave, Order, RotationBotCreate, RotationBotUpdate, Snapshot,
+  TradingEvent, TradingStatus,
 } from "./types";
 
 const BASE = "/api/trading";
@@ -44,4 +45,9 @@ export const tradingApi = {
   dipPresets: () => request<DipPreset[]>("GET", "/dip/presets"),
   saveDipPreset: (name: string, config: DipPresetConfig) => request<DipPreset>("POST", "/dip/presets", { name, config }),
   deleteDipPreset: (id: number) => request<void>("DELETE", `/dip/presets/${id}`),
+  // Email alerts: who gets them and about what; the mail server itself is set in trading-service/.env
+  emailAlerts: () => request<EmailAlerts>("GET", "/email-alerts"),
+  saveEmailAlerts: (body: EmailAlertsSave) => request<EmailAlerts>("PUT", "/email-alerts", body),
+  testEmail: () => request<EmailAlert>("POST", "/email-alerts/test"),
+  emailHistory: (limit = 50) => request<EmailAlert[]>("GET", `/email-alerts/history?limit=${limit}`),
 };

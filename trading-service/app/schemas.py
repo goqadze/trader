@@ -217,6 +217,72 @@ class DipPresetOut(BaseModel):
     updated_at: datetime
 
 
+NotifyCategory = Literal["trades", "risk", "problems", "signals"]  # models.NOTIFY_CATEGORIES
+EMAIL = r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$"
+
+
+class EmailAlertsIn(BaseModel):
+    """Who gets the email alerts and about what (notify.py). The mail server itself is set in .env (SMTP_*)."""
+
+    enabled: bool = False
+    recipients: list[str] = Field(default_factory=list, max_length=10)
+    categories: list[NotifyCategory] = Field(default_factory=list)
+
+    @field_validator("recipients")
+    @classmethod
+    def _addresses(cls, v: list[str]) -> list[str]:
+        out = list(dict.fromkeys(a.strip() for a in v if a.strip()))
+        bad = [a for a in out if not re.match(EMAIL, a)]
+        if bad:
+            raise ValueError(f"not an email address: {', '.join(bad)}")
+        return out
+
+    @field_validator("categories")
+    @classmethod
+    def _once(cls, v: list[str]) -> list[str]:
+        return list(dict.fromkeys(v))
+
+    @model_validator(mode="after")
+    def _somewhere_to_send(self):
+        if self.enabled and not self.recipients:
+            raise ValueError("add an address to send the alerts to")
+        return self
+
+
+class NotifyCategoryOut(BaseModel):
+    key: str
+    label: str
+    description: str
+
+
+class EmailAlertsOut(BaseModel):
+    enabled: bool
+    recipients: list[str]
+    categories: list[str]
+    smtp_configured: bool  # SMTP_HOST is set: without it nothing is sent
+    smtp_server: str  # "smtp.gmail.com:587 (starttls)"
+    sender: str
+    dashboard_url: str  # where the emails' links point (DASHBOARD_URL)
+    available: list[NotifyCategoryOut]
+
+
+class NotificationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    created_at: datetime
+    bot_id: int | None
+    category: str
+    kind: str
+    subject: str
+    body: str
+    status: str  # pending | sent | failed | skipped
+    attempts: int
+    next_attempt_at: datetime | None
+    sent_at: datetime | None
+    error: str | None
+
+
 class WatchItemOut(BaseModel):
     """One symbol on a dip bot's watchlist, as of its last check."""
 

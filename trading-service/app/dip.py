@@ -36,6 +36,7 @@ import yfinance as yf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import notify
 from .brokers import Broker, BrokerError
 from .config import settings
 from .decision_client import get_news
@@ -225,6 +226,7 @@ def signal(session: Session, bot: Bot, symbol: str, kind: str, now: datetime, me
     s = Signal(bot_id=bot.id, symbol=symbol, kind=kind, created_at=now, message=message, outcome=outcome, price=price,
                reference_price=reference, change_pct=None if change is None else round(change * 100, 2))
     session.add(s)
+    notify.dip_signal(session, bot, s)  # by email too, for those who chose the signals
     return s
 
 

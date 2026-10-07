@@ -140,6 +140,24 @@ notification, play a sound (falling tones = down, rising = up) or read them alou
 nothing leaves no decision row (a 15-minute bot checks 25 times a day); the watchlist shows the last check instead.
 The stop is checked at each check, not held at the broker. Paper accounts only for now.
 
+## Email alerts
+
+Every bot can email you about what matters (account menu → **Email alerts**): **buys and sells** (each filled order,
+a sale with its profit or loss), **stop-loss and risk** (stop-loss sales, blacklisted symbols, the drawdown breaker,
+HALT ALL), **problems** (errors and failed orders, at most one per bot and kind an hour) and, if you want them, every
+**dip signal**. Pick the addresses and the kinds there and send a test email.
+
+The mail server goes in `trading-service/.env` (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`; see
+`.env.example`), then `docker compose up -d --force-recreate trading-service`. Gmail: `smtp.gmail.com`, port 587, your
+address and an App Password (2-Step Verification on, then myaccount.google.com/apppasswords). Port 587 also works on
+a new Hetzner server, which blocks 25 and 465.
+
+How it's built (`trading-service/app/notify.py`): an outbox. The fill, the blacklisting or the error only queues a
+`notifications` row in its own transaction; a background loop sends whatever is queued every 15 s as one email (a
+stop-loss sale and its blacklisting arrive together), retrying a failed send after 1, 5, 30 and 120 minutes. A slow or
+broken mail server never holds up trading, and nothing is lost in a restart. `GET /email-alerts/history` (and the
+page) shows what was sent, is waiting, failed or was skipped.
+
 ## Intraday strategies (backtest only)
 
 Three strategies trade within the day on 5-minute bars (Alpaca, years of history), one setup a day at most, every

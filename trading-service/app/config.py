@@ -36,5 +36,15 @@ class Settings:
     # true once the dashboard is served over HTTPS: the browser then never sends the session cookie over plain HTTP
     cookie_secure: bool = _bool("COOKIE_SECURE", False)
 
+    # Email alerts (notify.py): any SMTP server. Gmail: smtp.gmail.com, 587, your address and an App Password.
+    # Who gets them and about what is set on the dashboard (Email alerts).
+    smtp_host: str = os.getenv("SMTP_HOST", "")  # empty: no email alerts
+    smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
+    smtp_username: str = os.getenv("SMTP_USERNAME", "")
+    smtp_password: str = os.getenv("SMTP_PASSWORD", "")
+    smtp_from: str = os.getenv("SMTP_FROM", "")  # the sender; empty = SMTP_USERNAME
+    smtp_security: str = os.getenv("SMTP_SECURITY", "starttls").strip().lower()  # starttls (587) | ssl (465) | none
+    dashboard_url: str = os.getenv("DASHBOARD_URL", "http://localhost:8080").rstrip("/")  # the emails link here
+
 
 settings = Settings()

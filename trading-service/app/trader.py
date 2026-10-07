@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import notify
 from .brokers import Broker, BrokerError, BrokerOrder, Quote
 from .config import settings
 from .decision_client import SignalError, get_signal
@@ -54,6 +55,7 @@ def log_event(session: Session, bot_id: int | None, kind: str, message: str, lev
     session.add(ev)
     logger.log(logging.ERROR if level == "error" else logging.WARNING if level == "warning" else logging.INFO,
                "bot=%s %s: %s", bot_id, kind, message)
+    notify.from_event(session, bot_id, kind, message, level, now)  # the important ones also go out by email
 
 
 def open_orders(session: Session, bot: Bot) -> list[Order]:
@@ -163,6 +165,7 @@ def apply_broker_state(session: Session, bot: Bot, order: Order, bo: BrokerOrder
     log_event(session, bot.id, "order",
               f"{order.side} {order.filled_qty} {order.symbol or bot.symbol} @ ${order.avg_price:.2f} ({order.reason}{how})"
               + (f", P&L ${order.pnl:+.2f}" if order.pnl is not None else ""), now=now)
+    notify.trade(session, bot, order, now)
 
 
 def _label(order: Order, bot: Bot) -> str:

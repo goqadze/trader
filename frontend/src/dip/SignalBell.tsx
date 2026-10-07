@@ -129,6 +129,7 @@ export default function SignalBell() {
       </div>
       <Typography.Text style={{ fontSize: 12, color: MUTED }}>
         For your information, not financial advice. Checked every 30 s while this dashboard is open. <Link to="/dip">Dip buyer</Link>
+        {" · "}<Link to="/alerts">Email alerts</Link> (even with the dashboard closed)
       </Typography.Text>
     </div>
   );

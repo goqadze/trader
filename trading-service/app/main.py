@@ -15,15 +15,16 @@ from fastapi import Depends, FastAPI, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import auth, dip, rotation, scheduler
+from . import auth, dip, notify, rotation, scheduler
 from .brokers import SHARED_ACCOUNT_BROKERS, BrokerError, catalog, get_broker
 from .config import settings
 from .db import get_session, init_db, utcnow
 from .market import is_open, next_decision_time, ny_date, session_bounds
-from .models import DIP, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPreset, EquitySnapshot, Event, Order, Signal, WatchItem
-from .schemas import (BotCreate, BotOut, BotUpdate, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn, DipPresetOut, EventOut,
-                      HoldingOut, OrderOut, RotationBotCreate, SignalOut, SnapshotOut, StatusOut, WatchItemOut, WatchSymbols,
-                      check_window)
+from .models import (DIP, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPreset, EquitySnapshot, Event, Notification, Order,
+                     Signal, WatchItem)
+from .schemas import (BotCreate, BotOut, BotUpdate, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn, DipPresetOut,
+                      EmailAlertsIn, EmailAlertsOut, EventOut, HoldingOut, NotificationOut, NotifyCategoryOut, OrderOut,
+                      RotationBotCreate, SignalOut, SnapshotOut, StatusOut, WatchItemOut, WatchSymbols, check_window)
 from .trader import bot_equity, bot_lock, close_position, evaluate, holdings, log_event, open_orders, resting_stop
 
 logger = logging.getLogger("trading-service")
@@ -40,11 +41,11 @@ if os.getenv("SENTRY_DSN"):
 async def lifespan(_app: FastAPI):
     init_db()
     auth.startup_checks()
-    task = None
-    if settings.scheduler_enabled:
-        task = asyncio.create_task(scheduler.run_forever())
+    tasks = []
+    if settings.scheduler_enabled:  # the background work: the bots, and the email alerts they queue
+        tasks = [asyncio.create_task(scheduler.run_forever()), asyncio.create_task(notify.run_forever())]
     yield
-    if task:
+    for task in tasks:
         task.cancel()
 
 
@@ -655,6 +656,45 @@ def delete_dip_preset(preset_id: int, session: Session = Depends(get_session)):
         raise HTTPException(404, "saved setup not found")
     session.delete(preset)
     session.commit()
+
+
+def _email_alerts_out(cfg: dict) -> EmailAlertsOut:
+    return EmailAlertsOut(
+        **cfg, smtp_configured=notify.smtp_ready(), smtp_server=notify.smtp_server(), sender=notify.sender(),
+        dashboard_url=notify.dashboard_url(), available=[NotifyCategoryOut(key=k, label=label, description=d) for k, (label, d) in notify.CATEGORIES.items()])
+
+
+@app.get("/email-alerts", response_model=EmailAlertsOut)
+def get_email_alerts(session: Session = Depends(get_session)):
+    """Who gets the email alerts and about what, and whether a mail server is set up (SMTP_* in .env)."""
+    return _email_alerts_out(notify.load(session))
+
+
+@app.put("/email-alerts", response_model=EmailAlertsOut)
+def save_email_alerts(body: EmailAlertsIn, session: Session = Depends(get_session)):
+    cfg = notify.save(session, body.model_dump(), utcnow())
+    session.commit()
+    return _email_alerts_out(cfg)
+
+
+@app.post("/email-alerts/test", response_model=NotificationOut)
+def send_test_email(session: Session = Depends(get_session)):
+    """Send a test email to the saved addresses right away; a 502 carries the mail server's answer."""
+    if not notify.smtp_ready():
+        raise HTTPException(422, "no mail server set up: add SMTP_HOST (and the rest of SMTP_*) to trading-service/.env")
+    recipients = notify.load(session)["recipients"]
+    if not recipients:
+        raise HTTPException(422, "save an address to send to first")
+    try:
+        return notify.send_test(session, recipients, utcnow())
+    except Exception as e:
+        raise HTTPException(502, f"the mail server refused: {type(e).__name__}: {e}")
+
+
+@app.get("/email-alerts/history", response_model=list[NotificationOut])
+def email_alert_history(limit: int = Query(50, le=500), session: Session = Depends(get_session)):
+    """The latest email alerts, newest first: sent, waiting (a retry), failed or skipped."""
+    return list(session.scalars(select(Notification).order_by(Notification.id.desc()).limit(limit)))
 
 
 @app.get("/events", response_model=list[EventOut])
