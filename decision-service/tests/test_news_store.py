@@ -79,6 +79,7 @@ def test_candidates_are_filtered_to_symbol_and_window_with_exact_cosine_similari
     assert [(c["document"], round(c["similarity"], 4)) for c in found] == [  # best match first
         ("in-exact", 1.0), ("in-diagonal", 0.7071), ("in-orthogonal", 0.0),
     ]
+    assert round(float(found[1]["embedding"][1]), 4) == 0.7071  # each article's own vector: repeats can be told apart
 
 
 def test_upsert_is_idempotent(store):

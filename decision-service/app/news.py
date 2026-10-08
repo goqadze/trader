@@ -3,9 +3,11 @@ import os
 import re
 from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
+from time import sleep
 from zoneinfo import ZoneInfo
 
 import httpx
+import numpy as np
 
 from .news_store import NewsStore
 
@@ -26,6 +28,11 @@ DECISION_TIME = time(15, 30)
 
 # News older than this is ignored entirely; within it, relevance decays with age (see _rank).
 LOOKBACK_DAYS = 7
+# Two items at least this similar (cosine of their embeddings) tell the same story: the same news from two sources,
+# or one of Benzinga's template articles ("Evaluating Apple Against Peers ...") published again. Only the better
+# ranked one is kept, so one story can't fill several of the k places. Measured on news-db (Sep 2026): template
+# repeats and same-story pairs sit at 0.84-1.0; different stories about the same company stay under it.
+DUPLICATE_SIMILARITY = 0.85
 HALF_LIFE_HOURS = 36  # ordinary headlines: most of the price impact is gone within a day or two
 EVENT_HALF_LIFE_HOURS = 168  # earnings/guidance/M&A: known to drift for days to weeks
 _EVENT_RE = re.compile(
@@ -146,12 +153,25 @@ def _polygon(symbol: str, start: date, end: date) -> list[dict]:
     ]
 
 
+FINNHUB_HISTORY_DAYS = 365  # the free plan's company news only reaches back about a year
+FINNHUB_RETRY_DELAYS = (2.0, 5.0, 10.0)  # the free plan allows 60 calls a minute: wait out a 429
+
+
 def _finnhub(symbol: str, start: date, end: date) -> list[dict]:
-    """Finnhub company news; free plan only covers roughly the last year."""
-    data = _get(
-        "https://finnhub.io/api/v1/company-news",
-        params={"symbol": symbol, "from": str(start), "to": str(end), "token": os.environ["FINNHUB_API_KEY"]},
-    )
+    """Finnhub company news (many publishers, Benzinga among them: _rank drops the repeats). A window older than
+    the free plan's year is simply not covered: no request, no articles, not a failure."""
+    earliest = date.today() - timedelta(days=FINNHUB_HISTORY_DAYS)
+    if end < earliest:
+        return []
+    params = {"symbol": symbol, "from": str(max(start, earliest)), "to": str(end), "token": os.environ["FINNHUB_API_KEY"]}
+    for delay in (*FINNHUB_RETRY_DELAYS, None):
+        try:
+            data = _get("https://finnhub.io/api/v1/company-news", params=params)
+            break
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code != 429 or delay is None:
+                raise
+            sleep(delay)
     return [
         {
             "id": f"finnhub-{a['id']}",
@@ -160,7 +180,7 @@ def _finnhub(symbol: str, start: date, end: date) -> list[dict]:
             "ts": int(a["datetime"]),  # Finnhub already gives a unix timestamp
             "source": "finnhub",
         }
-        for a in data[:50]  # cap at 50 items per call
+        for a in data
     ]
 
 
@@ -232,16 +252,29 @@ def ingest_news(symbol: str, as_of: date, days: int = LOOKBACK_DAYS, cutoff: int
 
 
 def _rank(candidates: list[dict], cutoff: int, k: int) -> list[dict]:
-    """Re-rank semantic matches so fresh news wins: score = similarity * 0.5 ** (age / half-life).
-    Each candidate is {"source", "document", "ts", "similarity"}. Returns the top k as
+    """Re-rank semantic matches so fresh news wins: score = similarity * 0.5 ** (age / half-life), then keep the top
+    k that aren't near-duplicates (DUPLICATE_SIMILARITY) of a better ranked one. Each candidate is {"source",
+    "document", "ts", "similarity", "embedding" (optional: without it nothing counts as a repeat)}. Returns
     {"text": "[source, age] document" (what the LLM reads), "document", "age_hours"}."""
     scored = []
     for c in candidates:
         age_h = (cutoff - c["ts"]) / 3600
         score = max(0.0, c["similarity"]) * math.pow(0.5, age_h / _half_life_hours(c["document"]))
-        scored.append((score, {"text": f"[{c['source']}, {_age_label(age_h)}] {c['document']}", "document": c["document"], "age_hours": age_h}))
+        scored.append((score, c, age_h))
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [item for _, item in scored[:k]]
+    kept, seen = [], []  # seen: unit vectors of the stories already kept
+    for _, c, age_h in scored:
+        if len(kept) == k:
+            break
+        e = c.get("embedding")
+        if e is not None:
+            e = np.asarray(e, dtype=np.float32)
+            e = e / (np.linalg.norm(e) or 1.0)
+            if any(float(e @ s) >= DUPLICATE_SIMILARITY for s in seen):
+                continue  # the same story, already in from a better ranked copy
+            seen.append(e)
+        kept.append({"text": f"[{c['source']}, {_age_label(age_h)}] {c['document']}", "document": c["document"], "age_hours": age_h})
+    return kept
 
 
 def catalysts(items: list[dict]) -> list[str]:

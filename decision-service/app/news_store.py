@@ -51,6 +51,11 @@ CREATE TABLE IF NOT EXISTS news_judgments (
 """
 
 
+def _array(v) -> np.ndarray:
+    """pgvector hands back its own Vector type: a plain numpy array for reuse in upsert() and for comparing."""
+    return v.to_numpy() if hasattr(v, "to_numpy") else np.asarray(v, dtype=np.float32)
+
+
 class NewsStore:
     def __init__(self, url: str):
         self.url = url
@@ -80,8 +85,7 @@ class NewsStore:
             return {}
         with self._conn() as conn:
             rows = conn.execute("SELECT DISTINCT ON (id) id, embedding FROM news WHERE id = ANY(%s)", (ids,)).fetchall()
-        # pgvector hands back its own Vector type; turn it into a plain numpy array for reuse in upsert()
-        return {r[0]: r[1].to_numpy() if hasattr(r[1], "to_numpy") else np.asarray(r[1]) for r in rows}
+        return {r[0]: _array(r[1]) for r in rows}
 
     def upsert(self, rows: list[dict]) -> None:
         """Insert or refresh articles. Keyed by (id, symbol): re-ingesting the same window never duplicates."""
@@ -100,12 +104,12 @@ class NewsStore:
             )
 
     def candidates(self, symbol: str, start: datetime, end: datetime, query: list[float], limit: int = 500) -> list[dict]:
-        """Every article for `symbol` published in [start, end], with its cosine similarity to `query`.
-        `end` is the look-ahead cutoff: nothing published after it is ever returned."""
+        """Every article for `symbol` published in [start, end], with its cosine similarity to `query` and its own
+        embedding (to tell near-duplicates apart). `end` is the look-ahead cutoff: nothing after it is ever returned."""
         with self._conn() as conn:
             rows = conn.execute(
                 """
-                SELECT source, document, published_at, 1 - (embedding <=> %(q)s) AS similarity
+                SELECT source, document, published_at, 1 - (embedding <=> %(q)s) AS similarity, embedding
                 FROM news
                 WHERE symbol = %(symbol)s AND published_at >= %(start)s AND published_at <= %(end)s
                 ORDER BY embedding <=> %(q)s
@@ -113,7 +117,8 @@ class NewsStore:
                 """,
                 {"q": np.asarray(query, dtype=np.float32), "symbol": symbol, "start": start, "end": end, "limit": limit},
             ).fetchall()
-        return [{"source": r[0], "document": r[1], "ts": int(r[2].timestamp()), "similarity": float(r[3])} for r in rows]
+        return [{"source": r[0], "document": r[1], "ts": int(r[2].timestamp()), "similarity": float(r[3]),
+                 "embedding": _array(r[4])} for r in rows]
 
     def get_judgment(self, symbol: str, cutoff: datetime, version: int) -> dict | None:
         with self._conn() as conn:

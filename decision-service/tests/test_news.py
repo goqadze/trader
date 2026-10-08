@@ -57,6 +57,24 @@ def test_rank_keeps_week_old_earnings_above_week_old_gossip_and_truncates_to_k()
     assert [i["text"] for i in out] == ["[b, 7d ago] Apple beats earnings"]
 
 
+def test_rank_keeps_one_copy_of_the_same_story():
+    story, repeat, other = [1.0, 0.0, 0.0], [0.95, 0.31, 0.0], [0.0, 0.0, 1.0]  # repeat: cosine 0.95 with story
+    out = news._rank([
+        {**_cand("Nvidia buys Hugging Face", "alpaca", CUTOFF - 2 * HOUR, 0.8), "embedding": story},
+        {**_cand("Nvidia confirms $12.9B Hugging Face deal", "finnhub", CUTOFF - 3 * HOUR, 0.8), "embedding": repeat},
+        {**_cand("Nvidia CEO keynote", "alpaca", CUTOFF - 4 * HOUR, 0.7), "embedding": other},
+    ], CUTOFF, k=3)
+    assert [i["document"] for i in out] == ["Nvidia buys Hugging Face", "Nvidia CEO keynote"]  # the fresher copy stays
+
+
+def test_rank_fills_k_after_dropping_repeats():
+    same = [1.0, 0.0]
+    out = news._rank([{**_cand(f"Apple Against Peers #{i}", "alpaca", CUTOFF - i * HOUR, 0.8), "embedding": same}
+                      for i in range(1, 4)]
+                     + [{**_cand("Apple ships iPhone", "alpaca", CUTOFF - 9 * HOUR, 0.5), "embedding": [0.0, 1.0]}], CUTOFF, k=2)
+    assert [i["document"] for i in out] == ["Apple Against Peers #1", "Apple ships iPhone"]
+
+
 class FakeStore:
     """Stands in for NewsStore: records calls, returns canned candidates."""
 
@@ -254,3 +272,26 @@ def test_alpaca_news_pages_through_the_whole_window(monkeypatch):
     out = news._alpaca("AAPL", date(2025, 5, 26), date(2025, 6, 2))
     assert [a["id"] for a in out] == ["alpaca-1", "alpaca-2", "alpaca-3"]  # not just the newest page
     assert seen == [None, "p2"]
+
+
+def test_finnhub_skips_what_the_free_plan_does_not_cover_and_waits_out_a_rate_limit(monkeypatch):
+    import httpx
+
+    monkeypatch.setenv("FINNHUB_API_KEY", "fh")
+    today = date.today()
+    calls, waits = [], []
+
+    def fake_get(url, params):
+        calls.append(params)
+        if len(calls) == 1:
+            req = httpx.Request("GET", url)
+            raise httpx.HTTPStatusError("429", request=req, response=httpx.Response(429, request=req))
+        return [{"id": 7, "headline": "Apple news", "summary": "", "datetime": 1_750_000_000}]
+
+    monkeypatch.setattr(news, "_get", fake_get)
+    monkeypatch.setattr(news, "sleep", waits.append)
+    assert news._finnhub("AAPL", today - timedelta(days=500), today - timedelta(days=400)) == []  # too old: not asked
+    assert calls == []
+    out = news._finnhub("AAPL", today - timedelta(days=370), today - timedelta(days=363))
+    assert [a["id"] for a in out] == ["finnhub-7"] and waits == [2.0]  # asked again after the 429
+    assert calls[-1]["from"] == str(today - timedelta(days=news.FINNHUB_HISTORY_DAYS))  # clipped to the covered year

@@ -156,8 +156,9 @@ def _analyze_news(state: State) -> dict:
 # moment) is judged once and saved in news-db (news_judgments): every backtest, comparison and restart then uses
 # the SAME headlines and sentiment, so the same settings give the same result everywhere. This dict is a fast
 # in-memory layer in front of it. Bump NEWS_JUDGMENT_VERSION after changing how news is fetched or judged,
-# LLM_MODEL included (the key doesn't name the model). 1: gpt-4.1-nano, 2: gpt-6-luna.
-NEWS_JUDGMENT_VERSION = 2
+# LLM_MODEL included (the key doesn't name the model). 1: gpt-4.1-nano, 2: gpt-6-luna, 3: gpt-6-luna with
+# near-duplicate stories dropped (news.DUPLICATE_SIMILARITY) and Finnhub as a second source where its key is set.
+NEWS_JUDGMENT_VERSION = 3
 NEWS_CACHE_SIZE = 4096
 _news_cache: OrderedDict[tuple, dict] = OrderedDict()
 _news_inflight: dict[tuple, threading.Lock] = {}
