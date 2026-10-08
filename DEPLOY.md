@@ -198,9 +198,25 @@ Forward only the ports of what runs: 8080 is the dashboard; 3000, 8082 and 5050 
    `COOKIE_SECURE=true` in `trading-service/.env`, then `docker compose up -d trading-service`. (The SSH
    tunnel is plain `http://localhost`, where that setting must stay `false`.)
 
-Use `tailscale serve`, never `tailscale funnel`: funnel publishes to the whole internet. The Resources
-links to Langfuse, GlitchTip and pgAdmin point at `localhost`, so use the SSH tunnel for those. pgAdmin can
-change every table, so keep it on the tunnel too: never `tailscale serve` it.
+Use `tailscale serve`, never `tailscale funnel`: funnel publishes to the whole internet.
+
+With the `monitoring` profile, publish Langfuse and GlitchTip the same way, each on its own port, and tell them the
+address they're opened at (their sign-in checks it) in `~/trading/.env`:
+
+```bash
+sudo tailscale serve --bg --https=3000 http://127.0.0.1:3000
+sudo tailscale serve --bg --https=8082 http://127.0.0.1:8082
+cat >> ~/trading/.env <<'END'
+LANGFUSE_URL=https://<server-name>.<your-tailnet>.ts.net:3000
+GLITCHTIP_URL=https://<server-name>.<your-tailnet>.ts.net:8082
+END
+docker compose up -d
+```
+
+The dashboard's Resources links then open them on the server. pgAdmin (the `pgadmin` profile) works the same way,
+behind its own login: `sudo tailscale serve --bg --https=5050 http://127.0.0.1:5050`. The APIs (8000, 8001, 8002)
+have no sign-in of their own, and the trading API can place orders: keep their docs on the SSH tunnel, never
+`tailscale serve` them.
 
 **C. Public, on your own domain (the `public` profile).** The dashboard is then open to the whole internet,
 protected by its sign-in (with its limits on failed attempts). Choose this if you want to open it anywhere without

@@ -16,17 +16,20 @@ import GuidePage from "./pages/GuidePage";
 import BotPage from "./trading/BotPage";
 import TradingPage from "./trading/TradingPage";
 
-// External dashboards for observability, API docs and the database browser (localhost ports from docker-compose).
+// External dashboards for observability, API docs and the database browser: their ports from docker-compose, on the
+// host this page came from. That's localhost on the machine running the stack (or through an SSH tunnel), and the
+// server's Tailscale name on a server, where `tailscale serve` publishes the same ports (DEPLOY.md).
+const at = (port: number, path = "") => `${window.location.protocol}//${window.location.hostname}:${port}${path}`;
 const MONITORING = [
-  { label: "Langfuse (LLM traces)", href: "http://localhost:3000" },
-  { label: "GlitchTip (errors)", href: "http://localhost:8082" },
+  { label: "Langfuse (LLM traces)", href: at(3000) },
+  { label: "GlitchTip (errors)", href: at(8082) },
 ];
 const API_DOCS = [
-  { label: "Backtest API", href: "http://localhost:8001/docs" },
-  { label: "Decision API", href: "http://localhost:8000/docs" },
-  { label: "Trading API", href: "http://localhost:8002/docs" },
+  { label: "Backtest API", href: at(8001, "/docs") },
+  { label: "Decision API", href: at(8000, "/docs") },
+  { label: "Trading API", href: at(8002, "/docs") },
 ];
-const DATABASES = [{ label: "pgAdmin (tables & data)", href: "http://localhost:5050" }];
+const DATABASES = [{ label: "pgAdmin (tables & data)", href: at(5050) }];
 
 const external = (l: { label: string; href: string }) => ({
   key: l.href,

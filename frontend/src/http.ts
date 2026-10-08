@@ -16,6 +16,14 @@ export function onUnauthorized(fn: () => void): () => void {
   return () => unauthorizedListeners.delete(fn);
 }
 
+/** nginx's 502/503/504: the service behind it is down, restarting, or not run on this machine at all (a server may
+ *  run without backtest-service, see docker-compose.server.yml). */
+function unreachable(url: string, status: number): string {
+  if (/^\/(runs|scans|ws)\b/.test(url))
+    return `Backtests aren't available here (${status}): backtest-service isn't running on this machine. Run them on your Mac, or start the backtest profile on the server.`;
+  return `The service didn't answer (${status}): it's restarting, or doesn't run on this machine. Try again in a minute.`;
+}
+
 export async function request<T>(method: string, url: string, body?: unknown, { signedOutOk = false } = {}): Promise<T> {
   const res = await fetch(url, {
     method,
@@ -32,7 +40,8 @@ export async function request<T>(method: string, url: string, body?: unknown, { 
         ? data.detail.map((d: { loc: string[]; msg: string }) => `${d.loc[d.loc.length - 1]}: ${d.msg}`).join("; ")
         : data.detail ?? msg;
     } catch {
-      /* non-JSON error body: keep the status text */
+      // A non-JSON error comes from nginx, not the service: the service didn't answer at all
+      if (res.status >= 502 && res.status <= 504) msg = unreachable(url, res.status);
     }
     throw new ApiError(res.status, msg);
   }

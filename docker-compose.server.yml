@@ -70,6 +70,8 @@ services:
     <<: *defaults
     profiles: [news, backtest, full]
     build: ./decision-service
+    ports:
+      - "127.0.0.1:8000:8000"           # its API docs, over the SSH tunnel (it spends OpenAI credit: never publish it)
     env_file:
       - ./decision-service/.env         # OPENAI_API_KEY, ALPACA_* (news and intraday bars), LLM_MODEL
     depends_on:
@@ -98,12 +100,17 @@ services:
     <<: *defaults
     profiles: [backtest, full]
     build: ./backtest-service
+    ports:
+      - "127.0.0.1:8001:8000"           # its API docs, over the SSH tunnel
     env_file:
       - ./backtest-service/.env
     depends_on:
       - decision-service                # intraday bars and the strategies' signals come from it
 
   # --- profile monitoring --------------------------------------------------------------------------------------
+  # Through Tailscale, publish them like the dashboard and tell them their address in ./.env (DEPLOY.md step 8):
+  #   sudo tailscale serve --bg --https=3000 http://127.0.0.1:3000    LANGFUSE_URL=https://<server>.<tailnet>.ts.net:3000
+  #   sudo tailscale serve --bg --https=8082 http://127.0.0.1:8082    GLITCHTIP_URL=https://<server>.<tailnet>.ts.net:8082
   # Without it, blank SENTRY_DSN in the three services' .env files and LANGFUSE_* in decision-service/.env on the
   # server, or they keep trying to reach GlitchTip and Langfuse (harmless, but noisy logs).
 
@@ -126,9 +133,9 @@ services:
       - langfuse-db
     ports:
       - "127.0.0.1:3000:3000"
-    environment:                        # localhost-only, like on the laptop (see docker-compose.yml)
+    environment:                        # published on localhost only; reach it over the SSH tunnel or Tailscale
       DATABASE_URL: postgresql://langfuse:langfuse@langfuse-db:5432/langfuse
-      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_URL: ${LANGFUSE_URL:-http://localhost:3000}   # the address you open it at (sign-in redirects there)
       NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-local-dev-secret-change-me}
       SALT: ${LANGFUSE_SALT:-local-dev-salt-change-me}
       ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
@@ -174,7 +181,10 @@ services:
       REDIS_URL: redis://glitchtip-redis:6379/0
       PORT: "8080"
       EMAIL_URL: consolemail://
-      GLITCHTIP_DOMAIN: http://localhost:8082
+      GLITCHTIP_DOMAIN: ${GLITCHTIP_URL:-http://localhost:8082}   # the address you open it at
+      # Behind Tailscale's HTTPS the browser says https://...:8082 but Django sees plain http: trust that address, or
+      # every sign-in fails its CSRF check
+      CSRF_TRUSTED_ORIGINS: ${GLITCHTIP_URL:-http://localhost:8082}
       DEFAULT_FROM_EMAIL: admin@local.dev
       ENABLE_OPEN_USER_REGISTRATION: "true"   # localhost only; sign up your first user, then you may turn it off
       CELERY_WORKER_AUTOSCALE: "1,3"
