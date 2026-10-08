@@ -21,7 +21,7 @@ export function fromRulesForm(v: RulesForm): DipRules {
     interval: v.interval, drop_pct: v.drop_pct, lookback: v.lookback, lookback_unit: v.interval === "1d" ? "days" : v.lookback_unit,
     drop_from: v.drop_from, target_mode: v.target_mode, rise_pct: v.rise_pct, stop_pct: v.stop_pct, max_positions: v.max_positions,
     max_hold_days: v.max_hold_days ?? 0, news: !!v.news, trend_filter: !!v.trend_filter, rebound: v.rebound ?? DEFAULT_RULES.rebound,
-    rebound_pct: v.rebound_pct,
+    rebound_pct: v.rebound_pct, fractional: !!v.fractional,
   } as DipRules;
   // A value the form didn't send (an unmounted field) falls back to the default instead of 0, which the API refuses
   for (const f of PCT) out[f] = v[f] == null ? DEFAULT_RULES[f] : +(v[f] / 100).toFixed(6);
@@ -144,6 +144,13 @@ export default function RulesFields({ forBot = false, compact = false }: { forBo
           </Form.Item>
         </Col>
       </Row>
+      <Form.Item name="fractional" valuePropName="checked" style={{ marginBottom: 4 }}>
+        <Switch checkedChildren="Fractional shares" unCheckedChildren="Whole shares" />
+      </Form.Item>
+      <Typography.Paragraph style={{ fontSize: 12, color: MUTED }}>
+        Fractional: buys part of a share when a part of the money is smaller than one share's price ($114 buys 0.38 of a
+        $300 share). Alpaca allows it for most US stocks and ETFs, from $1; a symbol it can't split is bought in whole shares.
+      </Typography.Paragraph>
       <Form.Item name="max_hold_days" label="Sell anyway after" tooltip="A fall that never comes back ties up a slot; 0 = hold until the target or the stop">
         <InputNumber min={0} max={250} addonAfter="trading days (0 = never)" style={{ width: "100%" }} />
       </Form.Item>

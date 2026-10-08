@@ -26,7 +26,7 @@ test-backtest:
 test-trading:
 	docker compose up -d --wait trading-db
 	docker compose run --rm --no-deps -v "$(CURDIR)/trading-service:/code" -w /code -e SENTRY_DSN= \
-		-e TEST_DATABASE_URL=postgresql+psycopg://trading:trading@trading-db:5432/trading_test \
+		-e TEST_DATABASE_URL=postgresql+psycopg://trading:trading@trading-db:5432/trading_test -e SMTP_HOST= \
 		trading-service sh -c "pip install -q -r requirements-dev.txt && pytest"
 
 # Snapshot the trading history (bots, decisions, orders, equity, audit log) to backups/*.sql.gz,

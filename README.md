@@ -109,6 +109,9 @@ once a day before the close) it:
 2. measures each symbol against its **reference**: the highest close of the last `lookback` days (or hours), or the
    close at that window's start (`drop_from`). At least `drop_pct` under it = the **buy zone**;
 3. buys the deepest falls first while slots are free (`max_positions`, each 1/N of the equity, whole shares).
+   **Fractional shares** (`fractional`, off by default): buys fractions of a share (to a millionth, $1 or more,
+   like Alpaca's fractional orders), so a slot smaller than one share's price still buys. The bot asks Alpaca whether
+   a symbol can be split and buys whole shares of one it can't; the backtest assumes every symbol can.
    **News on**: decision-service's `GET /news/sentiment` reads the headlines first; bearish news blocks that symbol
    for the rest of the day. **Trend filter**: only symbols whose 50-day average is above the 200-day one.
    **Wait for the turn** (`rebound`, on by default, x1 = `rebound_pct` 1%): a fall into the buy zone isn't bought

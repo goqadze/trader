@@ -19,6 +19,11 @@ DATA_URL = "https://data.alpaca.markets"
 _TERMINAL = {"filled", "canceled", "expired", "rejected", "done_for_day", "stopped", "suspended"}
 
 
+def _qty(qty: float) -> str:
+    """A quantity as Alpaca reads it: "12", or "0.142857" (it takes up to 9 decimals)."""
+    return f"{qty:.9f}".rstrip("0").rstrip(".")
+
+
 class AlpacaBroker(Broker):
     supports_stop_orders = True  # the stop-loss rests at Alpaca, so it works while this service is down
 
@@ -46,10 +51,10 @@ class AlpacaBroker(Broker):
         t = r.json()["trade"]
         return Quote(price=float(t["p"]), at=to_utc(t["t"]))
 
-    def submit(self, symbol: str, side: str, qty: int, client_order_id: str) -> BrokerOrder:
+    def submit(self, symbol: str, side: str, qty: float, client_order_id: str) -> BrokerOrder:
         order = self._post_order({
             "symbol": symbol,
-            "qty": str(qty),
+            "qty": _qty(qty),  # may be a fraction: Alpaca takes those on market orders good for the day, like this one
             "side": side.lower(),
             "type": "market",
             "time_in_force": "day",  # an unfilled order expires at the close instead of lingering overnight
@@ -65,7 +70,7 @@ class AlpacaBroker(Broker):
         # then simply places a new one). Only triggers in regular hours, like the service's own check.
         return self._post_order({
             "symbol": symbol,
-            "qty": str(qty),
+            "qty": _qty(qty),
             "side": "sell",
             "type": "stop",
             "stop_price": f"{stop_price:.2f}" if stop_price >= 1 else f"{stop_price:.4f}",  # Alpaca's price increments
@@ -122,19 +127,25 @@ class AlpacaBroker(Broker):
             raise BrokerError(f"Alpaca account {r.status_code}: {r.text[:200]}")
         return float(r.json()["buying_power"])
 
-    def position_qty(self, symbol: str) -> int | None:
+    def position_qty(self, symbol: str) -> float | None:
         r = self._get(self._api, f"/v2/positions/{symbol}")
         if r.status_code == 404:
             return 0  # Alpaca answers 404 when you hold none
         if r.status_code != 200:
             raise BrokerError(f"Alpaca position {r.status_code}: {r.text[:200]}")
-        return int(float(r.json()["qty"]))
+        return float(r.json()["qty"])
+
+    def fractionable(self, symbol: str) -> bool:
+        r = self._get(self._api, f"/v2/assets/{symbol}")
+        if r.status_code != 200:
+            raise BrokerError(f"Alpaca asset {symbol}: {r.status_code} {r.text[:200]}")
+        return bool(r.json().get("fractionable"))
 
     @staticmethod
     def _parse(o: dict) -> BrokerOrder:
         """Map Alpaca's many order states onto our small set."""
         status = o["status"]
-        filled = int(float(o.get("filled_qty") or 0))
+        filled = float(o.get("filled_qty") or 0)
         avg = float(o["filled_avg_price"]) if o.get("filled_avg_price") else None
         if status == "filled":
             ours = "filled"

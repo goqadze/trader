@@ -109,6 +109,27 @@ def test_each_slot_is_an_equal_part_of_the_equity_in_whole_shares():
     assert r["trades"][0]["shares"] == 24  # 10,000 / 4 = 2,500 -> 24 shares at 103
 
 
+def test_fractional_shares_let_a_slot_smaller_than_one_share_buy():
+    up = [100, 102, 104, 106, 108, 110]
+    closes = _daily(A=up + [103, 110])
+    r, _ = _run(closes, initial_cash=300, max_positions=4)  # a $75 slot can't buy one share at 103
+    assert r["trades"] == [] and r["dip_stats"]["too_small"] == 1
+    r, _ = _run(closes, initial_cash=300, max_positions=4, fractional=True)
+    buy, sell = r["trades"]
+    assert buy["shares"] == 0.728155  # $75 / $103, cut to a millionth of a share
+    assert sell["shares"] == buy["shares"] and sell["pnl"] == pytest.approx(0.728155 * 7, abs=0.01)
+    assert r["final_equity"] == pytest.approx(300 + 0.728155 * 7, abs=0.01)
+    r, _ = _run(closes, initial_cash=10_000, max_positions=4, fractional=True)
+    assert r["trades"][0]["shares"] == 24.271844  # with fractions the whole $2,500 slot is spent
+
+
+def test_a_fractional_buy_needs_at_least_a_dollar():
+    from app.engines.dip import affordable
+    assert affordable(0.99, 103, fractional=True) == 0 and affordable(1.03, 103, fractional=True) == 0.01
+    assert affordable(250, 103) == 2 and affordable(250, 103, fractional=True) == 2.427184
+    assert affordable(0, 103, fractional=True) == affordable(50, 0, fractional=True) == 0
+
+
 def _session(day: int, prices: list[float]) -> pd.DataFrame:
     """One 15-minute session on 2024-01-<day>: closes at 9:45, 10:00 ... 16:00 (26 checks; padded with the last price)."""
     times = pd.date_range(f"2024-01-{day:02d} 09:45", f"2024-01-{day:02d} 16:00", freq="15min", tz="America/New_York")

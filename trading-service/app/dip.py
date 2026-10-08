@@ -10,9 +10,10 @@ the end of each 5/15/30/60-minute bar from the open (9:45, 10:00 ... 15:45 for 1
      the close at that window's start -- and how far under it the price is. Falling into the buy zone (drop_pct or
      more under) is a "down" signal; an unheld dip that is back at its reference is an "up" signal.
   3. Buys (active bots only): symbols in the buy zone that aren't held, blacklisted, sold today or blocked by news
-     today, deepest fall first, while slots are free. A slot = 1/max_positions of the equity, in whole shares, never
-     more than the cash. With `news` on, bearish news blocks the buy for the rest of the day; with `trend_filter`,
-     only symbols whose 50-day average is above their 200-day one are bought.
+     today, deepest fall first, while slots are free. A slot = 1/max_positions of the equity, in whole shares (with
+     `fractional`, fractions of one where the broker can split the symbol, $1 or more), never more than the cash.
+     With `news` on, bearish news blocks the buy for the rest of the day; with `trend_filter`, only symbols whose
+     50-day average is above their 200-day one are bought.
      With `rebound` (wait for the turn) a fall into the buy zone isn't bought yet: the bot follows it -- the reference
      it fell from, its lowest price since -- and buys once the price is rebound_pct above that low (bearish turned
      bullish, a "rebound" signal) while still under the reference. Back at the reference first = that dip is over.
@@ -43,6 +44,7 @@ from .decision_client import get_news
 from .market import NY, ny_date, session_bounds, sessions_since, slot_window
 from .models import Bot, Decision, Holding, Order, Signal, WatchItem
 from .rotation import _quote, yahoo_closes
+from .shares import affordable, fmt_qty
 from .trader import _describe, bot_equity, holdings, log_event, mark_to_market, open_orders, submit_order
 
 logger = logging.getLogger("trading-service")
@@ -309,7 +311,7 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
         elif bot.max_hold_days and sessions_since(ny_date(h.opened_at), today) >= bot.max_hold_days:
             reason = "time"
         else:
-            lines.append(f"{s}: held {h.shares} sh, ${q.price:.2f} ({_pct(change)} from the buy); target "
+            lines.append(f"{s}: held {fmt_qty(h.shares)} sh, ${q.price:.2f} ({_pct(change)} from the buy); target "
                          f"${h.target_price or 0:.2f}, stop ${h.stop_price or 0:.2f}")
             continue
         if not trade:
@@ -448,16 +450,24 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
                 notes[s] = "bearish news: not bought today"
                 continue
         unit = q.price * (1 + bot.slippage_pct) * (1 + bot.fee_pct)
-        shares = math.floor(min(slot, budget) / unit)
-        if shares < 1:
-            notes[s] = f"a slot (${min(slot, budget):,.0f}) can't buy one share at ${q.price:.2f}"
+        split, whole_why = bool(bot.fractional), ""
+        if split:
+            try:
+                split = broker.fractionable(s)
+                whole_why = "" if split else f"; {s} can't be bought in fractions at {broker.name}"
+            except BrokerError as e:
+                split, whole_why = False, f"; fractions unknown ({e})"
+        shares = affordable(min(slot, budget), unit, split)
+        if shares <= 0:
+            notes[s] = (f"a slot (${min(slot, budget):,.2f}) is under the $1 smallest fractional order" if split
+                        else f"a slot (${min(slot, budget):,.0f}) can't buy one share at ${q.price:.2f}{whole_why}")
             continue
         order = submit_order(session, bot, broker, "BUY", shares, "dip", now, decide(), symbol=s, reference_price=ref)
         budget -= shares * unit
         free -= 1
         bought.append(s)
         news_note = f"; news {item.news_sentiment}" if bot.news else ""
-        notes[s] = f"bought: {_describe(order)}{news_note}"
+        notes[s] = f"bought: {_describe(order)}{news_note}{whole_why}"
 
     # The signals: a fall that just started ("down"); with `rebound` its turn up ("rebound": the first one, or the one it
     # was bought on); without, a fall still on that was bought once a slot freed up
@@ -511,7 +521,8 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
     d.action = "TRADE" if bought and sold else "BUY" if bought else "SELL" if sold else "HOLD"
     d.steps = [f"Buy a {bot.drop_pct:.0%} fall under the {window_label(bot)}"
                + (f" once it turns up {bot.rebound_pct:.1%} from its low" if rebound else "") + "; sell at "
-               f"{'the reference' if bot.target_mode == 'reference' else f'+{bot.rise_pct:.0%}'}, stop {bot.stop_pct:.0%}"] + lines
+               f"{'the reference' if bot.target_mode == 'reference' else f'+{bot.rise_pct:.0%}'}, stop {bot.stop_pct:.0%}"
+               + ("; fractions of a share" if bot.fractional else "")] + lines
     in_zone = [i.symbol for i in candidates]
     if bought or sold:
         d.reasoning = "; ".join(filter(None, [f"Bought {', '.join(bought)}" if bought else "",

@@ -42,6 +42,36 @@ def test_submit_sends_a_day_market_order_with_our_client_id():
     assert (o.status, o.filled_qty, o.avg_price) == ("filled", 10, 101.5)
 
 
+def test_a_fraction_of_a_share_is_sent_and_read_back_as_a_fraction():
+    import json
+
+    sent = {}
+
+    def handler(req):
+        sent.update(json.loads(req.content))
+        return httpx.Response(200, json=_order("filled", "0.728155", "103.01"))
+
+    o = _broker(handler).submit("AAPL", "BUY", 0.728155, "x")
+    assert sent["qty"] == "0.728155" and sent["time_in_force"] == "day"  # fractions: market orders good for the day
+    assert o.filled_qty == 0.728155
+    _broker(handler).submit("AAPL", "SELL", 0.1 + 0.2, "y")
+    assert sent["qty"] == "0.3"  # never Python's 0.30000000000000004: Alpaca takes 9 decimals at most
+    assert _broker(lambda req: httpx.Response(200, json={"qty": "0.5"})).position_qty("AAPL") == 0.5
+
+
+def test_fractionable_asks_the_asset():
+    seen = []
+
+    def handler(req):
+        seen.append(req.url.path)
+        return httpx.Response(200, json={"symbol": "BRK.A", "fractionable": req.url.path.endswith("/AAPL")})
+
+    assert _broker(handler).fractionable("AAPL") is True and _broker(handler).fractionable("BRK.A") is False
+    assert seen == ["/v2/assets/AAPL", "/v2/assets/BRK.A"]
+    with pytest.raises(BrokerError):
+        _broker(lambda req: httpx.Response(500, text="oops")).fractionable("AAPL")
+
+
 def test_rejection_is_returned_not_raised():
     o = _broker(lambda req: httpx.Response(403, text="insufficient buying power")).submit("AAPL", "BUY", 10, "x")
     assert o.status == "rejected" and "insufficient" in o.error

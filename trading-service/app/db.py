@@ -9,7 +9,7 @@ import logging
 from collections.abc import Iterator
 from datetime import datetime, timezone
 
-from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy import Float, Integer, create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import settings
@@ -61,6 +61,7 @@ def init_db() -> None:
 
     Base.metadata.create_all(engine)
     _add_missing_columns()
+    _widen_columns()
     _relax_removed_columns()
 
 
@@ -84,6 +85,23 @@ def _add_missing_columns() -> None:
                         ddl += " NOT NULL"
                 conn.execute(text(ddl))
                 logger.info("database: added column %s.%s", table.name, col.name)
+
+
+def _widen_columns() -> None:
+    """A whole-number column a model now keeps as a float (share quantities, once fractions of a share were allowed):
+    widen it in place. Lossless, every integer fits a double. SQLite stores whatever it's given, so Postgres only."""
+    if engine.dialect.name != "postgresql":
+        return
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if not insp.has_table(table.name):
+                continue
+            ints = {c["name"] for c in insp.get_columns(table.name) if isinstance(c["type"], Integer)}
+            for col in table.columns:
+                if col.name in ints and isinstance(col.type, Float):
+                    conn.execute(text(f'ALTER TABLE {table.name} ALTER COLUMN "{col.name}" TYPE DOUBLE PRECISION'))
+                    logger.info("database: %s.%s now holds fractions", table.name, col.name)
 
 
 def _relax_removed_columns() -> None:

@@ -170,6 +170,47 @@ def test_the_percent_target_is_rise_pct_above_the_buy(session):
     assert session.scalar(select(Holding)).target_price == pytest.approx(106.09)
 
 
+def test_a_slot_smaller_than_one_share_buys_nothing_in_whole_shares(session):
+    bot = make_dip(session, allocated_cash=150.0, cash=150.0, peak_equity=150.0)  # 2 slots of $75, A at $103
+    broker = FakeBroker(now=T, prices=QUOTES)
+    check(session, bot, broker)
+    assert broker.sent == [] and "can't buy one share at $103.00" in session.scalar(select(Signal)).outcome
+
+
+def test_fractional_shares_buy_a_slot_smaller_than_one_share_and_sell_it_all(session):
+    bot = make_dip(session, allocated_cash=150.0, cash=150.0, peak_equity=150.0, fractional=True)
+    broker = FakeBroker(now=T, prices=dict(QUOTES))
+    d = check(session, bot, broker)
+    assert broker.sent == [("BUY", "A", 0.728155)]  # $75 / $103, cut to a millionth of a share
+    h = session.scalar(select(Holding).where(Holding.symbol == "A"))
+    assert (h.shares, h.cost_basis, h.target_price, h.stop_price) == (0.728155, 75.0, 110.0, 97.85)
+    assert session.scalar(select(Signal)).outcome.startswith("Bought: BUY 0.728155 sh filled @ $103.00")
+    assert d.steps[0].endswith("; fractions of a share") and bot.cash == 75.0
+    broker.prices["A"], broker.now = 110.0, T15
+    check(session, bot, broker, now=T15, df=bars(A=[110] * 5 + [103, 110], B=[50] * 7))
+    assert broker.sent[-1] == ("SELL", "A", 0.728155) and holdings(session, bot) == []
+    assert bot.realized_pnl == pytest.approx(0.728155 * 7, abs=0.01) and bot.cash == pytest.approx(155.10, abs=0.01)
+
+
+def test_a_symbol_the_broker_cannot_split_is_bought_in_whole_shares(session):
+    bot = make_dip(session, allocated_cash=1_000.0, cash=1_000.0, peak_equity=1_000.0, fractional=True)  # $500 slots
+    broker = FakeBroker(now=T, prices=QUOTES)
+    broker.whole_only = {"A"}
+    check(session, bot, broker)
+    assert broker.sent == [("BUY", "A", 4)]
+    assert session.scalar(select(Signal)).outcome.endswith("A can't be bought in fractions at fake.")
+
+
+def test_a_fractional_buy_needs_a_dollar(session):
+    tiny = dict(allocated_cash=1.8, cash=1.8, peak_equity=1.8, fractional=True)
+    bot = make_dip(session, **tiny)  # 2 slots of 90 cents
+    broker = FakeBroker(now=T, prices=QUOTES)
+    check(session, bot, broker)
+    assert broker.sent == [] and "under the $1 smallest fractional order" in session.scalar(select(Signal)).outcome
+    check(session, make_dip(session, max_positions=1, **tiny), broker)  # one slot of $1.80
+    assert broker.sent == [("BUY", "A", 0.017475)]
+
+
 def test_a_quiet_check_leaves_no_decision_but_counts_as_done(session):
     bot = make_dip(session)
     flat = bars(A=[110] * 6, B=[50] * 6)
@@ -353,6 +394,15 @@ def test_new_bots_wait_for_the_turn_by_default_and_it_can_be_switched(api):
     r = c.patch(f"/bots/{bot['id']}/dip", json={"rebound": False, "rebound_pct": 0.02})
     assert (r.json()["rebound"], r.json()["rebound_pct"]) == (False, 0.02)
     assert c.patch(f"/bots/{bot['id']}/dip", json={"rebound_pct": 0}).status_code == 422
+
+
+def test_fractional_shares_are_off_by_default_and_can_be_switched(api):
+    c, clock, broker = api
+    bot = c.post("/bots/dip", json=BODY).json()
+    assert bot["fractional"] is False
+    bot = c.post("/bots/dip", json={**BODY, "fractional": True}).json()
+    assert bot["fractional"] is True and "buys fractions of a share" in c.get(f"/bots/{bot['id']}/events").text
+    assert c.patch(f"/bots/{bot['id']}/dip", json={"fractional": False}).json()["fractional"] is False
 
 
 # --- News, trend, paused, preview -------------------------------------------------------------------

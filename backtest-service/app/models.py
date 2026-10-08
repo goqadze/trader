@@ -222,6 +222,10 @@ class DipConfig(BaseModel):
     # the day. Slower: one news call (+ the sentiment LLM) per buy
     news: bool = False
     trend_filter: bool = False  # only buy dips of symbols in a long-term uptrend: 50-day average above the 200-day
+    # Buy fractions of a share (to a millionth, $1 or more, like Alpaca's fractional orders), so a slot smaller than one
+    # share's price still buys. Off = whole shares only. The backtest assumes every symbol can be split; the bot buys
+    # whole shares of one its broker can't split
+    fractional: bool = False
     # Backtest only: re-enable a blacklisted symbol after this many trading days (stands in for you doing it).
     # 0 = never, like a bot whose blacklist you never touch
     reenable_days: int = Field(0, ge=0, le=500)

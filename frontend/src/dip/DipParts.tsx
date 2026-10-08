@@ -23,7 +23,7 @@ export const rulesOf = (b: Bot): DipRules => ({
   interval: b.interval ?? "15m", drop_pct: b.drop_pct ?? 0.05, lookback: b.lookback ?? 5, lookback_unit: b.lookback_unit ?? "days",
   drop_from: b.drop_from ?? "high", target_mode: b.target_mode ?? "reference", rise_pct: b.rise_pct ?? 0.05, stop_pct: b.stop_pct,
   max_positions: b.max_positions ?? 5, max_hold_days: b.max_hold_days ?? 0, news: !!b.news, trend_filter: !!b.trend_filter,
-  rebound: !!b.rebound, rebound_pct: b.rebound_pct ?? 0.01,
+  rebound: !!b.rebound, rebound_pct: b.rebound_pct ?? 0.01, fractional: !!b.fractional,
 });
 
 const intervalLabel = (b: Bot) => INTERVALS.find((i) => i.value === b.interval)?.label ?? b.interval;
@@ -278,6 +278,18 @@ export function DipParamsCard({ bot, onEdit, onChanged }: { bot: Bot; onEdit: ()
         <Descriptions.Item label="Stop-loss">{frac(r.stop_pct)} under the buy, then blacklisted until you re-enable it</Descriptions.Item>
         <Descriptions.Item label="Checks">{intervalLabel(bot)}</Descriptions.Item>
         <Descriptions.Item label="Positions">up to {r.max_positions} at once, {frac(1 / r.max_positions)} of the equity each</Descriptions.Item>
+        <Descriptions.Item label="Fractional shares">
+          <Space>
+            <Switch
+              size="small"
+              checked={r.fractional}
+              loading={busy === "fractional"}
+              disabled={bot.status === "archived"}
+              onChange={(on) => act("fractional", () => tradingApi.updateDip(bot.id, { fractional: on }), on ? "Buying fractions of a share" : "Buying whole shares only")}
+            />
+            <span style={{ color: MUTED, fontSize: 12 }}>{r.fractional ? "buys part of a share when a slot is smaller than its price" : "off: whole shares only"}</span>
+          </Space>
+        </Descriptions.Item>
         <Descriptions.Item label="News">
           <Space>
             <Switch

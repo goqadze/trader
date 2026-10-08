@@ -138,6 +138,8 @@ class Bot(Base):
     # Wait for the turn: buy a fall only once it is back up rebound_pct from its low (NULL on bots from before = off)
     rebound: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     rebound_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Buy fractions of a share (where the broker can split the symbol) so small slots still buy; NULL = whole shares
+    fractional: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
@@ -154,7 +156,7 @@ class Holding(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     bot_id: Mapped[int] = mapped_column(ForeignKey("bots.id"), index=True)
     symbol: Mapped[str] = mapped_column(String(16))
-    shares: Mapped[int] = mapped_column(Integer, default=0)
+    shares: Mapped[float] = mapped_column(Float, default=0.0)  # a fraction of a share on a dip bot with `fractional`
     cost_basis: Mapped[float] = mapped_column(Float, default=0.0)
     last_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_price_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
@@ -326,14 +328,14 @@ class Order(Base):
     stop_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # stop orders only: the trigger price
     # A dip bot's BUY: the price the fall started from, which becomes the holding's target once it fills
     reference_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    qty: Mapped[int] = mapped_column(Integer)  # requested shares
+    qty: Mapped[float] = mapped_column(Float)  # requested shares (fractions only from a dip bot with `fractional`)
     reason: Mapped[str] = mapped_column(String(16))  # signal | stop-loss | target | manual | rotation | rebalance | dip | time
     status: Mapped[str] = mapped_column(String(20), default="new", index=True)
     # Our own unique id, sent to the broker. If the network drops mid-submit we can ask the broker
     # "did you get order X?" instead of guessing -- and a retry can never create a duplicate order.
     client_order_id: Mapped[str] = mapped_column(String(64), unique=True)
     broker_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    filled_qty: Mapped[int] = mapped_column(Integer, default=0)
+    filled_qty: Mapped[float] = mapped_column(Float, default=0.0)
     avg_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     fee: Mapped[float] = mapped_column(Float, default=0.0)
     pnl: Mapped[float | None] = mapped_column(Float, nullable=True)  # SELLs only: round-trip profit/loss

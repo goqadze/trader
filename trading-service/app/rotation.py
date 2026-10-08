@@ -30,6 +30,7 @@ from .brokers import Broker, BrokerError, Quote
 from .config import settings
 from .market import NY, month_end_after, ny_date, slot_window
 from .models import Bot, Decision, Order
+from .shares import fmt_qty, same_qty
 from .trader import holdings, log_event, mark_to_market, open_orders, submit_order
 
 logger = logging.getLogger("trading-service")
@@ -297,7 +298,7 @@ def step(session: Session, bot: Bot, broker: Broker, now: datetime) -> None:
         orders = _next_orders(session, bot, broker, now, plan["targets"])
         if not orders:
             bot.rotation_plan = None
-            now_held = ", ".join(f"{h.shares} {h.symbol}" for h in holdings(session, bot)) or "nothing"
+            now_held = ", ".join(f"{fmt_qty(h.shares)} {h.symbol}" for h in holdings(session, bot)) or "nothing"
             if decision is not None:
                 decision.outcome = f"{decision.outcome} Done: holding {now_held}, cash ${bot.cash:,.2f}."
             log_event(session, bot.id, "order", f"Rebalance done: holding {now_held}, cash ${bot.cash:,.2f}", now=now)
@@ -344,10 +345,10 @@ def reconcile(session: Session, bot: Bot, broker: Broker, now: datetime) -> bool
         qty = broker.position_qty(s)
         if qty is None:
             return True  # the simulator: nothing to compare with
-        if qty != held.get(s, 0):
+        if not same_qty(qty, held.get(s, 0)):
             if bot.status == "active":
                 bot.status = "paused"
-                log_event(session, bot.id, "reconcile", f"Broker holds {qty} {s} but the bot's records say {held.get(s, 0)}. "
+                log_event(session, bot.id, "reconcile", f"Broker holds {fmt_qty(qty)} {s} but the bot's records say {fmt_qty(held.get(s, 0))}. "
                           "Paused: check the account (manual trades on this symbol?) before resuming.", "error", now)
             return False
     return True

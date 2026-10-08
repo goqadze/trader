@@ -126,6 +126,7 @@ export interface Bot extends Omit<StrategyParams, "strategy"> {
   trend_filter: boolean | null;
   rebound: boolean | null; // null on dip bots from before the option: they buy at once
   rebound_pct: number | null;
+  fractional: boolean | null; // null on dip bots from before the option: whole shares
   watchlist: WatchItem[];
 }
 

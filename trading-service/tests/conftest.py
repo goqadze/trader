@@ -84,9 +84,13 @@ class FakeBroker(Broker):
         self.bp: float | None = None
         self.held: int | None = None
         self.held_by: dict[str, int] | None = None  # a real account's positions per symbol (rotation bots)
+        self.whole_only: set[str] = set()  # symbols it can't split into fractions of a share
 
     def quote(self, symbol):
         return Quote(self.prices.get(symbol, self.price), self.quote_at or self.now or datetime.now(timezone.utc))
+
+    def fractionable(self, symbol):
+        return symbol not in self.whole_only
 
     def submit(self, symbol, side, qty, client_order_id):
         self.submitted.append((side, qty))

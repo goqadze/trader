@@ -35,6 +35,7 @@ export interface DipRules {
   trend_filter: boolean; // only buy dips of symbols in an uptrend (50-day average over the 200-day)
   rebound: boolean; // wait for the turn: buy only once it is back up rebound_pct from its low
   rebound_pct: number; // x1
+  fractional: boolean; // buy fractions of a share, so a slot smaller than one share's price still buys
 }
 
 export const DEFAULT_RULES: DipRules = {
@@ -52,6 +53,7 @@ export const DEFAULT_RULES: DipRules = {
   trend_filter: false,
   rebound: true,
   rebound_pct: 0.01,
+  fractional: false,
 };
 
 const RULE_KEYS = Object.keys(DEFAULT_RULES) as (keyof DipRules)[];

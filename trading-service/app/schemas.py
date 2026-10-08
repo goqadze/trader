@@ -102,6 +102,9 @@ class DipRules(BaseModel):
     # Wait for the turn: buy a fall only once it is back up rebound_pct from its low (bearish turned bullish)
     rebound: bool = True
     rebound_pct: float = Field(0.01, gt=0, le=0.5)
+    # Buy fractions of a share, so a slot smaller than one share's price still buys (Alpaca: $1 or more, symbols it
+    # can split; any other symbol is bought in whole shares). Off = whole shares only
+    fractional: bool = False
 
     @model_validator(mode="after")
     def _window_fits(self):
@@ -148,6 +151,7 @@ class DipBotUpdate(BaseModel):
     trend_filter: bool | None = None
     rebound: bool | None = None
     rebound_pct: float | None = Field(None, gt=0, le=0.5)
+    fractional: bool | None = None
     fee_pct: float | None = Field(None, ge=0, le=0.05)
     slippage_pct: float | None = Field(None, ge=0, le=0.05)
     max_drawdown_pct: float | None = Field(None, ge=0, le=1)
@@ -382,7 +386,7 @@ class HoldingOut(BaseModel):
     """One symbol a rotation or dip bot holds, valued at its last price."""
 
     symbol: str
-    shares: int
+    shares: float  # a fraction of a share on a dip bot with `fractional`
     cost_basis: float
     last_price: float | None
     last_price_at: datetime | None
@@ -453,6 +457,7 @@ class BotOut(StrategyParams):
     trend_filter: bool | None = None
     rebound: bool | None = None
     rebound_pct: float | None = None
+    fractional: bool | None = None
     watchlist: list[WatchItemOut] = []
 
 
@@ -483,12 +488,12 @@ class OrderOut(BaseModel):
     symbol: str | None  # None on orders from before it was stored: the bot's symbol
     order_type: str  # market | stop
     stop_price: float | None
-    qty: int
+    qty: float
     reason: str
     status: str
     client_order_id: str
     broker_order_id: str | None
-    filled_qty: int
+    filled_qty: float
     avg_price: float | None
     fee: float
     pnl: float | None

@@ -316,7 +316,8 @@ def _dip_rules_text(bot: Bot) -> str:
     sell = "back at that price" if bot.target_mode == "reference" else f"{bot.rise_pct:.1%} above the buy"
     extras = [x for x in (f"waits to turn up {bot.rebound_pct:.1%} from the low" if bot.rebound else "",
                           f"sell after {bot.max_hold_days} trading days" if bot.max_hold_days else "",
-                          "bearish news blocks a buy" if bot.news else "", "only in an uptrend" if bot.trend_filter else "") if x]
+                          "bearish news blocks a buy" if bot.news else "", "only in an uptrend" if bot.trend_filter else "",
+                          "buys fractions of a share" if bot.fractional else "") if x]
     return (f"Checks every {bot.interval}; buys a {bot.drop_pct:.1%} fall under the {dip.window_label(bot)}, "
             f"{bot.max_positions} slots; sells {sell}, stop {bot.stop_pct:.1%} (then blacklisted)"
             + (f"; {', '.join(extras)}" if extras else "") + ".")

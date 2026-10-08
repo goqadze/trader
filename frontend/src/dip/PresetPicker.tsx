@@ -27,6 +27,7 @@ function summary(c: DipPresetConfig): string {
     r.rebound ? `turn ${pct(r.rebound_pct)}` : "no turn",
     `stop ${pct(r.stop_pct)}`,
     r.interval === "1d" ? "daily" : `every ${r.interval}`,
+    ...(r.fractional ? ["fractional"] : []),
     `${c.symbols?.length ?? 0} symbols`,
   ].join(" · ");
 }

@@ -30,6 +30,7 @@ from .config import settings
 from .decision_client import SignalError, get_signal
 from .market import NY, ny_date
 from .models import DIP, HOLDINGS_STRATEGIES, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, EquitySnapshot, Event, Holding, Order
+from .shares import fmt_qty, same_qty, tidy
 
 logger = logging.getLogger("trading-service")
 
@@ -103,7 +104,7 @@ def fresh_quote(broker: Broker, bot: Bot, now: datetime) -> Quote:
 # Orders and fills
 # ---------------------------------------------------------------------------
 
-def submit_order(session: Session, bot: Bot, broker: Broker, side: str, qty: int, reason: str,
+def submit_order(session: Session, bot: Bot, broker: Broker, side: str, qty: float, reason: str,
                  now: datetime, decision: Decision | None = None, stop_price: float | None = None,
                  symbol: str | None = None, reference_price: float | None = None) -> Order:
     """Write-ahead order submission (a market order, or a resting SELL stop when stop_price is given), for the
@@ -163,20 +164,20 @@ def apply_broker_state(session: Session, bot: Bot, order: Order, bo: BrokerOrder
         mark_to_market(session, bot, bo.avg_price, now)
     how = ", stop order executed at the broker" if order.order_type == "stop" else ""
     log_event(session, bot.id, "order",
-              f"{order.side} {order.filled_qty} {order.symbol or bot.symbol} @ ${order.avg_price:.2f} ({order.reason}{how})"
+              f"{order.side} {fmt_qty(order.filled_qty)} {order.symbol or bot.symbol} @ ${order.avg_price:.2f} ({order.reason}{how})"
               + (f", P&L ${order.pnl:+.2f}" if order.pnl is not None else ""), now=now)
     notify.trade(session, bot, order, now)
 
 
 def _label(order: Order, bot: Bot) -> str:
     """How an order is named in the audit log: 'BUY 10 AAPL' or 'stop SELL 10 AAPL @ $95.20'."""
-    text = f"{order.side} {order.qty} {order.symbol or bot.symbol}"
+    text = f"{order.side} {fmt_qty(order.qty)} {order.symbol or bot.symbol}"
     return f"stop {text} @ ${order.stop_price:.2f}" if order.order_type == "stop" else text
 
 
 def _book_fill(bot: Bot, order: Order) -> None:
     """Update the bot's cash and position from a finished order (same accounting as the backtest)."""
-    qty, price, fee = order.filled_qty, order.avg_price, order.fee
+    qty, price, fee = round(order.filled_qty), order.avg_price, order.fee  # these bots trade whole shares only
     if order.side == "BUY":
         cost = qty * price
         bot.cash = round(bot.cash - cost - fee, 2)
@@ -211,7 +212,7 @@ def _book_holding_fill(session: Session, bot: Bot, order: Order, now: datetime) 
         bot.cash = round(bot.cash - qty * price - fee, 2)
         if bot.strategy == DIP:
             _set_dip_levels(bot, h, qty, price, order.reference_price)
-        h.shares += qty
+        h.shares = tidy(h.shares + qty)
         h.cost_basis = round(h.cost_basis + qty * price + fee, 2)
     else:
         if h is None or h.shares <= 0:  # can't happen through the bot itself; book the cash so it isn't lost
@@ -222,7 +223,7 @@ def _book_holding_fill(session: Session, bot: Bot, order: Order, now: datetime) 
         order.pnl = round(net - basis, 2)
         bot.cash = round(bot.cash + net, 2)
         bot.realized_pnl = round(bot.realized_pnl + order.pnl, 2)
-        h.shares -= qty
+        h.shares = tidy(h.shares - qty)
         h.cost_basis = round(h.cost_basis - basis, 2)
     h.last_price, h.last_price_at = price, now  # a fill is the freshest price we have
     if h.shares <= 0:
@@ -230,7 +231,7 @@ def _book_holding_fill(session: Session, bot: Bot, order: Order, now: datetime) 
     session.flush()
 
 
-def _set_dip_levels(bot: Bot, h: Holding, qty: int, price: float, reference: float | None) -> None:
+def _set_dip_levels(bot: Bot, h: Holding, qty: float, price: float, reference: float | None) -> None:
     """A dip bot's exit levels, from the ACTUAL fill (slippage can't quietly widen the risk), like the backtest: the stop
     stop_pct under the average buy, the target back at the reference the fall started from (or rise_pct above the buy).
     Called before the new shares are added to the holding."""
@@ -322,7 +323,7 @@ def protect(session: Session, bot: Bot, broker: Broker, now: datetime) -> None:
 
     order = submit_order(session, bot, broker, "SELL", bot.shares, "stop-loss", now, stop_price=bot.stop_price)
     if order.status == "submitted":
-        log_event(session, bot.id, "risk", f"Stop-loss now held at the broker: SELL {order.qty} {bot.symbol} if it trades "
+        log_event(session, bot.id, "risk", f"Stop-loss now held at the broker: SELL {fmt_qty(order.qty)} {bot.symbol} if it trades "
                   f"at ${bot.stop_price:.2f} or lower (works even while this service is down)", now=now)
     elif order.status == "rejected":
         log_event(session, bot.id, "risk", f"The broker refused the stop order; the service keeps checking the stop "
@@ -417,16 +418,16 @@ def reconcile(session: Session, bot: Bot, broker: Broker, now: datetime) -> bool
     if open_orders(session, bot):
         return True  # position is in flux; compare once the order finishes
     qty = broker.position_qty(bot.symbol)
-    if qty is not None and qty != bot.shares and resting_stop(session, bot) is not None:
+    if qty is not None and not same_qty(qty, bot.shares) and resting_stop(session, bot) is not None:
         # The broker-held stop may have filled a moment ago: book that sale first, then compare again
         sync_pending(session, bot, broker, now)
         qty = broker.position_qty(bot.symbol)
-    if qty is None or qty == bot.shares:
+    if qty is None or same_qty(qty, bot.shares):
         return True
     if bot.status == "active":
         bot.status = "paused"
         log_event(session, bot.id, "reconcile",
-                  f"Broker holds {qty} {bot.symbol} but the bot's records say {bot.shares}. Paused: check the "
+                  f"Broker holds {fmt_qty(qty)} {bot.symbol} but the bot's records say {bot.shares}. Paused: check the "
                   "account (manual trades on this symbol?) before resuming.", "error", now)
     return False
 
@@ -525,7 +526,7 @@ def _describe(order: Order | None) -> str:
     if order is None:
         return "No order."
     if order.status in ("filled", "partially_filled"):
-        return f"{order.side} {order.filled_qty} sh {order.status} @ ${order.avg_price:.2f}"
+        return f"{order.side} {fmt_qty(order.filled_qty)} sh {order.status} @ ${order.avg_price:.2f}"
     if order.status in ("new", "submitted"):
-        return f"{order.side} {order.qty} sh sent; waiting for the fill."
-    return f"{order.side} {order.qty} sh {order.status}: {order.error or ''}".strip()
+        return f"{order.side} {fmt_qty(order.qty)} sh sent; waiting for the fill."
+    return f"{order.side} {fmt_qty(order.qty)} sh {order.status}: {order.error or ''}".strip()

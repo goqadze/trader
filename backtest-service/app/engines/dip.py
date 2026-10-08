@@ -1,3 +1,4 @@
+import math
 from datetime import date, datetime
 from typing import Awaitable, Callable
 
@@ -12,6 +13,20 @@ from .simple import SimplePortfolioEngine
 NewsFn = Callable[[str, date, datetime | None], Awaitable[dict]]
 
 MAX_EVENTS = 3000  # the activity list kept in the result (a 5-minute run over years can blacklist and veto a lot)
+QTY_DECIMALS = 6  # fractional buys are cut to a millionth of a share
+MIN_FRACTIONAL_ORDER = 1.0  # Alpaca's smallest fractional order, in dollars
+
+
+def affordable(budget: float, unit: float, fractional: bool = False) -> float:
+    """How many shares `budget` buys at `unit` dollars each: whole shares, or with `fractional` down to a millionth of
+    one. 0 when that isn't even one share (in fractions: under the $1 minimum). The trading-service's dip bot sizes
+    its buys with the same rule (trading-service/app/shares.py): keep the two the same."""
+    if unit <= 0 or budget <= 0:
+        return 0
+    if not fractional:
+        return int(budget // unit)
+    qty = math.floor(budget / unit * 10**QTY_DECIMALS) / 10**QTY_DECIMALS
+    return qty if qty * unit >= MIN_FRACTIONAL_ORDER else 0
 
 
 def references(closes: pd.DataFrame, cfg: DipConfig) -> pd.DataFrame:
@@ -60,8 +75,8 @@ class DipEngine:
       - Held and at or above its target (the reference price it fell from, or rise_pct above the buy): sell.
       - Held for max_hold_days trading days (when set): sell.
       - Not held, not blacklisted, not sold today, and at least drop_pct below its reference (see `references`):
-        buy, deepest fall first, while slots are free. One slot = 1/max_positions of the equity (whole shares, never
-        more than the cash). With news on, bearish news blocks the buy for the rest of that day; with the trend
+        buy, deepest fall first, while slots are free. One slot = 1/max_positions of the equity (whole shares, or with
+        `fractional` fractions of one, $1 or more; never more than the cash). With news on, bearish news blocks the buy for the rest of that day; with the trend
         filter, only symbols whose 50-day average is above their 200-day one are bought.
       - With `rebound` (on by default) a fall into the buy zone isn't bought yet: it waits, remembering the reference
         it fell from and its lowest close since, and is bought once the price is rebound_pct above that low (bearish
@@ -149,8 +164,8 @@ class DipEngine:
             nonlocal cash
             fill = price * (1 + cfg.slippage_pct)
             budget = min(equity / cfg.max_positions, cash)
-            shares = int(budget // (fill * (1 + cfg.fee_pct)))  # whole shares, like the bot
-            if shares < 1:
+            shares = affordable(budget, fill * (1 + cfg.fee_pct), cfg.fractional)  # same rule as the bot
+            if shares <= 0:
                 stats["too_small"] += 1
                 return False
             fee = shares * fill * cfg.fee_pct

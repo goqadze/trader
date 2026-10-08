@@ -26,6 +26,7 @@ from .config import settings
 from .db import SessionLocal, utcnow
 from .market import NY
 from .models import DIP, Bot, Holding, Notification, Order, Setting, Signal
+from .shares import fmt_qty
 
 logger = logging.getLogger("trading-service.notify")
 
@@ -131,8 +132,8 @@ def trade(session: Session, bot: Bot, order: Order, now: datetime) -> None:
     symbol, qty, price = order.symbol or bot.symbol, order.filled_qty, order.avg_price
     why = REASONS.get(order.reason, order.reason)
     if order.side == "BUY":
-        subject = f"{_live(bot)}BUY {symbol}: {qty} @ ${price:,.2f}"
-        lines = [f"Bought {qty} {symbol} at ${price:,.2f} (${qty * price:,.2f}{f' + ${order.fee:,.2f} fee' if order.fee else ''}; {why})."]
+        subject = f"{_live(bot)}BUY {symbol}: {fmt_qty(qty)} @ ${price:,.2f}"
+        lines = [f"Bought {fmt_qty(qty)} {symbol} at ${price:,.2f} (${qty * price:,.2f}{f' + ${order.fee:,.2f} fee' if order.fee else ''}; {why})."]
         if bot.strategy == DIP:
             h = session.scalar(select(Holding).where(Holding.bot_id == bot.id, Holding.symbol == symbol))
             target, stop = (h.target_price, h.stop_price) if h else (None, None)
@@ -147,7 +148,7 @@ def trade(session: Session, bot: Bot, order: Order, now: datetime) -> None:
         result = (f" {_money(pnl)}" + (f" ({pnl / basis:+.1%})" if basis else "")) if pnl is not None else ""
         label = "STOP-LOSS" if order.reason == "stop-loss" else "SELL"
         subject = f"{_live(bot)}{label} {symbol}{result}"
-        lines = [f"Sold {qty} {symbol} at ${price:,.2f} ({why})."]
+        lines = [f"Sold {fmt_qty(qty)} {symbol} at ${price:,.2f} ({why})."]
         if pnl is not None:
             lines.append(f"Profit/loss {_money(pnl)}" + (f" ({pnl / basis:+.1%} on ${basis:,.2f})" if basis else "")
                          + ", after fees.")

@@ -19,7 +19,7 @@ class BrokerOrder:
     """The broker's view of one order."""
 
     status: str  # submitted | filled | partially_filled | canceled | rejected
-    filled_qty: int = 0
+    filled_qty: float = 0  # a fraction of a share on a fractional order
     avg_price: float | None = None
     fee: float = 0.0
     broker_order_id: str | None = None
@@ -42,8 +42,9 @@ class Broker(ABC):
         """Latest trade price. Raises BrokerError when unavailable."""
 
     @abstractmethod
-    def submit(self, symbol: str, side: str, qty: int, client_order_id: str) -> BrokerOrder:
-        """Send a market order. May return 'submitted' (not filled yet); the scheduler then polls lookup()."""
+    def submit(self, symbol: str, side: str, qty: float, client_order_id: str) -> BrokerOrder:
+        """Send a market order (`qty` may be a fraction of a share where fractionable() says so). May return
+        'submitted' (not filled yet); the scheduler then polls lookup()."""
 
     @abstractmethod
     def lookup(self, client_order_id: str) -> BrokerOrder | None:
@@ -53,9 +54,13 @@ class Broker(ABC):
         """Cash the account can spend right now. None = no real account (simulator): the bot's own cash is the limit."""
         return None
 
-    def position_qty(self, symbol: str) -> int | None:
+    def position_qty(self, symbol: str) -> float | None:
         """Shares the real account holds. None = nothing to reconcile against (simulator)."""
         return None
+
+    def fractionable(self, symbol: str) -> bool:
+        """Can this symbol be bought in fractions of a share? The simulator splits anything."""
+        return True
 
     def submit_stop(self, symbol: str, qty: int, stop_price: float, client_order_id: str) -> BrokerOrder:
         """Rest a good-till-canceled SELL stop order: it becomes a market sell once the price trades at or

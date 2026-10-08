@@ -93,6 +93,26 @@ def test_new_columns_are_added_to_a_database_that_already_has_history(session):
         assert tuple(conn.execute(text("SELECT order_type, stop_price FROM orders")).one()) == ("market", None)
 
 
+@pytest.mark.skipif(not IS_POSTGRES, reason="SQLite stores fractions in any column")
+def test_whole_share_columns_are_widened_to_hold_fractions(session):
+    """Share quantities were integers until fractional dip bots: init_db widens them, keeping what they hold."""
+    bot = make_bot(session)
+    session.add(Order(bot_id=bot.id, side="BUY", qty=12, filled_qty=12, reason="signal", client_order_id="old-2"))
+    session.commit()
+    with engine.begin() as conn:  # the table as it was
+        conn.execute(text("ALTER TABLE orders ALTER COLUMN qty TYPE INTEGER"))
+        conn.execute(text("ALTER TABLE orders ALTER COLUMN filled_qty TYPE INTEGER"))
+        conn.execute(text("ALTER TABLE holdings ALTER COLUMN shares TYPE INTEGER"))
+
+    init_db()
+    with engine.begin() as conn:
+        assert tuple(conn.execute(text("SELECT qty, filled_qty FROM orders WHERE client_order_id = 'old-2'")).one()) == (12, 12)
+        types = dict(conn.execute(text("SELECT table_name || '.' || column_name, data_type FROM information_schema.columns "
+                                       "WHERE column_name IN ('qty', 'filled_qty', 'shares')")).all())
+    assert types["orders.qty"] == types["orders.filled_qty"] == types["holdings.shares"] == "double precision"
+    assert types["bots.shares"] == "integer"  # the one-symbol bots still trade whole shares only
+
+
 @pytest.mark.skipif(not IS_POSTGRES, reason="SQLite can't change a column's nullability")
 def test_a_column_removed_from_the_model_is_kept_but_no_longer_blocks_inserts(session):
     """bots.mode (rules | llm) was replaced by bots.strategy. A database from before still has `mode`
