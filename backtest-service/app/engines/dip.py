@@ -4,7 +4,7 @@ from typing import Awaitable, Callable
 
 import pandas as pd
 
-from ..models import DipConfig
+from ..models import MOVE_DAYS, DipConfig
 from ..verdict import judge
 from .base import EmitFn
 from .simple import SimplePortfolioEngine
@@ -37,6 +37,16 @@ def references(closes: pd.DataFrame, cfg: DipConfig) -> pd.DataFrame:
     if cfg.drop_from == "high":
         return closes.rolling(window, min_periods=window).max().shift(1)
     return closes.shift(window)
+
+
+def daily_moves(high: pd.DataFrame, low: pd.DataFrame, close: pd.DataFrame, days: int = MOVE_DAYS) -> pd.DataFrame:
+    """Each symbol's usual daily move as known before each day: the average of its last `days` daily ranges (high to
+    low, stretched to the previous close when the price gapped past it), each as a fraction of that day's close. NaN
+    until there are that many. drop_mode "volatility" buys a fall of drop_atr times this. The trading-service's dip
+    bot computes the same from its daily bars (app/dip.py daily_move): keep the two the same."""
+    prev = close.shift(1)
+    ranges = pd.concat([high - low, (high - prev).abs(), (low - prev).abs()], keys=range(3)).groupby(level=1).max()
+    return (ranges / close).rolling(days, min_periods=days).mean().shift(1)
 
 
 def downsample(series: pd.Series, points: int) -> pd.Series:
@@ -74,7 +84,8 @@ class DipEngine:
         re-enabled: never in a backtest unless reenable_days is set).
       - Held and at or above its target (the reference price it fell from, or rise_pct above the buy): sell.
       - Held for max_hold_days trading days (when set): sell.
-      - Not held, not blacklisted, not sold today, and at least drop_pct below its reference (see `references`):
+      - Not held, not blacklisted, not sold today, and at least drop_pct below its reference (see `references`; with
+        drop_mode "price" or "volatility" each symbol's own fall, see DipConfig.buy_fall):
         buy, deepest fall first, while slots are free. One slot = 1/max_positions of the equity (whole shares, or with
         `fractional` fractions of one, $1 or more; never more than the cash). With news on, bearish news blocks the buy for the rest of that day; with the trend
         filter, only symbols whose 50-day average is above their 200-day one are bought.
@@ -89,7 +100,9 @@ class DipEngine:
     name = "dip"
 
     async def run(self, cfg: DipConfig, closes: pd.DataFrame, emit: EmitFn, daily: pd.DataFrame | None = None,
-                  news_fn: NewsFn | None = None) -> dict:
+                  news_fn: NewsFn | None = None, moves: pd.DataFrame | None = None) -> dict:
+        """`daily`: daily closes for the trend filter (intraday runs). `moves`: drop_mode "volatility"'s daily moves
+        (see `daily_moves`, indexed by day): without them nothing is bought."""
         closes = closes.sort_index().ffill()
         intraday = cfg.interval != "1d"
         refs = references(closes, cfg)
@@ -110,7 +123,7 @@ class DipEngine:
 
         cash = cfg.initial_cash
         held: dict[str, dict] = {}
-        armed: dict[str, dict] = {}  # rebound: falls waiting for their turn, symbol -> {ref, peak_t, peak, low, low_t, turned}
+        armed: dict[str, dict] = {}  # rebound: falls waiting for their turn, symbol -> {ref, peak, low, low_t, turned, zone}
         blacklisted: dict[str, int] = {}  # symbol -> the day index it was blacklisted on
         window = cfg.window_bars()
         trades: list[dict] = []
@@ -160,7 +173,8 @@ class DipEngine:
             trades.append(leg)
             closed.append(leg)
 
-        def buy(sym: str, price: float, ref: float, drop: float, t, i: int, equity: float, peak: tuple, low: tuple | None) -> bool:
+        def buy(sym: str, price: float, ref: float, drop: float, t, i: int, equity: float, peak: tuple, low: tuple | None,
+                zone: float) -> bool:
             nonlocal cash
             fill = price * (1 + cfg.slippage_pct)
             budget = min(equity / cfg.max_positions, cash)
@@ -177,6 +191,7 @@ class DipEngine:
             leg = {"side": "BUY", "symbol": sym, "date": t.date().isoformat(), "time": t.strftime("%H:%M") if intraday else "",
                    "price": round(fill, 4), "shares": shares, "fee": round(fee, 2), "drop_pct": round(-drop * 100, 2),
                    "reference": round(ref, 2), "target": target, "stop": held[sym]["stop"], "t": iso(t),
+                   "zone_pct": round(zone * 100, 2),  # the fall that put it in the buy zone (its own with drop_mode)
                    "peak_t": iso(peak[0]), "peak_price": round(peak[1], 4)}
             if low is not None:  # waited for the turn: the low it turned up from
                 leg |= {"low_t": iso(low[0]), "low_price": round(low[1], 4), "rebound_pct": round((price / low[1] - 1) * 100, 2)}
@@ -200,6 +215,10 @@ class DipEngine:
             if trend is not None:  # daily rows, each from the closes before that day
                 past = trend.loc[:pd.Timestamp(day)]
                 trend_today = past.iloc[-1] if len(past) else pd.Series(False, index=trend.columns)
+            moves_today = None
+            if cfg.drop_mode == "volatility" and moves is not None:  # daily rows, each from the days before
+                past = moves.loc[:pd.Timestamp(day)]
+                moves_today = past.iloc[-1] if len(past) else None
             # A session's last bar closes at the bell: it only marks the day's equity (a live bot can't trade at 16:00)
             checks = day_rows.index[:-1] if intraday else day_rows.index
             for t in checks:
@@ -222,7 +241,9 @@ class DipEngine:
                     sold_today.add(sym)
                 drops = {s: 1 - float(px[s]) / float(ref[s]) for s in rows.columns
                          if pd.notna(px.get(s)) and pd.notna(ref.get(s)) and float(ref[s]) > 0}
-                now_zone = {s for s, d in drops.items() if d >= cfg.drop_pct - 1e-12}
+                need = {s: cfg.buy_fall(float(ref[s]), None if moves_today is None else float(moves_today.get(s, math.nan)))
+                        for s in drops}
+                now_zone = {s for s, d in drops.items() if need[s] is not None and d >= need[s] - 1e-12}
                 stats["dips"] += len(now_zone - zone)
                 zone = now_zone
                 if cfg.rebound:
@@ -237,7 +258,7 @@ class DipEngine:
                             del armed[sym]
                     for sym in now_zone - set(armed) - set(held) - set(blacklisted):  # new falls start waiting
                         armed[sym] = {"ref": float(ref[sym]), "peak": peak_of(sym, t), "low": float(px[sym]), "low_t": t,
-                                      "turned": False}
+                                      "turned": False, "zone": need[sym]}
                     turned = {}
                     for sym, a in armed.items():
                         p_ = px.get(sym)
@@ -276,7 +297,8 @@ class DipEngine:
                     a = armed.get(sym)
                     peak_at = a["peak"] if a else peak_of(sym, t)
                     low_at = (a["low_t"], a["low"]) if a else None
-                    if buy(sym, float(px[sym]), candidates[sym][0], candidates[sym][1], t, i, equity, peak_at, low_at):
+                    if buy(sym, float(px[sym]), candidates[sym][0], candidates[sym][1], t, i, equity, peak_at, low_at,
+                           a["zone"] if a else need[sym]):
                         armed.pop(sym, None)
             last = day_rows.iloc[-1]
             equity = float(cash + sum(p["shares"] * float(last[s]) for s, p in held.items()))

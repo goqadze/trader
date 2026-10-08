@@ -187,6 +187,30 @@ class RotationConfig(BaseModel):
 # The dip buyer's check intervals: how often it looks at its symbols. "1d" = once a day, on the close (a live bot: in
 # the last 30 minutes before it). Minutes of each: a check happens at the end of each bar of that length.
 DIP_INTERVALS = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "1d": 390}
+MOVE_DAYS = 14  # drop_mode "volatility": a symbol's usual daily move is the average of its last 14 daily ranges
+
+
+class PriceTier(BaseModel):
+    """drop_mode "price": symbols whose reference price is under `up_to` (the last tier: any price) need `share` of
+    drop_pct to be bought (0.5 = half of it)."""
+
+    up_to: float | None = Field(None, gt=0)
+    share: float = Field(gt=0, le=5)
+
+
+# Under $100: x; $100-500: 5/6 of x; $500-1000: 2/3 of x; $1000 and up: 1/3 of x (3% -> 3 / 2.5 / 2 / 1%)
+DEFAULT_PRICE_TIERS = [{"up_to": 100, "share": 1.0}, {"up_to": 500, "share": 5 / 6}, {"up_to": 1000, "share": 2 / 3},
+                       {"up_to": None, "share": 1 / 3}]
+
+
+def check_tiers(tiers: list[PriceTier]) -> list[PriceTier]:
+    """Prices going up, each tier but the last with its top, the last one without (it holds every price above)."""
+    tops = [t.up_to for t in tiers[:-1]]
+    if not tiers or None in tops or tiers[-1].up_to is not None:
+        raise ValueError("every price tier but the last needs its top price; the last one has none")
+    if any(b <= a for a, b in zip(tops, tops[1:])):
+        raise ValueError("price tiers must go up")
+    return tiers
 
 
 class DipConfig(BaseModel):
@@ -203,6 +227,13 @@ class DipConfig(BaseModel):
     end: date
     interval: Literal["5m", "15m", "30m", "1h", "1d"] = "15m"
     drop_pct: float = Field(0.05, gt=0, le=0.5)  # x: how far it must fall to be bought
+    # How x applies to each symbol: "percent" = drop_pct for all; "price" = drop_pct times the share of the tier its
+    # reference price is in (price_tiers: pricier stocks need a smaller fall); "volatility" = drop_atr times its usual
+    # daily move (the average of its last MOVE_DAYS daily ranges, as a fraction of the price). See `buy_fall`
+    drop_mode: Literal["percent", "price", "volatility"] = "percent"
+    price_tiers: list[PriceTier] = Field(default_factory=lambda: [PriceTier(**t) for t in DEFAULT_PRICE_TIERS],
+                                         min_length=1, max_length=8)
+    drop_atr: float = Field(1.5, gt=0, le=10)
     lookback: int = Field(5, ge=1, le=250)  # y: the window the fall is measured in ...
     lookback_unit: Literal["days", "hours"] = "days"  # ... in trading days, or market hours
     # The price the fall is measured from (and, with target_mode "reference", the price to get back to): the highest
@@ -242,6 +273,11 @@ class DipConfig(BaseModel):
             raise ValueError(f"the dip buyer trades stocks and ETFs, not {', '.join(bad)}")
         return out
 
+    @field_validator("price_tiers")
+    @classmethod
+    def _tiers(cls, v: list[PriceTier]) -> list[PriceTier]:
+        return check_tiers(v)
+
     @model_validator(mode="after")
     def _check(self):
         if self.end <= self.start:
@@ -255,6 +291,17 @@ class DipConfig(BaseModel):
     @property
     def minutes(self) -> int:
         return DIP_INTERVALS[self.interval]
+
+    def buy_fall(self, reference: float, move: float | None = None) -> float | None:
+        """The fall (0.03 = 3%) that puts a symbol whose reference price is `reference` in the buy zone, its usual daily
+        move being `move` (drop_mode "volatility" only). None when it can't be told (no daily move yet): not bought.
+        The trading-service's dip bot has the same rule (app/dip.py buy_fall): keep the two the same."""
+        if self.drop_mode == "price":
+            share = next(t.share for t in self.price_tiers if t.up_to is None or reference < t.up_to)
+            return min(0.5, self.drop_pct * share)
+        if self.drop_mode == "volatility":
+            return None if move is None or not move > 0 else min(0.5, self.drop_atr * move)
+        return self.drop_pct
 
     def window_bars(self) -> int:
         """The window in checks: its length in bars of the check interval (a session has 390 minutes)."""

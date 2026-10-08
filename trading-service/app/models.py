@@ -126,6 +126,11 @@ class Bot(Base):
     # --- Dip buyers only (NULL on the others): same names as the backtest's DipConfig. stop_pct is the shared column ---
     interval: Mapped[str | None] = mapped_column(String(4), nullable=True)  # how often it checks: 5m | 15m | 30m | 1h | 1d
     drop_pct: Mapped[float | None] = mapped_column(Float, nullable=True)  # buy after a fall this big ...
+    # ... for every symbol ("percent"; NULL on bots from before = that), scaled by its price tier ("price": price_tiers,
+    # NULL = the default tiers), or drop_atr times its usual daily move ("volatility"). See dip.buy_fall
+    drop_mode: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    price_tiers: Mapped[list | None] = mapped_column(JSON, nullable=True)  # [{"up_to": 100, "share": 1.0}, ...]
+    drop_atr: Mapped[float | None] = mapped_column(Float, nullable=True)
     lookback: Mapped[int | None] = mapped_column(Integer, nullable=True)  # ... during the last `lookback` ...
     lookback_unit: Mapped[str | None] = mapped_column(String(8), nullable=True)  # ... days | hours
     drop_from: Mapped[str | None] = mapped_column(String(8), nullable=True)  # high (the window's top) | start (its first close)
@@ -192,6 +197,7 @@ class WatchItem(Base):
     reference_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # the window's high (or start)
     drop: Mapped[float | None] = mapped_column(Float, nullable=True)  # how far under it: 0.06 = 6% below
     in_zone: Mapped[bool] = mapped_column(Boolean, default=False)  # at least drop_pct under: a new dip only when it enters
+    buy_drop: Mapped[float | None] = mapped_column(Float, nullable=True)  # the fall that was the buy zone (dip.buy_fall)
     # The fall being followed (from the check it fell into the buy zone until it is bought or back up): the reference
     # it fell from (the target to get back to; back there first = the dip is over, an "up" signal), its lowest price
     # since, and when it first turned up rebound_pct from that low. NULL = no fall being followed.

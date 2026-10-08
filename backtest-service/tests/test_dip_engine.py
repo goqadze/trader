@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.engines import DipEngine
-from app.engines.dip import downsample, references, uptrend
+from app.engines.dip import daily_moves, downsample, references, uptrend
 from app.models import DipConfig
 from app.runner import _bar_closes
 
@@ -26,7 +26,7 @@ def _daily(**paths):
     return pd.DataFrame({s: list(p) + [p[-1]] * (n - len(p)) for s, p in paths.items()}, index=idx)
 
 
-def _run(closes, news_fn=None, daily=None, **kw):
+def _run(closes, news_fn=None, daily=None, moves=None, **kw):
     first, last = closes.index[0], closes.index[-1]
     # rebound off unless a test turns it on: these tests are about the rest of the rules (buy as soon as it fell)
     cfg = DipConfig(**({"symbols": list(closes.columns), "start": first.date(), "end": last.date(), "interval": "1d",
@@ -37,7 +37,7 @@ def _run(closes, news_fn=None, daily=None, **kw):
     async def emit(ev):
         events.append(ev)
 
-    return asyncio.run(DipEngine().run(cfg, closes, emit, daily=daily, news_fn=news_fn)), events
+    return asyncio.run(DipEngine().run(cfg, closes, emit, daily=daily, news_fn=news_fn, moves=moves)), events
 
 
 # A climb to 110, a fall of 6.4% to 103, and a recovery back to 110
@@ -348,3 +348,53 @@ def test_downsample_keeps_the_highs_and_lows():
     assert len(thin) <= 202 and thin.max() == 9.0 and thin.min() == -9.0
     assert thin.index.is_monotonic_increasing
     assert downsample(s.iloc[:50], 200).equals(s.iloc[:50])
+
+
+# --- Each symbol's own fall (drop_mode) ---------------------------------------------------------------------
+
+
+def test_by_price_a_pricier_stock_needs_a_smaller_fall():
+    # x = 3%. A at $1,100 (tier $1000 and up: a third of x = 1%) is bought at 1,070, 2.7% under its high; B at $55
+    # (under $100: all of x) not before 51.5, 6.4% under, like the plain 3% buys both
+    closes = _daily(A=[p * 10 for p in RECOVERS], B=[p / 2 for p in RECOVERS])
+    r, _ = _run(closes, drop_pct=0.03, drop_mode="price")
+    buys = {t["symbol"]: t for t in r["trades"] if t["side"] == "BUY"}
+    assert (buys["A"]["price"], buys["A"]["zone_pct"]) == (1070.0, 1.0)
+    assert (buys["B"]["price"], buys["B"]["zone_pct"]) == (51.5, 3.0)
+    r, _ = _run(closes, drop_pct=0.03)
+    assert {t["symbol"]: t["price"] for t in r["trades"] if t["side"] == "BUY"} == {"A": 1030.0, "B": 51.5}
+
+
+def test_the_price_tiers_scale_with_x_and_can_be_changed():
+    cfg = DipConfig(symbols=["A"], start=START, end=date(2024, 2, 1), drop_pct=0.06, drop_mode="price")
+    assert [round(cfg.buy_fall(p), 4) for p in (99.99, 100, 499, 500, 999, 1000, 5000)] == [0.06, 0.05, 0.05, 0.04, 0.04, 0.02, 0.02]
+    cfg = DipConfig(symbols=["A"], start=START, end=date(2024, 2, 1), drop_pct=0.04, drop_mode="price",
+                    price_tiers=[{"up_to": 200, "share": 1}, {"share": 0.5}])
+    assert (cfg.buy_fall(150), cfg.buy_fall(250)) == (0.04, 0.02)
+    for bad in ([{"up_to": 500, "share": 1}, {"up_to": 100, "share": 1}, {"share": 1}],  # not going up
+                [{"up_to": 100, "share": 1}, {"up_to": 500, "share": 1}],  # the last one has a top
+                [{"share": 1}, {"share": 1}]):  # a tier in the middle without one
+        with pytest.raises(ValidationError):
+            DipConfig(symbols=["A"], start=START, end=date(2024, 2, 1), drop_mode="price", price_tiers=bad)
+
+
+def test_by_daily_move_a_calm_stock_needs_a_smaller_fall():
+    # 2 x the daily move: A moves 1% a day (needs 2%: bought at 107, 2.7% under 110), B 4% (needs 8%: never, it fell 6.4%)
+    closes = _daily(A=RECOVERS, B=RECOVERS)
+    moves = pd.DataFrame({"A": 0.01, "B": 0.04}, index=closes.index)
+    r, _ = _run(closes, moves=moves, drop_mode="volatility", drop_atr=2)
+    assert [(t["symbol"], t["side"], t["price"], t.get("zone_pct")) for t in r["trades"]][:1] == [("A", "BUY", 107.0, 2.0)]
+    assert {t["symbol"] for t in r["trades"]} == {"A"}
+    r, _ = _run(closes, drop_mode="volatility", drop_atr=2)  # no daily moves known: nothing is bought
+    assert r["trades"] == []
+
+
+def test_the_daily_move_is_the_average_range_of_the_days_before():
+    idx = pd.bdate_range("2024-01-02", periods=17)
+    close = pd.DataFrame({"A": [100.0] * 15 + [110.0, 110.0]}, index=idx)
+    high, low = close + 1, close - 1  # a 2% range every day ...
+    m = daily_moves(high, low, close)["A"]
+    assert m.iloc[:14].isna().all() and m.iloc[14] == pytest.approx(0.02) and m.iloc[15] == pytest.approx(0.02)
+    # ... until a gap up from 100 to 110: that day's range runs from the previous close (11 = 10% of 110). It counts
+    # from the next day on: no peeking at the day itself
+    assert m.iloc[16] == pytest.approx((13 * 0.02 + 0.1) / 14)

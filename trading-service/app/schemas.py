@@ -84,11 +84,44 @@ def check_window(interval: str, lookback: int, unit: str, live: bool = True) -> 
                          "(the live price feed keeps only so much history)")
 
 
+class PriceTier(BaseModel):
+    """drop_mode "price": symbols whose reference price is under `up_to` (the last tier: any price) need `share` of
+    drop_pct to be bought (0.5 = half of it). The backtest's PriceTier."""
+
+    up_to: float | None = Field(None, gt=0)
+    share: float = Field(gt=0, le=5)
+
+
+# Under $100: x; $100-500: 5/6 of x; $500-1000: 2/3 of x; $1000 and up: 1/3 of x (3% -> 3 / 2.5 / 2 / 1%)
+DEFAULT_PRICE_TIERS = [{"up_to": 100, "share": 1.0}, {"up_to": 500, "share": 5 / 6}, {"up_to": 1000, "share": 2 / 3},
+                       {"up_to": None, "share": 1 / 3}]
+
+
+def check_tiers(tiers: list[PriceTier] | None) -> list[PriceTier] | None:
+    """Prices going up, each tier but the last with its top, the last one without (it holds every price above)."""
+    if tiers is None:
+        return None
+    tops = [t.up_to for t in tiers[:-1]]
+    if not tiers or None in tops or tiers[-1].up_to is not None:
+        raise ValueError("every price tier but the last needs its top price; the last one has none")
+    if any(b <= a for a, b in zip(tops, tops[1:])):
+        raise ValueError("price tiers must go up")
+    return tiers
+
+
+DropMode = Literal["percent", "price", "volatility"]
+
+
 class DipRules(BaseModel):
     """A dip buyer's rules: the backtest's DipConfig, same names and meaning, so a tested setup deploys 1:1."""
 
     interval: Interval = "15m"  # check every ...
     drop_pct: float = Field(0.05, gt=0, le=0.5)  # buy a fall this big ...
+    # ... for every symbol, scaled by its price tier ("price"), or drop_atr times its usual daily move ("volatility")
+    drop_mode: DropMode = "percent"
+    price_tiers: list[PriceTier] = Field(default_factory=lambda: [PriceTier(**t) for t in DEFAULT_PRICE_TIERS],
+                                         min_length=1, max_length=8)
+    drop_atr: float = Field(1.5, gt=0, le=10)
     lookback: int = Field(5, ge=1, le=1600)  # ... during the last `lookback` ...
     lookback_unit: Literal["days", "hours"] = "days"  # ... trading days or market hours
     drop_from: Literal["high", "start"] = "high"  # measured from the window's highest close, or its first one
@@ -105,6 +138,11 @@ class DipRules(BaseModel):
     # Buy fractions of a share, so a slot smaller than one share's price still buys (Alpaca: $1 or more, symbols it
     # can split; any other symbol is bought in whole shares). Off = whole shares only
     fractional: bool = False
+
+    @field_validator("price_tiers")
+    @classmethod
+    def _tiers(cls, v: list[PriceTier]) -> list[PriceTier]:
+        return check_tiers(v)
 
     @model_validator(mode="after")
     def _window_fits(self):
@@ -139,6 +177,9 @@ class DipBotUpdate(BaseModel):
     name: str | None = Field(None, max_length=80)
     interval: Interval | None = None
     drop_pct: float | None = Field(None, gt=0, le=0.5)
+    drop_mode: DropMode | None = None
+    price_tiers: list[PriceTier] | None = Field(None, min_length=1, max_length=8)
+    drop_atr: float | None = Field(None, gt=0, le=10)
     lookback: int | None = Field(None, ge=1, le=1600)
     lookback_unit: Literal["days", "hours"] | None = None
     drop_from: Literal["high", "start"] | None = None
@@ -155,6 +196,11 @@ class DipBotUpdate(BaseModel):
     fee_pct: float | None = Field(None, ge=0, le=0.05)
     slippage_pct: float | None = Field(None, ge=0, le=0.05)
     max_drawdown_pct: float | None = Field(None, ge=0, le=1)
+
+    @field_validator("price_tiers")
+    @classmethod
+    def _tiers(cls, v: list[PriceTier] | None) -> list[PriceTier] | None:
+        return check_tiers(v)
 
 
 class WatchSymbols(BaseModel):
@@ -303,6 +349,7 @@ class WatchItemOut(BaseModel):
     drop: float | None  # 0.06 = 6% under the reference
     buy_below: float | None = None  # the price at or under which it is in the buy zone
     in_zone: bool
+    buy_drop: float | None = None  # the fall that was the buy zone at the last check (its own, with drop_mode)
     held: bool = False
     # The fall being followed: where it started (the target), since when, its low, when it turned up (rebound)
     dip_reference: float | None = None
@@ -446,6 +493,9 @@ class BotOut(StrategyParams):
     # --- dip buyers only (None / empty on the others); `universe` = the starting watchlist (the benchmark) ---
     interval: Interval | None = None
     drop_pct: float | None = None
+    drop_mode: str | None = None
+    price_tiers: list[dict] | None = None
+    drop_atr: float | None = None
     lookback: int | None = None
     lookback_unit: str | None = None
     drop_from: str | None = None

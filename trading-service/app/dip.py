@@ -8,7 +8,8 @@ the end of each 5/15/30/60-minute bar from the open (9:45, 10:00 ... 15:45 for 1
      the buy) -> sell. Held max_hold_days trading days (when set) -> sell.
   2. Where each symbol stands: its reference -- the highest close of the last `lookback` days (or hours) of bars, or
      the close at that window's start -- and how far under it the price is. Falling into the buy zone (drop_pct or
-     more under) is a "down" signal; an unheld dip that is back at its reference is an "up" signal.
+     more under; with drop_mode "price" or "volatility" each symbol's own fall, see `buy_fall`) is a "down" signal;
+     an unheld dip that is back at its reference is an "up" signal.
   3. Buys (active bots only): symbols in the buy zone that aren't held, blacklisted, sold today or blocked by news
      today, deepest fall first, while slots are free. A slot = 1/max_positions of the equity, in whole shares (with
      `fractional`, fractions of one where the broker can split the symbol, $1 or more), never more than the cash.
@@ -24,8 +25,9 @@ each check, not held at the broker: a fast fall between checks fills lower. A pa
 exits at each interval (no buys), like the other bots' stop-loss. Paper accounts only for now: main.py refuses real
 money.
 
-Like trader.py and rotation.py, every function takes `now`, and the price download (`bars_fn`), the news (`news_fn`)
-and the trend filter (`trend_fn`) can be swapped, so tests replay any moment without the network.
+Like trader.py and rotation.py, every function takes `now`, and the price download (`bars_fn`), the news (`news_fn`),
+the trend filter (`trend_fn`) and the daily moves (`moves_fn`) can be swapped, so tests replay any moment without the
+network.
 """
 
 import logging
@@ -44,6 +46,7 @@ from .decision_client import get_news
 from .market import NY, ny_date, session_bounds, sessions_since, slot_window
 from .models import Bot, Decision, Holding, Order, Signal, WatchItem
 from .rotation import _quote, yahoo_closes
+from .schemas import DEFAULT_PRICE_TIERS
 from .shares import affordable, fmt_qty
 from .trader import _describe, bot_equity, holdings, log_event, mark_to_market, open_orders, submit_order
 
@@ -53,6 +56,8 @@ INTERVAL_MINUTES = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "1d": 390}
 YAHOO_INTERVALS = {"5m": "5m", "15m": "15m", "30m": "30m", "1h": "60m", "1d": "1d"}
 YAHOO_INTRADAY_DAYS = 59  # Yahoo keeps 5-, 15- and 30-minute bars for 60 days (hourly ones for 730)
 TREND_HISTORY_DAYS = 320  # calendar days of daily closes for the trend filter's 200-day average
+MOVE_DAYS = 14  # drop_mode "volatility": a symbol's usual daily move is the average of its last 14 daily ranges
+MOVE_HISTORY_DAYS = 40  # calendar days of daily bars for them
 UNIT = {"days": "day", "hours": "hour"}
 
 
@@ -73,6 +78,45 @@ def window_bars(bot: Bot) -> int:
 def window_label(bot: Bot) -> str:
     """'5-day high', '3-hour start' ... for the signals' messages."""
     return f"{bot.lookback}-{UNIT[bot.lookback_unit]} {'high' if bot.drop_from == 'high' else 'start'}"
+
+
+def buy_fall(bot: Bot, reference: float | None, move: float | None = None) -> float | None:
+    """The fall (0.03 = 3%) that puts a symbol whose reference price is `reference` in the buy zone, its usual daily
+    move being `move` (drop_mode "volatility" only): drop_pct for every symbol; with "price", drop_pct times the share
+    of the tier the reference is in (price_tiers: pricier stocks need a smaller fall); with "volatility", drop_atr
+    times the daily move. None when it can't be told (no reference or daily move yet): not bought. The backtest's
+    DipConfig.buy_fall: keep the two the same."""
+    mode = bot.drop_mode or "percent"
+    if mode == "price":
+        if not reference:
+            return None
+        share = next(t["share"] for t in bot.price_tiers or DEFAULT_PRICE_TIERS if t.get("up_to") is None or reference < t["up_to"])
+        return min(0.5, bot.drop_pct * share)
+    if mode == "volatility":
+        return None if move is None or not move > 0 else min(0.5, (bot.drop_atr or 1.5) * move)
+    return bot.drop_pct
+
+
+def _num(x: float) -> str:
+    """3 -> '3', 2.5 -> '2.5', 1000 -> '1,000'."""
+    return f"{x:,.2f}".rstrip("0").rstrip(".")
+
+
+def fall_label(bot: Bot) -> str:
+    """'a 3% fall', 'a fall of 3% by price (under $100: 3%, ...)', 'a fall of 1.5x its usual daily move'."""
+    mode = bot.drop_mode or "percent"
+    if mode == "volatility":
+        return f"a fall of {_num(bot.drop_atr or 1.5)}x its usual daily move"
+    x = _num(bot.drop_pct * 100)
+    if mode != "price":
+        return f"a {x}% fall"
+    tiers, parts, low = bot.price_tiers or DEFAULT_PRICE_TIERS, [], None
+    for t in tiers:
+        span = (f"under ${_num(t['up_to'])}" if low is None else f"${_num(low)}-{_num(t['up_to'])}") if t.get("up_to") \
+            else f"${_num(low)} and up" if low is not None else "any price"
+        parts.append(f"{span}: {_num(bot.drop_pct * t['share'] * 100)}%")
+        low = t.get("up_to")
+    return f"a fall of {x}% by price ({', '.join(parts)})"
 
 
 def history_start(bot: Bot, today: date) -> date:
@@ -126,6 +170,48 @@ def stand(series: pd.Series | None, bot: Bot, moment: datetime, today: date) -> 
     if len(window) < window_bars(bot):
         return None, price
     return float(window.max() if bot.drop_from == "high" else window.iloc[0]), price
+
+
+def daily_move(bars: pd.DataFrame) -> float | None:
+    """A symbol's usual daily move from its daily bars (High, Low, Close) of the days before today: the average of the
+    last MOVE_DAYS daily ranges (high to low, stretched to the previous close when the price gapped past it), each as a
+    fraction of that day's close. None with fewer days. The backtest's daily_moves: keep the two the same."""
+    b = bars.dropna()
+    if len(b) < MOVE_DAYS:
+        return None
+    prev = b["Close"].shift(1)
+    ranges = pd.concat([b["High"] - b["Low"], (b["High"] - prev).abs(), (b["Low"] - prev).abs()], axis=1).max(axis=1)
+    return float((ranges / b["Close"]).tail(MOVE_DAYS).mean())
+
+
+_move_cache: dict[tuple[str, date], float] = {}
+
+
+def daily_moves(symbols: list[str], today: date) -> dict[str, float | None]:
+    """Each symbol's usual daily move as of yesterday's close (see `daily_move`), from Yahoo's daily bars, once per
+    symbol and day (one it couldn't tell is asked again at the next check)."""
+    need = [s for s in symbols if (s, today) not in _move_cache]
+    if need:
+        yahoo = {s: s.replace(".", "-") for s in need}  # Yahoo writes share classes with a dash (BRK-B)
+        try:
+            df = yf.download(list(yahoo.values()), start=(today - timedelta(days=MOVE_HISTORY_DAYS)).isoformat(),
+                             interval="1d", progress=False, auto_adjust=True)
+        except Exception as e:  # yfinance raises many different things on network trouble
+            raise BrokerError(f"daily bars failed: {e}") from e
+        if df is None or df.empty:
+            raise BrokerError("no daily bars from Yahoo (unknown symbols or data feed down)")
+        if not isinstance(df.columns, pd.MultiIndex):  # one symbol: plain columns
+            df.columns = pd.MultiIndex.from_product([df.columns, list(yahoo.values())[:1]])
+        df = df[[d.date() < today for d in df.index]]  # today's bar is still forming
+        if len(_move_cache) > 5000:
+            _move_cache.clear()
+        for s, y in yahoo.items():
+            if y not in df.columns.get_level_values(1):
+                continue
+            move = daily_move(pd.DataFrame({f: df[(f, y)] for f in ("High", "Low", "Close")}))
+            if move is not None:
+                _move_cache[(s, today)] = move
+    return {s: _move_cache.get((s, today)) for s in symbols}
 
 
 _trend_cache: dict[tuple[str, date], bool] = {}
@@ -244,15 +330,24 @@ def _sentence(text: str) -> str:
     return text[:1].upper() + text[1:] + ("" if text.endswith(".") else ".")
 
 
+def _zone_note(bot: Bot, fall: float | None, move: float | None) -> str:
+    """' (a 1.0% fall at its price)', ' (1.5x its 1.4% daily move)': a symbol's own buy zone, for the messages."""
+    if fall is None or bot.drop_mode not in ("price", "volatility"):
+        return ""
+    if bot.drop_mode == "price":
+        return f" (a {fall:.1%} fall at its price)"
+    return f" (a {fall:.1%} fall: {_num(bot.drop_atr or 1.5)}x its {move:.1%} daily move)"
+
+
 def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, bars_fn=None, news_fn=None,
-          trend_fn=None) -> Decision | None:
+          trend_fn=None, moves_fn=None) -> Decision | None:
     """One check of every symbol (see the module docstring): exits, then where each stands, then buys.
 
     kind: 'scheduled' (the interval), 'manual' (Run now while the market is open and the bot active), 'preview' (Run now
     otherwise: shows what it WOULD do; no order, no signal). A scheduled check that changed nothing leaves no Decision
     behind (a 15-minute bot checks 25 times a day): it returns None. Marks the check as done (last_decision_at) only
     once the prices came in, so a failed download is retried."""
-    bars_fn, news_fn, trend_fn = bars_fn or yahoo_bars, news_fn or get_news, trend_fn or uptrend
+    bars_fn, news_fn, trend_fn, moves_fn = bars_fn or yahoo_bars, news_fn or get_news, trend_fn or uptrend, moves_fn or daily_moves
     today = ny_date(now)
     trade = kind != "preview"
     buying = trade and bot.status == "active"
@@ -291,6 +386,12 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
     bought: list[str] = []
     sold: list[str] = []
     events = 0  # signals saved: a scheduled check that saved one is worth a Decision row
+    moves: dict[str, float | None] = {}  # drop_mode "volatility": each symbol's usual daily move
+    if bot.drop_mode == "volatility" and items:
+        try:
+            moves = moves_fn([i.symbol for i in items], today)
+        except Exception as e:  # can't tell the daily moves: no new falls, the rest of the check goes on
+            lines.append(f"Daily moves failed ({e}): no new buy zones this check")
 
     # 1. Exits, on fresh quotes
     for s, h in held.items():
@@ -350,7 +451,8 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
         ref, price = levels[s]
         item.checked_at, item.last_price, item.reference_price = now, price, ref
         item.drop = round(1 - price / ref, 6) if ref and price else None
-        zone[s] = item.drop is not None and item.drop >= bot.drop_pct - 1e-12
+        item.buy_drop = buy_fall(bot, ref, moves.get(s))
+        zone[s] = item.drop is not None and item.buy_drop is not None and item.drop >= item.buy_drop - 1e-12
         following = item.status == "watching" and not (s in held and s not in sold) and price is not None
         if trade:  # a preview changes no state: the next real check still sees a new fall as new
             if following and item.dip_reference:
@@ -435,8 +537,8 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
             if q.price < low * up - 1e-9 or q.price >= ref:
                 notes[s] = f"${q.price:.2f} at the quote: not {bot.rebound_pct:.1%} up from its low ${low:.2f} under ${ref:.2f}"
                 continue
-        elif 1 - q.price / ref < bot.drop_pct - 1e-12:
-            notes[s] = f"back up to ${q.price:.2f} at the quote: no longer a {bot.drop_pct:.0%} fall"
+        elif 1 - q.price / ref < item.buy_drop - 1e-12:
+            notes[s] = f"back up to ${q.price:.2f} at the quote: no longer a {item.buy_drop:.1%} fall"
             continue
         if bot.news:
             verdict = news_fn(s, today, now)
@@ -475,7 +577,7 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
         for s in entered:
             item = by_symbol[s]
             message = (f"{s} is {item.drop:.1%} under its {window_label(bot)} ${item.reference_price:.2f} at ${item.last_price:.2f}: "
-                       + ("fell into the buy zone" if rebound else "buy zone"))
+                       + ("fell into the buy zone" if rebound else "buy zone") + _zone_note(bot, item.buy_drop, moves.get(s)))
             outcome = (f"Waiting for it to turn up {bot.rebound_pct:.1%} from its low (${item.last_price * up:.2f} or more if it "
                        "falls no further)." if rebound else _sentence(notes.get(s, "not bought")))
             events += 1
@@ -508,8 +610,10 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
                          f"low ${item.trough_price or item.last_price:.2f}, buys at ${(item.trough_price or item.last_price) * up:.2f} or more")
         else:
             state = notes.get(item.symbol) or ("in the buy zone" if zone[item.symbol] else "watching")
+            buy_at = (f"buy at ${item.reference_price * (1 - item.buy_drop):.2f} or under{_zone_note(bot, item.buy_drop, moves.get(item.symbol))}"
+                      if item.buy_drop is not None else "no daily move yet: no buy zone")
             lines.append(f"{item.symbol}: ${item.last_price:.2f}, {-item.drop:+.1%} vs its {window_label(bot)} "
-                         f"${item.reference_price:.2f} (buy at ${item.reference_price * (1 - bot.drop_pct):.2f} or under): {state}")
+                         f"${item.reference_price:.2f} ({buy_at}): {state}")
 
     if trade:
         bot.last_decision_date, bot.last_decision_at = today, now
@@ -519,7 +623,7 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
         return None
     d = decide()
     d.action = "TRADE" if bought and sold else "BUY" if bought else "SELL" if sold else "HOLD"
-    d.steps = [f"Buy a {bot.drop_pct:.0%} fall under the {window_label(bot)}"
+    d.steps = [f"Buy {fall_label(bot)} under the {window_label(bot)}"
                + (f" once it turns up {bot.rebound_pct:.1%} from its low" if rebound else "") + "; sell at "
                f"{'the reference' if bot.target_mode == 'reference' else f'+{bot.rise_pct:.0%}'}, stop {bot.stop_pct:.0%}"
                + ("; fractions of a share" if bot.fractional else "")] + lines

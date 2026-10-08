@@ -23,7 +23,7 @@ const canon = (c: Partial<DipPresetConfig>) =>
 function summary(c: DipPresetConfig): string {
   const r = pickRules(c);
   return [
-    `${pct(r.drop_pct)} in ${r.lookback}${r.lookback_unit === "hours" ? "h" : "d"}`,
+    `${r.drop_mode === "volatility" ? `${+r.drop_atr.toFixed(2)}× move` : `${pct(r.drop_pct)}${r.drop_mode === "price" ? " by price" : ""}`} in ${r.lookback}${r.lookback_unit === "hours" ? "h" : "d"}`,
     r.rebound ? `turn ${pct(r.rebound_pct)}` : "no turn",
     `stop ${pct(r.stop_pct)}`,
     r.interval === "1d" ? "daily" : `every ${r.interval}`,

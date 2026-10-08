@@ -83,9 +83,14 @@ def _bot_out(session: Session, bot: Bot) -> BotOut:
                                entry_price=h.entry_price, reference_price=h.reference_price, target_price=h.target_price,
                                stop_price=h.stop_price, on_watchlist=bot.strategy != DIP or h.symbol in watched))
     held = {r.symbol for r in rows}
+
+    def zone(i) -> float | None:  # the fall that buys it: by the rules as they are now (a daily move: the last check's)
+        return i.buy_drop if bot.drop_mode == "volatility" else dip.buy_fall(bot, i.reference_price)
+
     watchlist = [WatchItemOut.model_validate(i).model_copy(update={
         "held": i.symbol in held,
-        "buy_below": round(i.reference_price * (1 - bot.drop_pct), 2) if i.reference_price else None,
+        "buy_drop": zone(i),
+        "buy_below": round(i.reference_price * (1 - zone(i)), 2) if i.reference_price and zone(i) is not None else None,
         "rebound_at": round(i.trough_price * (1 + (bot.rebound_pct or 0.01)), 2)
         if bot.rebound and i.dip_reference and i.trough_price else None}) for i in items]
     return BotOut.model_validate({
@@ -318,7 +323,7 @@ def _dip_rules_text(bot: Bot) -> str:
                           f"sell after {bot.max_hold_days} trading days" if bot.max_hold_days else "",
                           "bearish news blocks a buy" if bot.news else "", "only in an uptrend" if bot.trend_filter else "",
                           "buys fractions of a share" if bot.fractional else "") if x]
-    return (f"Checks every {bot.interval}; buys a {bot.drop_pct:.1%} fall under the {dip.window_label(bot)}, "
+    return (f"Checks every {bot.interval}; buys {dip.fall_label(bot)} under the {dip.window_label(bot)}, "
             f"{bot.max_positions} slots; sells {sell}, stop {bot.stop_pct:.1%} (then blacklisted)"
             + (f"; {', '.join(extras)}" if extras else "") + ".")
 

@@ -61,8 +61,8 @@ def no_news(*a):
     raise AssertionError("asked the news while it is off")
 
 
-def check(session, bot, broker, now=T, kind="scheduled", df=FALL, news=no_news, trend=None):
-    return dip.check(session, bot, broker, now, kind, bars_fn=feed(df), news_fn=news, trend_fn=trend)
+def check(session, bot, broker, now=T, kind="scheduled", df=FALL, news=no_news, trend=None, moves=None):
+    return dip.check(session, bot, broker, now, kind, bars_fn=feed(df), news_fn=news, trend_fn=trend, moves_fn=moves)
 
 
 @pytest.fixture(autouse=True)
@@ -71,6 +71,7 @@ def reset_pacing():
     scheduler._retry_after.clear()
     scheduler._last_error.clear()
     dip._trend_cache.clear()
+    dip._move_cache.clear()
 
 
 # --- The reference: the backtest's -----------------------------------------------------------------
@@ -403,6 +404,84 @@ def test_fractional_shares_are_off_by_default_and_can_be_switched(api):
     bot = c.post("/bots/dip", json={**BODY, "fractional": True}).json()
     assert bot["fractional"] is True and "buys fractions of a share" in c.get(f"/bots/{bot['id']}/events").text
     assert c.patch(f"/bots/{bot['id']}/dip", json={"fractional": False}).json()["fractional"] is False
+
+
+# --- Each symbol's own fall (drop_mode) ---------------------------------------------------------------
+
+def test_by_price_a_pricier_stock_needs_a_smaller_fall(session):
+    # x = 3%. Both fell 2.7%: A at $1,100 (tier $1,000 and up: a third of x = 1%) is bought, B at $55 (under $100: 3%) not
+    bot = make_dip(session, drop_pct=0.03, drop_mode="price")
+    broker = FakeBroker(now=T, prices={"A": 1070.0, "B": 53.5})
+    check(session, bot, broker, df=bars(A=[1100] * 5 + [1070], B=[55] * 5 + [53.5]))
+    assert broker.sent == [("BUY", "A", 4)]
+    assert session.scalar(select(Signal)).message == ("A is 2.7% under its 1-hour high $1100.00 at $1070.00: buy zone "
+                                                      "(a 1.0% fall at its price)")
+    assert item(session, bot, "A").buy_drop == pytest.approx(0.01) and item(session, bot, "B").buy_drop == pytest.approx(0.03)
+    assert not item(session, bot, "B").in_zone
+
+
+def test_the_price_tiers_scale_with_x_and_can_be_changed(session):
+    bot = make_dip(session, drop_pct=0.06, drop_mode="price")
+    assert [round(dip.buy_fall(bot, p), 4) for p in (99.99, 100, 499, 500, 999, 1000, 5000)] == [0.06, 0.05, 0.05, 0.04, 0.04, 0.02, 0.02]
+    assert dip.fall_label(bot) == "a fall of 6% by price (under $100: 6%, $100-500: 5%, $500-1,000: 4%, $1,000 and up: 2%)"
+    bot = make_dip(session, drop_pct=0.04, drop_mode="price", price_tiers=[{"up_to": 200, "share": 1}, {"up_to": None, "share": 0.5}])
+    assert (dip.buy_fall(bot, 150), dip.buy_fall(bot, 250), dip.buy_fall(bot, None)) == (0.04, 0.02, None)
+    assert dip.buy_fall(make_dip(session, drop_pct=0.04), None) == 0.04  # by percent, as always
+
+
+def test_by_daily_move_a_calm_stock_needs_a_smaller_fall(session):
+    # 2x the daily move: A moves 1% a day (needs 2%: its 2.7% fall is bought), B 4% (needs 8%: its 3% isn't)
+    bot = make_dip(session, drop_mode="volatility", drop_atr=2)
+    broker = FakeBroker(now=T, prices={"A": 107.0, "B": 48.5})
+    asked = []
+    moves = lambda symbols, today: asked.append((symbols, today)) or {"A": 0.01, "B": 0.04}  # noqa: E731
+    d = check(session, bot, broker, df=bars(A=[110] * 5 + [107], B=[50] * 5 + [48.5]), moves=moves)
+    assert broker.sent == [("BUY", "A", 46)] and asked == [(["A", "B"], NY_DAY)]
+    assert session.scalar(select(Signal)).message.endswith("buy zone (a 2.0% fall: 2x its 1.0% daily move)")
+    assert d.steps[0].startswith("Buy a fall of 2x its usual daily move under the 1-hour high")
+    assert item(session, bot, "B").buy_drop == pytest.approx(0.08)
+
+
+def test_without_the_daily_moves_nothing_falls_into_the_buy_zone(session):
+    bot = make_dip(session, drop_mode="volatility")
+    broker = FakeBroker(now=T, prices=QUOTES)
+
+    def down(symbols, today):
+        raise BrokerError("Yahoo is down")
+
+    d = check(session, bot, broker, kind="manual", moves=down)
+    assert broker.sent == [] and "Daily moves failed (Yahoo is down)" in d.steps[1]
+    assert "no daily move yet" in " ".join(d.steps)
+    check(session, bot, broker, now=T15, moves=lambda symbols, today: {"B": 0.01})  # A's unknown: still not bought
+    assert broker.sent == [] and item(session, bot, "A").buy_drop is None
+
+
+def test_the_daily_move_is_the_average_range_of_the_days_before():
+    idx = pd.bdate_range("2025-05-01", periods=16)
+    close = pd.Series([100.0] * 15 + [110.0], index=idx)
+    day = pd.DataFrame({"High": close + 1, "Low": close - 1, "Close": close})
+    assert dip.daily_move(day.iloc[:13]) is None  # fewer than 14 days
+    assert dip.daily_move(day.iloc[:15]) == pytest.approx(0.02)
+    # A gap up from 100 to 110: that day's range runs from the previous close (11 = 10% of 110)
+    assert dip.daily_move(day) == pytest.approx((13 * 0.02 + 0.1) / 14)
+
+
+def test_the_fall_by_price_or_daily_move_is_set_and_changed_through_the_api(api):
+    c, clock, broker = api
+    tiers = [{"up_to": 200, "share": 1}, {"up_to": None, "share": 0.5}]
+    bot = c.post("/bots/dip", json={**BODY, "drop_pct": 0.04, "drop_mode": "price", "price_tiers": tiers}).json()
+    assert (bot["drop_mode"], bot["price_tiers"]) == ("price", tiers)
+    assert "buys a fall of 4% by price (under $200: 4%, $200 and up: 2%)" in c.get(f"/bots/{bot['id']}/events").text
+    clock["t"] = broker.now = OPEN
+    c.post(f"/bots/{bot['id']}/run")
+    w = {x["symbol"]: x for x in c.get(f"/bots/{bot['id']}").json()["watchlist"]}
+    assert (w["A"]["buy_drop"], w["A"]["buy_below"]) == (0.04, 105.6)  # 4% under its $110 high
+    r = c.patch(f"/bots/{bot['id']}/dip", json={"drop_mode": "volatility", "drop_atr": 2})
+    assert (r.json()["drop_mode"], r.json()["drop_atr"]) == ("volatility", 2)
+    bad = [{"up_to": 500, "share": 1}, {"up_to": 100, "share": 1}, {"up_to": None, "share": 1}]
+    assert c.patch(f"/bots/{bot['id']}/dip", json={"price_tiers": bad}).status_code == 422
+    assert c.post("/bots/dip", json={**BODY, "price_tiers": [{"up_to": 100, "share": 1}]}).status_code == 422
+    assert c.post("/bots/dip", json=BODY).json()["drop_mode"] == "percent"
 
 
 # --- News, trend, paused, preview -------------------------------------------------------------------

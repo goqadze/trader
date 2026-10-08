@@ -14,13 +14,16 @@ import type { Bot, Holding } from "../trading/types";
 import PresetPicker from "./PresetPicker";
 import RulesFields, { type RulesForm, fromRulesForm, toRulesForm } from "./RulesFields";
 import { SignalLine } from "./SignalBell";
-import { type DipPresetConfig, type DipRules, type DipSignal, INTERVALS, type WatchItem, fallText, pickRules, sellText } from "./types";
+import {
+  DEFAULT_PRICE_TIERS, type DipPresetConfig, type DipRules, type DipSignal, INTERVALS, type WatchItem, fallText, pickRules, sellText,
+} from "./types";
 
 const MUTED = "#8b98b5";
 
 /** The bot's rules as DipRules (its columns are nullable: they're only set on dip bots). */
 export const rulesOf = (b: Bot): DipRules => ({
-  interval: b.interval ?? "15m", drop_pct: b.drop_pct ?? 0.05, lookback: b.lookback ?? 5, lookback_unit: b.lookback_unit ?? "days",
+  interval: b.interval ?? "15m", drop_pct: b.drop_pct ?? 0.05, drop_mode: b.drop_mode ?? "percent",
+  price_tiers: b.price_tiers ?? DEFAULT_PRICE_TIERS, drop_atr: b.drop_atr ?? 1.5, lookback: b.lookback ?? 5, lookback_unit: b.lookback_unit ?? "days",
   drop_from: b.drop_from ?? "high", target_mode: b.target_mode ?? "reference", rise_pct: b.rise_pct ?? 0.05, stop_pct: b.stop_pct,
   max_positions: b.max_positions ?? 5, max_hold_days: b.max_hold_days ?? 0, news: !!b.news, trend_filter: !!b.trend_filter,
   rebound: !!b.rebound, rebound_pct: b.rebound_pct ?? 0.01, fractional: !!b.fractional,
@@ -203,15 +206,19 @@ export function WatchlistCard({ bot, onChanged }: { bot: Bot; onChanged: () => v
           },
           {
             title: "From it", dataIndex: "drop", align: "right", sorter: (a, b) => (b.drop ?? -1) - (a.drop ?? -1),
-            render: (d: number | null) => (d == null ? <Tooltip title="Not enough prices yet for the window"><span style={{ color: MUTED }}>—</span></Tooltip>
-              : <span style={{ color: d >= (bot.drop_pct ?? 1) ? "#4f8cff" : d > 0 ? undefined : "#33c088" }}>{pct(-d * 100, 1)}</span>),
+            render: (d: number | null, w) => (d == null ? <Tooltip title="Not enough prices yet for the window"><span style={{ color: MUTED }}>—</span></Tooltip>
+              : <span style={{ color: d >= (w.buy_drop ?? bot.drop_pct ?? 1) ? "#4f8cff" : d > 0 ? undefined : "#33c088" }}>{pct(-d * 100, 1)}</span>),
           },
           {
             title: <Tooltip title={bot.rebound ? "In the buy zone at or under the first price; a fall being followed is bought at or above the second (its low + the turn)" : "In the buy zone at or under this price"}>Buy at</Tooltip>,
             dataIndex: "buy_below", align: "right",
             render: (v: number | null, w) => (w.rebound_at != null
               ? <Tooltip title="Waiting for the turn: bought at or above this price"><span style={{ color: "#13c2c2" }}>≥ {usd(w.rebound_at)}</span></Tooltip>
-              : usd(v)),
+              : bot.drop_mode === "price" || bot.drop_mode === "volatility"
+                ? <Tooltip title={w.buy_drop == null ? "Its usual daily move isn't known yet: no buy zone" : `A ${frac(w.buy_drop)} fall ${bot.drop_mode === "price" ? "at its price" : "for its daily move"}`}>
+                    {v == null || w.buy_drop == null ? <span style={{ color: MUTED }}>—</span> : <span>{usd(v)} <span style={{ color: MUTED, fontSize: 12 }}>({frac(w.buy_drop)})</span></span>}
+                  </Tooltip>
+                : usd(v)),
           },
           { title: "Status", key: "status", render: (_, w) => statusTag(w, bot) },
           {

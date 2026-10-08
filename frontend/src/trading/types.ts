@@ -1,6 +1,6 @@
 // Types mirroring trading-service's API (trading-service/app/schemas.py).
 
-import type { DipInterval, WatchItem } from "../dip/types";
+import type { DipInterval, DropMode, PriceTier, WatchItem } from "../dip/types";
 import type { StrategyId } from "../strategies";
 
 /** When a bot checks on a decision day: 30 min before the close, 30 min after the open, or both. */
@@ -115,6 +115,9 @@ export interface Bot extends Omit<StrategyParams, "strategy"> {
   // Dip buyers only (null / empty on the others). Their `universe` is the starting watchlist: the benchmark holds it.
   interval: DipInterval | null;
   drop_pct: number | null;
+  drop_mode: DropMode | null; // null on dip bots from before the option: "percent"
+  price_tiers: PriceTier[] | null; // null: the default tiers
+  drop_atr: number | null;
   lookback: number | null;
   lookback_unit: "days" | "hours" | null;
   drop_from: "high" | "start" | null;

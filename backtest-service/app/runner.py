@@ -13,6 +13,7 @@ import yfinance as yf
 
 from .decision_client import BASE as DECISION_BASE, get_signal
 from .engines import DipEngine, IntradayEngine, RotationEngine, SimplePortfolioEngine
+from .engines.dip import daily_moves
 from .models import INTRADAY_STRATEGIES, DipConfig, RotationConfig, RunConfig, is_crypto
 
 
@@ -149,6 +150,20 @@ def _universe_closes(symbols_key: str, start: date, end: date) -> pd.DataFrame:
     return _finished_sessions(close, pd.Timestamp.now(tz=NEW_YORK))
 
 
+def _daily_ranges(symbols_key: str, start: date, end: date) -> pd.DataFrame:
+    """Daily highs, lows and closes of several symbols (columns: (High|Low|Close, symbol)), for drop_mode
+    "volatility"'s daily moves. `symbols_key` = "A,B,C", like _universe_closes."""
+    symbols = symbols_key.split(",")
+    yahoo = [_yahoo_symbol(s) for s in symbols]
+    df = yf.download(yahoo, start=start, end=end + timedelta(days=1), progress=False, auto_adjust=True)
+    if not isinstance(df.columns, pd.MultiIndex):  # one symbol: plain columns
+        df.columns = pd.MultiIndex.from_product([df.columns, yahoo[:1]])
+    out = pd.concat({f: df[f].rename(columns={_yahoo_symbol(s): s for s in symbols}).reindex(columns=symbols)
+                     for f in ("High", "Low", "Close")}, axis=1)
+    out.index = [d.date() for d in out.index]
+    return _finished_sessions(out, pd.Timestamp.now(tz=NEW_YORK))
+
+
 def _finished_sessions(close: pd.Series | pd.DataFrame, now: pd.Timestamp) -> pd.Series | pd.DataFrame:
     """Drop today's bar while the market is still open: yfinance returns the latest intraday price as today's
     "close", so a backtest ending today would decide and mark equity on a price that isn't a close yet."""
@@ -215,6 +230,7 @@ async def _execute_rotation(run: Run) -> None:
 DIP_TIMEFRAMES = {"5m": "5Min", "15m": "15Min", "30m": "30Min", "1h": "30Min"}
 DIP_DOWNLOADS = 4  # symbols downloaded at once (each is one request per month to decision-service)
 TREND_HISTORY_DAYS = 320  # calendar days before the start: 200+ trading days for the trend filter's 200-day average
+MOVE_HISTORY_DAYS = 30  # calendar days before the first check: 15+ trading days for the daily moves
 
 
 def _bar_closes(df: pd.DataFrame, minutes: int, step: int) -> pd.Series:
@@ -308,11 +324,17 @@ async def _execute_dip(run: Run) -> None:
             if cfg.trend_filter and cfg.interval != "1d":  # intraday checks: the trend filter's daily closes come apart
                 daily = (await _load_prices(",".join(cfg.symbols), trend_start, cfg.end, _universe_closes)).copy()
                 daily.index = pd.DatetimeIndex(daily.index)
+            moves = None
+            if cfg.drop_mode == "volatility":  # each symbol's usual daily move, from daily bars a few weeks back
+                ranges = await _load_prices(",".join(cfg.symbols), first - timedelta(days=MOVE_HISTORY_DAYS), cfg.end,
+                                            _daily_ranges)
+                moves = daily_moves(ranges["High"], ranges["Low"], ranges["Close"])
+                moves.index = pd.DatetimeIndex(moves.index)
             async with httpx.AsyncClient() as client:
                 async def news(symbol: str, day: date, at: datetime | None) -> dict:
                     return await _news(client, symbol, day, at)
 
-                run.result = await DipEngine().run(cfg, closes, run.emit, daily=daily, news_fn=news)
+                run.result = await DipEngine().run(cfg, closes, run.emit, daily=daily, news_fn=news, moves=moves)
             run.status = "done"
         except Exception as e:
             run.status = "error"
