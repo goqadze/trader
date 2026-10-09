@@ -1,5 +1,6 @@
 import { Button, Card, Checkbox, DatePicker, Divider, Form, InputNumber, Select, Typography } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
+import { useEffect } from "react";
 import { lastMonths, periodExtra, periodOptions } from "../periods";
 import UniverseField from "../rotation/UniverseField";
 import PresetPicker from "./PresetPicker";
@@ -41,7 +42,14 @@ function toPreset(v: Partial<FormValues>): DipPresetConfig {
 }
 
 /** Left-hand panel of the Dip buyer page: the watchlist, the rules, and the practice and exam windows. */
-export default function DipBacktestForm({ onRun, starting }: { onRun: (c: Partial<Record<Period, DipConfig>>) => void; starting: boolean }) {
+interface Props {
+  onRun: (c: Partial<Record<Period, DipConfig>>) => void;
+  starting: boolean;
+  /** A setup to fill the form with (the Test results tab's "Load into the backtest form"); a new seq loads it again. */
+  loadRequest?: { config: DipPresetConfig; seq: number } | null;
+}
+
+export default function DipBacktestForm({ onRun, starting, loadRequest }: Props) {
   const [form] = Form.useForm<FormValues>();
   const v = Form.useWatch([], form) as Partial<FormValues> | undefined;
   const examOn = v?.exam_on !== false;
@@ -65,6 +73,11 @@ export default function DipBacktestForm({ onRun, starting }: { onRun: (c: Partia
             ...(c.exam && { exam: [dayjs(c.exam[0]), dayjs(c.exam[1])] as [Dayjs, Dayjs] }),
           }),
     });
+
+  useEffect(() => {
+    if (loadRequest) load(loadRequest.config);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only a new request loads
+  }, [loadRequest?.seq]);
 
   /** Picking "the last n months" (or the exam on/off with it) sets the dates; changing a date by hand makes them custom. */
   const onValuesChange = (changed: Partial<FormValues>, all: FormValues) => {
@@ -110,7 +123,7 @@ export default function DipBacktestForm({ onRun, starting }: { onRun: (c: Partia
           <InputNumber min={0} max={500} addonAfter="trading days (0 = for good)" style={{ width: "100%" }} />
         </Form.Item>
         <Form.Item name="initial_cash" label="Capital">
-          <InputNumber min={1000} step={1000} addonBefore="$" style={{ width: "100%" }} />
+          <InputNumber min={100} step={100} addonBefore="$" style={{ width: "100%" }} />
         </Form.Item>
         <Divider style={{ margin: "8px 0 12px" }} />
         <Form.Item

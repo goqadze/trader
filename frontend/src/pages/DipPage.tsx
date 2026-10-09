@@ -6,7 +6,8 @@ import DipBacktestForm from "../dip/DipBacktestForm";
 import DipBotForm, { type DipBotInitial } from "../dip/DipBotForm";
 import { SignalsList, dipRules } from "../dip/DipParts";
 import DipResultView from "../dip/DipResultView";
-import { type DipBotCreate, pickRules } from "../dip/types";
+import TestResults from "../dip/TestResults";
+import { type DipBotCreate, type DipPresetConfig, pickRules } from "../dip/types";
 import { useDip } from "../dip/useDip";
 import { isListedEtf } from "../symbols";
 import { tradingApi } from "../trading/api";
@@ -74,6 +75,7 @@ export default function DipPage() {
   const [tab, setTab] = useState(savedTab);
   const [formOpen, setFormOpen] = useState(false);
   const [initial, setInitial] = useState<DipBotInitial>({});
+  const [loadRequest, setLoadRequest] = useState<{ config: DipPresetConfig; seq: number } | null>(null);
   const bots = usePolling(() => tradingApi.listBots(false), 15_000);
   const status = usePolling(tradingApi.status, 60_000);
   const signals = usePolling(() => tradingApi.signals(0, 300), 15_000);
@@ -112,6 +114,13 @@ export default function DipPage() {
     setFormOpen(true);
   };
 
+  /** The Test results tab's "Load into the backtest form": switch to the backtest with that setup filled in. */
+  const loadTest = (config: DipPresetConfig) => {
+    setLoadRequest((r) => ({ config, seq: (r?.seq ?? 0) + 1 }));
+    switchTab("backtest");
+    message.info("Loaded into the backtest form: press Run backtest");
+  };
+
   const create = async (body: DipBotCreate) => {
     const bot = await tradingApi.createDipBot(body);
     message.success(`Bot created: ${bot.name}`);
@@ -122,7 +131,7 @@ export default function DipPage() {
   const backtest = (
     <Row gutter={[16, 16]}>
       <Col xs={24} md={9} lg={7}>
-        <DipBacktestForm onRun={start} starting={starting} />
+        <DipBacktestForm onRun={start} starting={starting} loadRequest={loadRequest} />
       </Col>
       <Col xs={24} md={15} lg={17}>
         {error && <Alert type="error" showIcon closable message={error} style={{ marginBottom: 16 }} />}
@@ -199,6 +208,7 @@ export default function DipPage() {
         items={[
           { key: "bots", label: `Bots & signals${dipBots.length ? ` (${dipBots.length})` : ""}`, children: live },
           { key: "backtest", label: "Backtest", children: backtest },
+          { key: "tests", label: "Test results", children: <TestResults onLoad={loadTest} /> },
         ]}
       />
       <DipBotForm

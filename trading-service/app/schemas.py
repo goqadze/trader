@@ -267,6 +267,69 @@ class DipPresetOut(BaseModel):
     updated_at: datetime
 
 
+class DipTestIn(BaseModel):
+    """One tested setup of a study: the setup (as a saved setup keeps it) and its numbers per window."""
+
+    code: str = Field(..., min_length=1, max_length=20)
+    name: str = Field(..., min_length=1, max_length=60)
+    watchlist: str = Field("", max_length=60)
+    config: DipPresetConfig
+    results: dict[str, dict]  # period -> the grid's numbers
+    detail: dict[str, dict] = {}  # period -> {"curve": [[date, equity, buy & hold], ...], "by_symbol": [...], ...}
+    score: float | None = None
+    pick: int | None = Field(None, ge=1)
+    note: str = Field("", max_length=2000)
+
+
+class DipStudyIn(BaseModel):
+    """A study (a batch of tests run together). Saving a name that exists (ignoring case) replaces it and drops its
+    tests; add the tests with POST /dip/studies/{id}/tests, in as many batches as you like."""
+
+    name: str = Field(..., max_length=80)
+    description: str = Field("", max_length=20_000)
+    periods: dict[str, tuple[date, date]] = Field(..., min_length=1)  # in the grid's order
+
+    @field_validator("name")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = " ".join(v.split())
+        if not v:
+            raise ValueError("give it a name")
+        return v
+
+
+class DipStudyOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    description: str
+    periods: dict
+    created_at: datetime
+    tests: int = 0
+
+
+class DipTestOut(BaseModel):
+    """A test in the grid: everything but its curves (GET /dip/tests/{id} has those)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    study_id: int
+    code: str
+    name: str
+    watchlist: str
+    config: dict
+    results: dict
+    score: float | None
+    pick: int | None
+    note: str
+
+
+class DipTestDetailOut(DipTestOut):
+    detail: dict
+
+
 NotifyCategory = Literal["trades", "risk", "problems", "signals"]  # models.NOTIFY_CATEGORIES
 EMAIL = r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$"
 

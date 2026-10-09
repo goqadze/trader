@@ -1,7 +1,7 @@
 // Typed client for trading-service. nginx (docker) or the Vite dev proxy forwards /api/trading/* to
 // trading-service with the prefix stripped.
 
-import type { DipBotCreate, DipBotUpdate, DipPreset, DipPresetConfig, DipSignal } from "../dip/types";
+import type { DipBotCreate, DipBotUpdate, DipPreset, DipPresetConfig, DipSignal, DipStudy, DipTest, DipTestDetail } from "../dip/types";
 import { request as http } from "../http";
 import type {
   Bot, BotCreate, BotUpdate, Decision, EmailAlert, EmailAlerts, EmailAlertsSave, Order, RotationBotCreate, RotationBotUpdate, Snapshot,
@@ -45,6 +45,10 @@ export const tradingApi = {
   dipPresets: () => request<DipPreset[]>("GET", "/dip/presets"),
   saveDipPreset: (name: string, config: DipPresetConfig) => request<DipPreset>("POST", "/dip/presets", { name, config }),
   deleteDipPreset: (id: number) => request<void>("DELETE", `/dip/presets/${id}`),
+  // Dip buyer test batches (parameter sweeps) and each setup they tested
+  dipStudies: () => request<DipStudy[]>("GET", "/dip/studies"),
+  dipTests: (studyId: number) => request<DipTest[]>("GET", `/dip/studies/${studyId}/tests`),
+  dipTest: (id: number) => request<DipTestDetail>("GET", `/dip/tests/${id}`),
   // Email alerts: who gets them and about what; the mail server itself is set in trading-service/.env
   emailAlerts: () => request<EmailAlerts>("GET", "/email-alerts"),
   saveEmailAlerts: (body: EmailAlertsSave) => request<EmailAlerts>("PUT", "/email-alerts", body),

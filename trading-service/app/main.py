@@ -12,7 +12,8 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Query
-from sqlalchemy import func, select
+from fastapi.middleware.gzip import GZipMiddleware
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from . import auth, dip, notify, rotation, scheduler
@@ -20,9 +21,10 @@ from .brokers import SHARED_ACCOUNT_BROKERS, BrokerError, catalog, get_broker
 from .config import settings
 from .db import get_session, init_db, utcnow
 from .market import is_open, next_decision_time, ny_date, session_bounds
-from .models import (DIP, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPreset, EquitySnapshot, Event, Notification, Order,
-                     Signal, WatchItem)
+from .models import (DIP, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPreset, DipStudy, DipTest, EquitySnapshot, Event,
+                     Notification, Order, Signal, WatchItem)
 from .schemas import (BotCreate, BotOut, BotUpdate, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn, DipPresetOut,
+                      DipStudyIn, DipStudyOut, DipTestDetailOut, DipTestIn, DipTestOut,
                       EmailAlertsIn, EmailAlertsOut, EventOut, HoldingOut, NotificationOut, NotifyCategoryOut, OrderOut,
                       RotationBotCreate, SignalOut, SnapshotOut, StatusOut, WatchItemOut, WatchSymbols, check_window)
 from .trader import bot_equity, bot_lock, close_position, evaluate, holdings, log_event, open_orders, resting_stop
@@ -50,6 +52,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Trading Service", lifespan=lifespan)
+app.add_middleware(GZipMiddleware, minimum_size=4096)  # a dip study's grid is a few MB of JSON
 app.include_router(auth.router)
 
 
@@ -665,6 +668,78 @@ def delete_dip_preset(preset_id: int, session: Session = Depends(get_session)):
     if preset is None:
         raise HTTPException(404, "saved setup not found")
     session.delete(preset)
+    session.commit()
+
+
+def _study_out(session: Session, study: DipStudy) -> DipStudyOut:
+    n = session.scalar(select(func.count()).select_from(DipTest).where(DipTest.study_id == study.id))
+    return DipStudyOut.model_validate(study).model_copy(update={"tests": n or 0})
+
+
+@app.get("/dip/studies", response_model=list[DipStudyOut])
+def list_dip_studies(session: Session = Depends(get_session)):
+    """The dip buyer test batches (parameter sweeps), newest first, each with how many setups it tested."""
+    return [_study_out(session, s) for s in session.scalars(select(DipStudy).order_by(DipStudy.id.desc()))]
+
+
+@app.put("/dip/studies", response_model=DipStudyOut)
+def save_dip_study(body: DipStudyIn, session: Session = Depends(get_session)):
+    """Create a study, or replace the one with that name (ignoring case): its tests are dropped, add them again."""
+    periods = {k: [v[0].isoformat(), v[1].isoformat()] for k, v in body.periods.items()}
+    study = session.scalar(select(DipStudy).where(func.lower(DipStudy.name) == body.name.lower()))
+    if study is None:
+        study = DipStudy(name=body.name, description=body.description, periods=periods)
+        session.add(study)
+    else:
+        session.execute(delete(DipTest).where(DipTest.study_id == study.id))
+        study.name, study.description, study.periods, study.created_at = body.name, body.description, periods, utcnow()
+    session.commit()
+    return _study_out(session, study)
+
+
+def _get_study(session: Session, study_id: int) -> DipStudy:
+    study = session.get(DipStudy, study_id)
+    if study is None:
+        raise HTTPException(404, "test batch not found")
+    return study
+
+
+@app.post("/dip/studies/{study_id}/tests", response_model=DipStudyOut)
+def add_dip_tests(study_id: int, body: list[DipTestIn], session: Session = Depends(get_session)):
+    """Add tested setups to a study (a code it already has is replaced)."""
+    study = _get_study(session, study_id)
+    codes = [t.code for t in body]
+    if len(set(codes)) != len(codes):
+        raise HTTPException(422, "each test needs its own code")
+    session.execute(delete(DipTest).where(DipTest.study_id == study_id, DipTest.code.in_(codes)))
+    session.add_all(DipTest(study_id=study_id, **t.model_dump(mode="json")) for t in body)
+    session.commit()
+    return _study_out(session, study)
+
+
+@app.get("/dip/studies/{study_id}/tests", response_model=list[DipTestOut])
+def list_dip_tests(study_id: int, session: Session = Depends(get_session)):
+    """A study's tested setups, best score first (without their curves: GET /dip/tests/{id})."""
+    _get_study(session, study_id)
+    q = (select(DipTest).where(DipTest.study_id == study_id)
+         .order_by(DipTest.score.desc().nulls_last(), DipTest.id))
+    return list(session.scalars(q))
+
+
+@app.get("/dip/tests/{test_id}", response_model=DipTestDetailOut)
+def get_dip_test(test_id: int, session: Session = Depends(get_session)):
+    """One tested setup with its equity curves and per-symbol results."""
+    test = session.get(DipTest, test_id)
+    if test is None:
+        raise HTTPException(404, "test not found")
+    return test
+
+
+@app.delete("/dip/studies/{study_id}", status_code=204)
+def delete_dip_study(study_id: int, session: Session = Depends(get_session)):
+    study = _get_study(session, study_id)
+    session.execute(delete(DipTest).where(DipTest.study_id == study_id))  # SQLite doesn't cascade by itself
+    session.delete(study)
     session.commit()
 
 

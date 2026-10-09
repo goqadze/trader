@@ -7,6 +7,8 @@
     WatchItem      a dip bot's watchlist, one row per symbol: watching or blacklisted, and where it stood at the last check
     Signal         a dip bot's recommendations: a symbol fell into the buy zone, is back up, hit its stop
     DipPreset      a dip buyer setup saved under a name (rules, watchlist, backtest periods), to load into a form later
+    DipStudy       a batch of dip buyer backtests run together (a parameter sweep), and DipTest: each setup it tested
+                   and how it did in each window
     Notification   an email alert: queued with the event it tells about, then sent (or retried) by notify.py
     Setting        small settings changed on the dashboard (the email alerts' addresses and choices); secrets stay in .env
     Decision       every time a bot asked decision-service for a signal, and what it did about it
@@ -250,6 +252,38 @@ class DipPreset(Base):
     config: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class DipStudy(Base):
+    """A batch of dip buyer backtests run together (a parameter sweep): what was varied, over which windows, and what
+    came out of it. Its tests are DipTest rows; the dashboard's Test results tab shows them as a grid."""
+
+    __tablename__ = "dip_studies"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(80), unique=True)
+    description: Mapped[str] = mapped_column(Text, default="")  # what was varied, and the findings in words
+    periods: Mapped[dict] = mapped_column(JSON)  # {"practice": [start, end], "exam": [...], ...}, in the grid's order
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class DipTest(Base):
+    """One tested setup of a study: its name, the setup as a saved setup keeps it (schemas.DipPresetConfig, so it can
+    be saved or loaded into the backtest form as is), and how it did in each of the study's windows."""
+
+    __tablename__ = "dip_tests"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    study_id: Mapped[int] = mapped_column(ForeignKey("dip_studies.id", ondelete="CASCADE"), index=True)
+    code: Mapped[str] = mapped_column(String(20))  # short id within the study: "T0123"
+    name: Mapped[str] = mapped_column(String(60))  # the name it gets when saved as a setup
+    watchlist: Mapped[str] = mapped_column(String(60), default="")  # the watchlist's name
+    config: Mapped[dict] = mapped_column(JSON)
+    results: Mapped[dict] = mapped_column(JSON)  # period -> the grid's numbers (return, buy & hold, drawdown, trades ...)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)  # period -> its equity curve and per-symbol rows
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)  # the study's ranking number (higher = better)
+    pick: Mapped[int | None] = mapped_column(Integer, nullable=True)  # recommended: 1 = the best pick; None = not picked
+    note: Mapped[str] = mapped_column(Text, default="")
 
 
 # What an email alert is about (notify.CATEGORIES describes each); you choose which ones you get

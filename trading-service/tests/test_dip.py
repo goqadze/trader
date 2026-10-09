@@ -734,3 +734,51 @@ def test_a_saved_setup_is_checked(api):
     r = c.post("/dip/presets", json={"name": "x", "config": {**SETUP, "exam": ["2021-01-01", "2020-01-01"]}})
     assert r.status_code == 422 and "end after it starts" in r.text
     assert c.get("/dip/presets").json() == []
+
+
+STUDY = {"name": " Sweep  1 ", "description": "drop 3-7%", "periods": {"practice": ["2025-07-09", "2026-01-08"],
+                                                                        "exam": ["2026-01-09", "2026-10-09"]}}
+
+
+def one_setup(code: str, score: float | None, **kw) -> dict:
+    return {"code": code, "name": f"{code} ETFs 4%/5d", "watchlist": "ETFs", "config": SETUP, "score": score,
+            "results": {"practice": {"total_return_pct": 3.2}, "exam": {"total_return_pct": score}},
+            "detail": {"exam": {"curve": [["2026-01-09", 400, 400]]}}, **kw}
+
+
+def test_a_study_keeps_its_tests_best_first_and_their_curves_on_demand(api):
+    c, _, _ = api
+    r = c.put("/dip/studies", json=STUDY)
+    assert r.status_code == 200, r.text
+    study = r.json()
+    assert (study["name"], study["tests"], study["periods"]["exam"]) == ("Sweep 1", 0, ["2026-01-09", "2026-10-09"])
+    r = c.post(f"/dip/studies/{study['id']}/tests", json=[one_setup("T1", 1.5), one_setup("T2", None), one_setup("T3", 4.0, pick=1)])
+    assert r.status_code == 200, r.text
+    assert r.json()["tests"] == 3
+    tests = c.get(f"/dip/studies/{study['id']}/tests").json()
+    assert [t["code"] for t in tests] == ["T3", "T1", "T2"]  # best score first, none last
+    assert tests[0]["pick"] == 1 and tests[0]["config"]["symbols"] == ["XLK", "XLF"] and "detail" not in tests[0]
+    one = c.get(f"/dip/tests/{tests[0]['id']}").json()
+    assert one["detail"]["exam"]["curve"] == [["2026-01-09", 400, 400]]
+    assert c.get("/dip/tests/999").status_code == 404
+
+    # The same code again replaces that test; a study saved again under its name starts over
+    c.post(f"/dip/studies/{study['id']}/tests", json=[one_setup("T1", 9.0)])
+    assert [t["code"] for t in c.get(f"/dip/studies/{study['id']}/tests").json()] == ["T1", "T3", "T2"]
+    again = c.put("/dip/studies", json={**STUDY, "name": "sweep 1", "description": "again"}).json()
+    assert (again["id"], again["tests"], again["description"]) == (study["id"], 0, "again")
+    assert [s["name"] for s in c.get("/dip/studies").json()] == ["sweep 1"]
+
+    assert c.delete(f"/dip/studies/{study['id']}").status_code == 204
+    assert c.get("/dip/studies").json() == [] and c.get(f"/dip/studies/{study['id']}/tests").status_code == 404
+
+
+def test_a_study_and_its_tests_are_checked(api):
+    c, _, _ = api
+    assert c.put("/dip/studies", json={**STUDY, "name": " "}).status_code == 422
+    assert c.put("/dip/studies", json={**STUDY, "periods": {}}).status_code == 422
+    study = c.put("/dip/studies", json=STUDY).json()
+    assert c.post(f"/dip/studies/{study['id']}/tests", json=[one_setup("T1", 1.0), one_setup("T1", 2.0)]).status_code == 422
+    bad = one_setup("T2", 1.0, config={**SETUP, "drop_pct": 0})
+    assert c.post(f"/dip/studies/{study['id']}/tests", json=[bad]).status_code == 422
+    assert c.post("/dip/studies/999/tests", json=[one_setup("T1", 1.0)]).status_code == 404

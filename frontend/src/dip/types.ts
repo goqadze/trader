@@ -275,3 +275,62 @@ export interface DipSignal {
   message: string;
   outcome: string;
 }
+
+// --- Test batches (parameter sweeps) ------------------------------------------------------------------
+
+/** A test's numbers in one window (backtest-service's dip result, trimmed to what the grid shows). */
+export interface DipTestNumbers {
+  total_return_pct: number;
+  buy_hold_return_pct: number;
+  alpha_vs_buy_hold_pct: number;
+  max_drawdown_pct: number;
+  buy_hold_max_drawdown_pct: number;
+  sharpe: number | null;
+  num_trades: number;
+  win_rate_pct: number;
+  profit_factor: number | null;
+  avg_trade_pct: number | null;
+  worst_trade_pct: number | null;
+  avg_hold_days: number | null;
+  exposure_pct: number;
+  stop_exits: number;
+  open_position: number;
+  unrealized_pnl: number;
+  final_equity: number;
+  grade: "paper" | "weak" | "no";
+  error?: string;
+}
+
+/** A batch of tests run together: what was varied, over which windows ({period: [start, end]}, in the grid's order). */
+export interface DipStudy {
+  id: number;
+  name: string;
+  description: string;
+  periods: Record<string, [string, string]>;
+  created_at: string;
+  tests: number;
+}
+
+export interface DipTest {
+  id: number;
+  study_id: number;
+  code: string;
+  name: string;
+  watchlist: string;
+  config: DipPresetConfig;
+  results: Record<string, DipTestNumbers>;
+  score: number | null;
+  pick: number | null; // recommended: 1 = the best pick
+  note: string;
+}
+
+export interface DipTestPeriodDetail {
+  curve: [string, number, number][]; // [date, equity, buy & hold]
+  by_symbol: { symbol: string; trades: number; wins: number; pnl: number; stops: number; status: string }[];
+  open_positions: { symbol: string; entry: number; price: number; unrealized_pnl: number }[];
+  blacklisted_at_end: string[];
+}
+
+export interface DipTestDetail extends DipTest {
+  detail: Record<string, DipTestPeriodDetail>;
+}
