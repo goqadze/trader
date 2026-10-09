@@ -95,6 +95,13 @@ skipping the latest one; Jegadeesh & Titman), hold the top N in equal parts, sel
 rose" a slot without a rising symbol stays in cash. The benchmark is the whole universe bought in equal parts on
 day one. The default universe is the 11 S&P sector ETFs: testing past years on today's largest companies would
 pick yesterday's winners in hindsight (survivorship bias), and the page warns when a universe holds stocks.
+The universe (and a dip buyer's watchlist) is picked in a popup: the suggested groups of `frontend/src/symbols.ts`
+as badges to switch on and off, a filter, a box for any other ticker, and clear buttons per group and for all. Five
+groups are the picks of U.S. News articles of October 2026 (high-dividend ETFs, REITs, clean energy, space, money
+market ETFs); picked today, they carry the same hindsight warning.
+Buys are sized like the bot: whole shares, or with **Fractional shares** (on by default) fractions of one, $1 or
+more, so a small **Starting capital** still holds equal parts; a pick that stays is only traded when the change is
+worth at least 2% of its slot.
 **Paper trade this rotation** turns the tested rules into a rotation bot (see below).
 
 ## Dip buyer (watchlist, backtest + bot)
@@ -263,7 +270,9 @@ this rotation** on the Rotation page) run the rotation backtest's rules on one b
   the backtest's momentum formula (Yahoo daily closes, as in the backtest), sells what dropped out of the top N,
   trims or tops up what stays, and buys what came in, in equal parts. Sells go first; the buys wait for their fills.
   A month end missed while the service was down is made up at the next 15:30.
-- Whole shares, so a pick that stays is only traded when the change is worth at least 2% of its slot.
+- Whole shares, or with `fractional` (on for new bots, switchable on a running one; NULL on older bots = whole
+  shares) fractions of one where Alpaca can split the symbol, $1 or more; a symbol it can't split is bought in whole
+  shares. A pick that stays is only traded when the change is worth at least 2% of its slot ($1 at least).
 - No stop-loss or take-profit, like the backtest; the drawdown breaker pauses it (no more rebalances, it keeps its
   holdings). Its benchmark is the universe bought in equal parts when it started. Each order records its symbol;
   `rotation` = moving into or out of a symbol, `rebalance` = a trim or top-up.

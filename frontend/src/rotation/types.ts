@@ -10,6 +10,8 @@ export interface RotationConfig {
   lookback_months: number;
   skip_months: number; // the latest months left out of the momentum (the classic 12-1 skips one)
   abs_filter: boolean; // only hold symbols that rose; a slot without one stays in cash
+  initial_cash?: number; // $10,000 when left out
+  fractional?: boolean; // buy fractions of a share (on when left out); off = whole shares only
   slippage_pct?: number;
 }
 

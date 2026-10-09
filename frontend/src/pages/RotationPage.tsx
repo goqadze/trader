@@ -23,6 +23,8 @@ export default function RotationPage() {
     const prefill: RotationBotInitial = {
       universe: cfg.symbols, top_n: cfg.top_n, lookback_months: cfg.lookback_months, skip_months: cfg.skip_months, abs_filter: cfg.abs_filter,
       ...(cfg.slippage_pct != null && { slippage_pct: cfg.slippage_pct }),
+      ...(cfg.initial_cash != null && { allocated_cash: cfg.initial_cash }),
+      ...(cfg.fractional != null && { fractional: cfg.fractional }),
     };
     navigate("/trading", { state: { rotationPrefill: prefill } });
   };
@@ -39,9 +41,9 @@ export default function RotationPage() {
             showIcon
             style={{ marginBottom: 16 }}
             message="Hindsight warning: this universe has individual stocks"
-            description={`${stocks.slice(0, 8).join(", ")}${stocks.length > 8 ? "…" : ""} are among today's biggest companies: picking them now and testing past years
-              selects yesterday's winners in hindsight (survivorship bias), which flatters both the rotation and holding them. Sector ETFs
-              don't have that problem.`}
+            description={`${stocks.slice(0, 8).join(", ")}${stocks.length > 8 ? "…" : ""} are companies picked today (today's biggest, or an article's picks):
+              testing them on past years selects yesterday's winners in hindsight (survivorship bias), which flatters both the rotation and
+              holding them. Sector ETFs don't have that problem.`}
           />
         )}
         {runs.practice || runs.exam ? (

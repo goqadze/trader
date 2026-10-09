@@ -6,9 +6,11 @@ The rules are the backtest's (backtest-service/app/engines/rotation.py), so the 
     the backtest) and pick the top `top_n`; with abs_filter only symbols that rose (an empty slot stays in cash).
   - Hold each pick at 1/top_n of equity: sell what dropped out, trim or top up what stays, buy what came in, at
     market. Sells go first; the buys wait until they've filled, so their cash is there.
+  - Whole shares, or with `fractional` fractions of one where the broker can split the symbol ($1 or more). A pick
+    that stays is only trimmed or topped up when the change is worth at least MIN_TRADE_OF_SLOT of its slot ($1 at
+    least): a smaller trade would mostly pay slippage. The backtest sizes the same way.
 Where it has to differ from the backtest:
-  - Whole shares (the backtest uses fractions). A pick that stays is only trimmed or topped up when the change is
-    worth at least MIN_TRADE_OF_SLOT of its slot: a smaller trade would mostly pay slippage.
+  - The backtest assumes every symbol can be split; the bot buys whole shares of one its broker can't split.
   - A month end missed while the service was down is made up at the next decision time.
   - No stop-loss or take-profit (the backtest has none either). The drawdown breaker pauses the bot: no more
     rebalances, it keeps what it holds until you resume it or close the positions.
@@ -19,7 +21,6 @@ so tests replay any moment without the network.
 """
 
 import logging
-import math
 from datetime import date, datetime, timedelta
 
 import pandas as pd
@@ -30,7 +31,7 @@ from .brokers import Broker, BrokerError, Quote
 from .config import settings
 from .market import NY, month_end_after, ny_date, slot_window
 from .models import Bot, Decision, Order
-from .shares import fmt_qty, same_qty
+from .shares import MIN_FRACTIONAL_ORDER, affordable, fmt_qty, same_qty, tidy
 from .trader import holdings, log_event, mark_to_market, open_orders, submit_order
 
 logger = logging.getLogger("trading-service")
@@ -159,30 +160,48 @@ def next_rebalance_at(bot: Bot, now: datetime) -> datetime | None:
 # The rebalance
 # ---------------------------------------------------------------------------
 
-def _targets(bot: Bot, held: dict[str, int], picks: list[str], prices: dict[str, float]) -> list[list]:
-    """[[symbol, shares], ...] for the picks, strongest first: 1/top_n of equity each, in whole shares that fit
-    with slippage and fees. Anything held that isn't a pick has a target of 0."""
+def _targets(bot: Bot, held: dict[str, float], picks: list[str], prices: dict[str, float], split: set[str]) -> list[list]:
+    """[[symbol, shares], ...] for the picks, strongest first: 1/top_n of equity each, in shares that fit with
+    slippage and fees (fractions of one for the symbols in `split`). Anything held that isn't a pick has a target
+    of 0. The backtest's sizing (backtest-service/app/engines/rotation.py): keep the two the same."""
     equity = bot.cash + sum(n * prices[s] for s, n in held.items())
     slot = equity / bot.top_n
     out = []
     for s in picks:
-        want = math.floor(slot / (prices[s] * (1 + bot.slippage_pct) * (1 + bot.fee_pct)))
+        want = affordable(slot, prices[s] * (1 + bot.slippage_pct) * (1 + bot.fee_pct), s in split)
         have = held.get(s, 0)
-        if have and abs(want - have) * prices[s] < MIN_TRADE_OF_SLOT * slot:
+        if have and abs(want - have) * prices[s] < max(MIN_TRADE_OF_SLOT * slot, MIN_FRACTIONAL_ORDER):
             want = have  # close enough: a tiny trim or top-up would mostly pay slippage
         out.append([s, want])
     return out
 
 
-def _changes(held: dict[str, int], targets: list[list]) -> list[str]:
+def _splits(bot: Bot, broker: Broker, symbols: list[str]) -> tuple[set[str], list[str]]:
+    """With `fractional`: the symbols the broker can split into fractions of a share, and notes on the others (bought
+    in whole shares). Without: none."""
+    if not bot.fractional:
+        return set(), []
+    split, notes = set(), []
+    for s in symbols:
+        try:
+            if broker.fractionable(s):
+                split.add(s)
+            else:
+                notes.append(f"{s} can't be bought in fractions at {broker.name}: whole shares")
+        except BrokerError as e:
+            notes.append(f"{s}: fractions unknown ({e}), whole shares")
+    return split, notes
+
+
+def _changes(held: dict[str, float], targets: list[list]) -> list[str]:
     """The trades from `held` to `targets`, in words."""
     want = dict(targets)
-    out = [f"sell all {n} {s}" if not want.get(s) else f"sell {n - want[s]} {s} (trim)"
-           for s, n in held.items() if n > want.get(s, 0)]
+    out = [f"sell all {fmt_qty(n)} {s}" if not want.get(s) else f"sell {fmt_qty(n - want[s])} {s} (trim)"
+           for s, n in held.items() if n > want.get(s, 0) and not same_qty(n, want.get(s, 0))]
     for s, w in targets:
         have = held.get(s, 0)
-        if w > have:
-            out.append(f"buy {w - have} {s}" + (" (top up)" if have else ""))
+        if w > have and not same_qty(w, have):
+            out.append(f"buy {fmt_qty(w - have)} {s}" + (" (top up)" if have else ""))
     return out
 
 
@@ -234,8 +253,15 @@ def rebalance(session: Session, bot: Bot, broker: Broker, now: datetime, kind: s
         return d
     for s, h in held.items():
         h.last_price, h.last_price_at = prices[s], now
-    targets = _targets(bot, {s: h.shares for s, h in held.items()}, picks, prices)
+    split, split_notes = _splits(bot, broker, picks)
+    targets = _targets(bot, {s: h.shares for s, h in held.items()}, picks, prices, split)
     changes = _changes({s: h.shares for s, h in held.items()}, targets)
+    if bot.fractional:
+        d.steps = [*d.steps, "Fractions of a share" + (f" ({'; '.join(split_notes)})" if split_notes else "")]
+    if small := [s for s, w in targets if not w]:
+        slot = (bot.cash + sum(h.shares * prices[s] for s, h in held.items())) / bot.top_n
+        d.reasoning += (f" A slot (${slot:,.2f}) is less than one share of {', '.join(small)}: that money stays in cash"
+                        + ("." if bot.fractional else " (fractional shares would buy it)."))
 
     if kind == "preview":
         d.outcome = f"Preview only (market closed or bot paused): no order sent. It would {'; '.join(changes) or 'change nothing'}."
@@ -247,7 +273,7 @@ def rebalance(session: Session, bot: Bot, broker: Broker, now: datetime, kind: s
         return d
 
     bot.last_decision_date, bot.last_decision_at = today, now
-    bot.rotation_plan = {"decision_id": d.id, "targets": targets, "rounds": 0}
+    bot.rotation_plan = {"decision_id": d.id, "targets": targets, "split": sorted(split), "rounds": 0}
     d.outcome = f"Trades: {'; '.join(changes)}." if changes else "No trades needed."
     try:
         step(session, bot, broker, now)
@@ -258,13 +284,15 @@ def rebalance(session: Session, bot: Bot, broker: Broker, now: datetime, kind: s
     return d
 
 
-def _next_orders(session: Session, bot: Bot, broker: Broker, now: datetime, targets: list[list]) -> list[tuple]:
+def _next_orders(session: Session, bot: Bot, broker: Broker, now: datetime, targets: list[list],
+                 split: set[str] = frozenset()) -> list[tuple]:
     """The orders still needed to reach the targets, as (side, symbol, shares, reason). All the sells first; the buys
-    only once nothing is left to sell, capped by the cash (and a real account's buying power)."""
+    only once nothing is left to sell, capped by the cash (and a real account's buying power). Fractions of a share
+    for the symbols in `split`."""
     want = dict(targets)
     held = {h.symbol: h.shares for h in holdings(session, bot)}
-    sells = [("SELL", s, n - want.get(s, 0), "rebalance" if want.get(s) else "rotation")
-             for s, n in held.items() if n > want.get(s, 0)]
+    sells = [("SELL", s, tidy(n - want.get(s, 0)) if want.get(s) else n, "rebalance" if want.get(s) else "rotation")
+             for s, n in held.items() if n > want.get(s, 0) and not same_qty(n, want.get(s, 0))]
     if sells:
         return sells
     budget = bot.cash
@@ -273,12 +301,12 @@ def _next_orders(session: Session, bot: Bot, broker: Broker, now: datetime, targ
         budget = min(budget, bp)
     buys = []
     for s, w in targets:
-        need = w - held.get(s, 0)
-        if need <= 0:
+        need = tidy(w - held.get(s, 0))
+        if need <= 0 or same_qty(w, held.get(s, 0)):
             continue
         unit = _quote(broker, s, now).price * (1 + bot.slippage_pct) * (1 + bot.fee_pct)
-        qty = min(need, math.floor(budget / unit))
-        if qty > 0:
+        qty = min(need, affordable(budget, unit, s in split))
+        if qty > 0 and (s not in split or qty * unit >= MIN_FRACTIONAL_ORDER):
             buys.append(("BUY", s, qty, "rebalance" if held.get(s) else "rotation"))
             budget -= qty * unit
     return buys
@@ -295,7 +323,7 @@ def step(session: Session, bot: Bot, broker: Broker, now: datetime) -> None:
     while True:
         if open_orders(session, bot):
             return  # wait for the fills
-        orders = _next_orders(session, bot, broker, now, plan["targets"])
+        orders = _next_orders(session, bot, broker, now, plan["targets"], set(plan.get("split", [])))
         if not orders:
             bot.rotation_plan = None
             now_held = ", ".join(f"{fmt_qty(h.shares)} {h.symbol}" for h in holdings(session, bot)) or "nothing"
@@ -305,7 +333,7 @@ def step(session: Session, bot: Bot, broker: Broker, now: datetime) -> None:
             return
         if plan["rounds"] >= MAX_ROUNDS:
             bot.rotation_plan = None
-            todo = ", ".join(f"{side} {qty} {s}" for side, s, qty, _ in orders)
+            todo = ", ".join(f"{side} {fmt_qty(qty)} {s}" for side, s, qty, _ in orders)
             log_event(session, bot.id, "error", f"Rebalance stopped after {MAX_ROUNDS} rounds of orders with {todo} still to "
                       "do. Check the orders tab; the next rebalance starts over.", "error", now)
             return

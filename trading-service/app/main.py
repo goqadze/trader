@@ -266,7 +266,8 @@ def create_rotation_bot(body: RotationBotCreate, session: Session = Depends(get_
     log_event(session, bot.id, "created",
               f"Created {bot.name}: momentum rotation on {bot.broker} with ${bot.allocated_cash:,.2f}. Holds the strongest "
               f"{body.top_n} of {', '.join(body.universe)} by {body.lookback_months}-month momentum{skip}"
-              f"{', only those that rose' if body.abs_filter else ''}; rebalances at each month's last close")
+              f"{', only those that rose' if body.abs_filter else ''}; rebalances at each month's last close"
+              f"{'; buys fractions of a share' if body.fractional else '; whole shares only'}")
     session.commit()
     return _bot_out(session, bot)
 
@@ -454,8 +455,9 @@ def sell_holding(bot_id: int, symbol: str, session: Session = Depends(get_sessio
         return order
 
 
-# A rotation bot's universe and rules are fixed for its life, like a bot's symbol: create a new bot instead
-ROTATION_EDITABLE = {"name", "fee_pct", "slippage_pct", "max_drawdown_pct"}
+# A rotation bot's universe and rules are fixed for its life, like a bot's symbol: create a new bot instead. Fractional
+# shares only change how its next trades are sized
+ROTATION_EDITABLE = {"name", "fee_pct", "slippage_pct", "max_drawdown_pct", "fractional"}
 
 
 @app.get("/bots/{bot_id}", response_model=BotOut)
@@ -472,10 +474,12 @@ def update_bot(bot_id: int, body: BotUpdate, session: Session = Depends(get_sess
             raise HTTPException(409, "bot is archived")
         fields = body.model_dump(exclude_unset=True, exclude_none=True)
         if bot.strategy == ROTATION and (fixed := sorted(set(fields) - ROTATION_EDITABLE)):
-            raise HTTPException(422, f"a rotation bot can only change its name, slippage, fee and breaker, not "
+            raise HTTPException(422, f"a rotation bot can only change its name, slippage, fee, breaker and fractional shares, not "
                                      f"{', '.join(fixed)}; create a new bot for other settings")
         if bot.strategy == DIP and (other := sorted(set(fields) - ROTATION_EDITABLE - {"stop_pct"})):
             raise HTTPException(422, f"a dip bot's rules change through PATCH /bots/{bot_id}/dip, not {', '.join(other)}")
+        if "fractional" in fields and bot.strategy not in (ROTATION, DIP):
+            raise HTTPException(422, "a single-symbol bot buys whole shares only")
         changes = []
         for field, value in fields.items():
             old = getattr(bot, field)

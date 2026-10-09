@@ -5,7 +5,10 @@ import pandas as pd
 from ..models import RotationConfig
 from ..verdict import judge
 from .base import EmitFn
+from .dip import MIN_FRACTIONAL_ORDER, affordable
 from .simple import SimplePortfolioEngine
+
+MIN_TRADE_OF_SLOT = 0.02  # a pick that stays is only trimmed or topped up by at least this much of its slot (the bot's rule)
 
 
 def momentum(closes: pd.DataFrame, day: date, lookback_months: int, skip_months: int) -> pd.Series:
@@ -30,7 +33,10 @@ class RotationEngine:
       - On the window's first day and on each month's last trading day (not the window's last day), rank the
         universe by momentum (see `momentum`) and pick the top `top_n`; with `abs_filter`, only symbols that rose.
       - Hold each pick at 1/top_n of the account (slots without a pick stay in cash): sell what dropped out, trim
-        or top up what stays, buy what came in, all at that day's close with slippage and fees.
+        or top up what stays, buy what came in, all at that day's close with slippage and fees. In whole shares, or
+        with `fractional` fractions of one ($1 or more); a pick that stays is only trimmed or topped up when the
+        change is worth MIN_TRADE_OF_SLOT of its slot ($1 at least). The bot's sizing (trading-service/app/rotation.py):
+        keep the two the same.
       - A round trip is a symbol's whole stay in the portfolio: its P&L includes the trims and top-ups on the way.
       - The benchmark: the whole universe bought in equal parts on the first day and held (symbols without a
         price yet on that day can't be part of it).
@@ -81,7 +87,7 @@ class RotationEngine:
         def buy(sym: str, qty: float, price: float, day: date, i: int) -> None:
             nonlocal cash
             fill = price * (1 + cfg.slippage_pct)
-            qty = min(qty, cash / (fill * (1 + cfg.fee_pct)))  # never more than the cash
+            qty = min(qty, affordable(cash, fill * (1 + cfg.fee_pct), cfg.fractional))  # never more than the cash
             if qty <= 1e-9:
                 return
             fee = qty * fill * cfg.fee_pct
@@ -91,6 +97,15 @@ class RotationEngine:
             p["invested"] += qty * fill + fee
             cash -= qty * fill + fee
             trades.append({"side": "BUY", "symbol": sym, "date": day.isoformat(), "price": round(fill, 4), "shares": round(qty, 4), "fee": round(fee, 2)})
+
+        def target(sym: str, slot: float, price: float) -> float:
+            """The shares of a pick to hold: what a slot buys with slippage and fees. One already held is left alone
+            when the change is too small to be worth its slippage."""
+            want = affordable(slot, price * (1 + cfg.slippage_pct) * (1 + cfg.fee_pct), cfg.fractional)
+            have = held[sym]["shares"] if sym in held else 0.0
+            if have and abs(want - have) * price < max(MIN_TRADE_OF_SLOT * slot, MIN_FRACTIONAL_ORDER):
+                return have
+            return want
 
         await emit({"type": "start", "symbol": f"{len(cfg.symbols)} symbols", "total": len(days), "initial_cash": cfg.initial_cash,
                     "first_price": cfg.initial_cash})
@@ -106,19 +121,27 @@ class RotationEngine:
                     sell(sym, held[sym]["shares"], px[sym], day, i, "rotated out")
                 equity = cash + sum(p["shares"] * px[s] for s, p in held.items())
                 slot = equity / cfg.top_n
+                want = {s: target(s, slot, px[s]) for s in picks}
+                too_small = [s for s in picks if not want[s]]  # whole shares: a slot under one share's price
                 for sym in picks:  # trims first, so their cash pays for the top-ups and new buys
-                    if sym in held and held[sym]["shares"] * px[sym] > slot:
-                        sell(sym, held[sym]["shares"] - slot / px[sym], px[sym], day, i, None)
+                    if sym in held and held[sym]["shares"] > want[sym]:
+                        if want[sym]:
+                            sell(sym, held[sym]["shares"] - want[sym], px[sym], day, i, None)
+                        else:
+                            sell(sym, held[sym]["shares"], px[sym], day, i, "slot under one share")
                 for sym in picks:
-                    have = held[sym]["shares"] * px[sym] if sym in held else 0.0
-                    if have < slot:
-                        buy(sym, (slot - have) / px[sym], px[sym], day, i)
+                    have = held[sym]["shares"] if sym in held else 0.0
+                    if want[sym] > have:
+                        buy(sym, want[sym] - have, px[sym], day, i)
                 top = [{"symbol": s, "momentum_pct": round(float(mom[s]) * 100, 1)} for s in mom.index[:max(cfg.top_n + 3, 6)]]
-                rebalances.append({"date": day.isoformat(), "held": picks, "ranking": top})
-                bought, sold = sorted(set(picks) - before), sorted(before - set(picks))
-                text = (f"Held: {', '.join(f'{s} {mom[s] * 100:+.1f}%' for s in picks) or 'nothing (no symbol rose)'}"
+                kept = [s for s in picks if s in held]
+                rebalances.append({"date": day.isoformat(), "held": kept, "ranking": top})
+                bought, sold = sorted(set(held) - before), sorted(before - set(held))
+                small = ", ".join(too_small)
+                text = (f"Held: {', '.join(f'{s} {mom[s] * 100:+.1f}%' for s in kept) or 'nothing (no symbol rose)'}"
                         f"{'; bought ' + ', '.join(bought) if bought else ''}{'; sold ' + ', '.join(sold) if sold else ''}"
-                        f"{f'; {cfg.top_n - len(picks)} slot(s) in cash' if len(picks) < cfg.top_n else ''}")
+                        f"{f'; {cfg.top_n - len(picks)} slot(s) in cash' if len(picks) < cfg.top_n else ''}"
+                        f"{f'; a slot (${slot:,.0f}) is less than one share of {small}: that money stays in cash' if small else ''}")
                 decisions.append({"slot": "close", "action": "BUY" if bought else "HOLD", "confidence": 1.0, "price": 0.0,
                                   "equity": equity, "sentiment": "", "reasoning": text})
             equity = float(cash + sum(p["shares"] * px[s] for s, p in held.items()))

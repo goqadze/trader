@@ -393,6 +393,8 @@ class RotationBotCreate(BaseModel):
     lookback_months: int = Field(12, ge=1, le=24)
     skip_months: int = Field(1, ge=0, le=3)
     abs_filter: bool = True
+    # Buy fractions of a share where the broker can split the symbol, so a slot smaller than one share still buys
+    fractional: bool = True
     fee_pct: float = Field(0.0, ge=0, le=0.05)
     slippage_pct: float = Field(0.0005, ge=0, le=0.05)
     max_drawdown_pct: float = Field(0.2, ge=0, le=1)
@@ -427,13 +429,14 @@ class BotUpdate(BaseModel):
     fee_pct: float | None = Field(None, ge=0, le=0.05)
     slippage_pct: float | None = Field(None, ge=0, le=0.05)
     max_drawdown_pct: float | None = Field(None, ge=0, le=1)
+    fractional: bool | None = None  # rotation bots only (a dip bot's goes through PATCH /bots/{id}/dip)
 
 
 class HoldingOut(BaseModel):
     """One symbol a rotation or dip bot holds, valued at its last price."""
 
     symbol: str
-    shares: float  # a fraction of a share on a dip bot with `fractional`
+    shares: float  # a fraction of a share on a dip or rotation bot with `fractional`
     cost_basis: float
     last_price: float | None
     last_price_at: datetime | None
@@ -488,6 +491,7 @@ class BotOut(StrategyParams):
     lookback_months: int | None = None
     skip_months: int | None = None
     abs_filter: bool | None = None
+    fractional: bool | None = None  # rotation and dip bots: fractions of a share (None on bots from before = whole shares)
     holdings: list[HoldingOut] = []
     rebalancing: bool = False  # a rebalance's orders are still being sent (sells first, then the buys)
     # --- dip buyers only (None / empty on the others); `universe` = the starting watchlist (the benchmark) ---
@@ -507,7 +511,6 @@ class BotOut(StrategyParams):
     trend_filter: bool | None = None
     rebound: bool | None = None
     rebound_pct: float | None = None
-    fractional: bool | None = None
     watchlist: list[WatchItemOut] = []
 
 

@@ -1,4 +1,4 @@
-import { Alert, Checkbox, Col, Divider, Form, Input, InputNumber, Modal, Row, Select, Tooltip, Typography } from "antd";
+import { Alert, Checkbox, Col, Divider, Form, Input, InputNumber, Modal, Row, Select, Switch, Tooltip, Typography } from "antd";
 import { useEffect, useRef, useState } from "react";
 import UniverseField, { SECTORS } from "../rotation/UniverseField";
 import type { BrokerInfo, RotationBotCreate } from "./types";
@@ -17,6 +17,7 @@ interface FormValues {
   lookback_months: number;
   skip_month: boolean;
   abs_filter: boolean;
+  fractional: boolean;
   fee_pct: number;
   slippage_pct: number;
   max_drawdown_pct: number;
@@ -33,6 +34,7 @@ const DEFAULTS: RotationBotCreate = {
   lookback_months: 12,
   skip_months: 1,
   abs_filter: true,
+  fractional: true,
   fee_pct: 0,
   slippage_pct: 0.0005,
   max_drawdown_pct: 0.2,
@@ -153,6 +155,14 @@ export default function RotationBotForm({ open, initial, brokers, onCancel, onSu
         <Form.Item name="abs_filter" valuePropName="checked">
           <Checkbox>Only hold what rose <span style={{ color: MUTED, fontSize: 12 }}>(otherwise that slot waits in cash)</span></Checkbox>
         </Form.Item>
+        <Form.Item name="fractional" valuePropName="checked" style={{ marginBottom: 4 }}>
+          <Switch checkedChildren="Fractional shares" unCheckedChildren="Whole shares" />
+        </Form.Item>
+        <Typography.Paragraph style={{ fontSize: 12, color: MUTED }}>
+          Fractional: buys part of a share when a slot is smaller than one share's price, so a small account still holds equal
+          parts like the backtest. Alpaca allows it for most US stocks and ETFs, from $1; a symbol it can't split is bought in
+          whole shares.
+        </Typography.Paragraph>
 
         <Divider orientation="left" plain>Safety &amp; costs</Divider>
         <Row gutter={12}>

@@ -165,7 +165,11 @@ class RotationConfig(BaseModel):
     lookback_months: int = Field(12, ge=1, le=24)
     skip_months: int = Field(1, ge=0, le=3)  # the latest month tends to reverse: the classic momentum skips it
     abs_filter: bool = True  # only hold symbols that rose over the lookback; a slot without one stays in cash
-    initial_cash: float = 10_000.0
+    initial_cash: float = Field(10_000.0, ge=100, le=10_000_000)
+    # Buy fractions of a share (to a millionth, $1 or more, like Alpaca's fractional orders), so a slot smaller than one
+    # share's price still buys. Off = whole shares only, like a rotation bot without `fractional`. The backtest assumes
+    # every symbol can be split; the bot buys whole shares of one its broker can't split
+    fractional: bool = True
     slippage_pct: float = Field(0.0005, ge=0)
     fee_pct: float = Field(0.0, ge=0)
     max_drawdown_pct: float = Field(0.0, ge=0, lt=1)  # off by default: a portfolio isn't paused like a bot

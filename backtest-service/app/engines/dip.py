@@ -19,8 +19,8 @@ MIN_FRACTIONAL_ORDER = 1.0  # Alpaca's smallest fractional order, in dollars
 
 def affordable(budget: float, unit: float, fractional: bool = False) -> float:
     """How many shares `budget` buys at `unit` dollars each: whole shares, or with `fractional` down to a millionth of
-    one. 0 when that isn't even one share (in fractions: under the $1 minimum). The trading-service's dip bot sizes
-    its buys with the same rule (trading-service/app/shares.py): keep the two the same."""
+    one. 0 when that isn't even one share (in fractions: under the $1 minimum). The rotation backtest uses it too; the
+    trading-service's bots size their buys with the same rule (trading-service/app/shares.py): keep the two the same."""
     if unit <= 0 or budget <= 0:
         return 0
     if not fractional:

@@ -46,13 +46,14 @@ export interface RotationBotCreate {
   lookback_months: number;
   skip_months: number;
   abs_filter: boolean;
+  fractional: boolean; // fractions of a share where the broker can split the symbol
   fee_pct: number;
   slippage_pct: number;
   max_drawdown_pct: number;
 }
 
 /** A rotation bot changes only these: its universe and rules are fixed for its life. */
-export type RotationBotUpdate = Partial<Pick<RotationBotCreate, "name" | "fee_pct" | "slippage_pct" | "max_drawdown_pct">>;
+export type RotationBotUpdate = Partial<Pick<RotationBotCreate, "name" | "fee_pct" | "slippage_pct" | "max_drawdown_pct" | "fractional">>;
 
 /** One symbol a rotation or dip bot holds. */
 export interface Holding {
@@ -129,7 +130,7 @@ export interface Bot extends Omit<StrategyParams, "strategy"> {
   trend_filter: boolean | null;
   rebound: boolean | null; // null on dip bots from before the option: they buy at once
   rebound_pct: number | null;
-  fractional: boolean | null; // null on dip bots from before the option: whole shares
+  fractional: boolean | null; // dip and rotation bots; null on bots from before the option: whole shares
   watchlist: WatchItem[];
 }
 

@@ -227,6 +227,48 @@ def test_a_real_account_that_disagrees_pauses_the_bot(session):
     assert reconcile(session, bot, broker, T1) is False and bot.status == "paused"
 
 
+# --- Whole shares or fractions --------------------------------------------------------------------
+
+def test_whole_shares_leave_a_slot_under_one_share_in_cash(session):
+    bot = make_rotation(session, allocated_cash=150.0, cash=150.0, peak_equity=150.0)  # $75 slots; A costs $100
+    broker = FakeBroker(now=T1, prices=PRICES)
+    d = rebalance(session, bot, broker, T1, "scheduled", feed(STANDARD))
+    assert broker.sent == [("BUY", "B", 1)] and _held(session, bot) == {"B": 1} and bot.cash == 100.0
+    assert "less than one share of A: that money stays in cash (fractional shares would buy it)." in d.reasoning
+
+
+def test_fractional_shares_buy_each_slot_exactly(session):
+    bot = make_rotation(session, allocated_cash=150.0, cash=150.0, peak_equity=150.0, fractional=True)
+    broker = FakeBroker(now=T1, prices=PRICES)
+    d = rebalance(session, bot, broker, T1, "scheduled", feed(STANDARD))
+    assert broker.sent == [("BUY", "A", 0.75), ("BUY", "B", 1.5)] and _held(session, bot) == {"A": 0.75, "B": 1.5}
+    assert bot.cash == pytest.approx(0) and d.outcome.endswith("Done: holding 0.75 A, 1.5 B, cash $0.00.")
+    assert d.steps[-1] == "Fractions of a share" and "less than one share" not in d.reasoning
+    # A month later B turned down and C came in: B's 1.5 shares are sold whole, C bought in fractions
+    broker.prices, broker.now = {"A": 120.0, "B": 55.0, "C": 20.0}, T2
+    rebalance(session, bot, broker, T2, "scheduled", feed(closes(A=0.6, B=-0.1, C=0.4, D=-0.2)))
+    # Equity 0.75 x 120 + 1.5 x 55 = $172.50: $86.25 a slot. A is worth $90: a $3.75 trim, over 2% of a slot
+    assert broker.sent[2:] == [("SELL", "A", 0.031250), ("SELL", "B", 1.5), ("BUY", "C", 4.3125)]
+    assert _held(session, bot) == {"A": 0.71875, "C": 4.3125}
+
+
+def test_a_symbol_the_broker_cant_split_is_bought_in_whole_shares(session):
+    bot = make_rotation(session, allocated_cash=250.0, cash=250.0, peak_equity=250.0, fractional=True)  # $125 slots
+    broker = FakeBroker(now=T1, prices=PRICES)
+    broker.whole_only = {"A"}
+    d = rebalance(session, bot, broker, T1, "scheduled", feed(STANDARD))
+    assert broker.sent == [("BUY", "A", 1), ("BUY", "B", 2.5)] and bot.cash == 25.0
+    assert d.steps[-1] == "Fractions of a share (A can't be bought in fractions at fake: whole shares)"
+    assert bot.rotation_plan is None
+
+
+def test_a_fractional_trade_under_a_dollar_isnt_sent(session):
+    bot = make_rotation(session, allocated_cash=1.5, cash=1.5, peak_equity=1.5, fractional=True)  # $0.75 slots
+    broker = FakeBroker(now=T1, prices=PRICES)
+    d = rebalance(session, bot, broker, T1, "scheduled", feed(STANDARD))
+    assert broker.sent == [] and "less than one share of A, B: that money stays in cash." in d.reasoning
+
+
 # --- The API ---------------------------------------------------------------------------------------
 
 CLOSED, OPEN = at(23, 0), at(15, 0)  # Monday 19:00 and 11:00 New York
@@ -301,4 +343,10 @@ def test_a_rotation_bot_changes_only_its_name_costs_and_breaker(api):
     assert r.status_code == 422 and "create a new bot" in r.text
     r = c.patch(f"/bots/{bot['id']}", json={"name": "Sectors", "max_drawdown_pct": 0.15})
     assert r.status_code == 200 and r.json()["name"] == "Sectors"
+    assert bot["fractional"] is True  # the default, like the backtest
+    r = c.patch(f"/bots/{bot['id']}", json={"fractional": False})
+    assert r.status_code == 200 and r.json()["fractional"] is False
+    single = c.post("/bots", json={"symbol": "C"}).json()
+    r = c.patch(f"/bots/{single['id']}", json={"fractional": True})
+    assert r.status_code == 422 and "whole shares only" in r.text
     assert c.get(f"/bots/{bot['id']}/decisions").json() == []

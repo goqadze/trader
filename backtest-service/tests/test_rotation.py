@@ -99,3 +99,28 @@ def test_settings_are_checked():
         RotationConfig(symbols=["A", "B"], start=date(2024, 1, 1), end=date(2025, 1, 1), top_n=3)
     with pytest.raises(ValidationError, match="ticker"):
         RotationConfig(symbols=["A", "not one"], start=date(2024, 1, 1), end=date(2025, 1, 1))
+
+
+def test_whole_shares_leave_a_slot_under_one_share_in_cash_and_fractions_buy_it():
+    closes = _closes(A=0.6, B=0.5, C=0.4)  # about $256 and $225 a share when the window starts
+    whole, events = _run(closes, top_n=2, initial_cash=300, fractional=False)  # $150 slots
+    assert whole["num_trades"] == 0 and whole["total_return_pct"] == 0.0
+    assert all(r["held"] == [] for r in whole["rebalances"])
+    logged = [d["reasoning"] for e in events if e["type"] == "step" for d in e["decisions"]]
+    assert "less than one share of A, B: that money stays in cash" in logged[0]
+    split, _ = _run(closes, top_n=2, initial_cash=300, fractional=True)
+    assert split["rebalances"][0]["held"] == ["A", "B"] and split["total_return_pct"] > 30
+    assert split["total_return_pct"] == pytest.approx(_run(closes, top_n=2, fractional=True)[0]["total_return_pct"], abs=0.1)
+
+
+def test_whole_shares_buy_whole_numbers_and_trim_only_worthwhile_changes():
+    r, _ = _run(_closes(A=0.6, B=0.5, C=0.4), top_n=2, fractional=False)
+    buys = [t for t in r["trades"] if t["side"] == "BUY"]
+    assert buys and all(t["shares"] == int(t["shares"]) for t in buys)
+    # Month after month A and B stay the picks: a trim or top-up happens only when it's worth 2% of a slot ($100)
+    small = [t for t in r["trades"] if t["shares"] * t["price"] < 0.02 * 5_000 and "pnl" not in t]
+    assert small == []
+
+
+def test_fractional_is_the_default():
+    assert RotationConfig(symbols=["A", "B"], start=date(2024, 1, 1), end=date(2025, 1, 1), top_n=1).fractional is True

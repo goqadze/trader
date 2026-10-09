@@ -1,4 +1,4 @@
-import { Button, Card, Checkbox, DatePicker, Form, InputNumber, Typography } from "antd";
+import { Button, Card, Checkbox, DatePicker, Form, InputNumber, Switch, Typography } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
 import type { Period } from "./useRotation";
 import type { RotationConfig } from "./types";
@@ -12,6 +12,8 @@ interface FormValues {
   lookback_months: number;
   skip_month: boolean;
   abs_filter: boolean;
+  initial_cash: number;
+  fractional: boolean;
   practice: [Dayjs, Dayjs];
   exam_on: boolean;
   exam: [Dayjs, Dayjs];
@@ -20,7 +22,10 @@ interface FormValues {
 const fmt = (d: Dayjs) => d.format("YYYY-MM-DD");
 
 function toConfigs(v: FormValues): Partial<Record<Period, RotationConfig>> {
-  const base = { symbols: v.symbols, top_n: v.top_n, lookback_months: v.lookback_months, skip_months: v.skip_month ? 1 : 0, abs_filter: v.abs_filter };
+  const base = {
+    symbols: v.symbols, top_n: v.top_n, lookback_months: v.lookback_months, skip_months: v.skip_month ? 1 : 0, abs_filter: v.abs_filter,
+    initial_cash: v.initial_cash, fractional: v.fractional,
+  };
   return {
     practice: { ...base, start: fmt(v.practice[0]), end: fmt(v.practice[1]) },
     ...(v.exam_on && { exam: { ...base, start: fmt(v.exam[0]), end: fmt(v.exam[1]) } }),
@@ -32,6 +37,7 @@ export default function RotationForm({ onRun, starting }: { onRun: (c: Partial<R
   const [form] = Form.useForm<FormValues>();
   const v = Form.useWatch([], form) as Partial<FormValues> | undefined;
   const today = dayjs();
+  const part = v?.initial_cash && v?.top_n ? Math.floor(v.initial_cash / v.top_n) : null;
   return (
     <Card title="Momentum rotation" size="small">
       <Typography.Paragraph style={{ fontSize: 12, color: MUTED }}>
@@ -48,6 +54,8 @@ export default function RotationForm({ onRun, starting }: { onRun: (c: Partial<R
           lookback_months: 12,
           skip_month: true,
           abs_filter: true,
+          initial_cash: 10_000,
+          fractional: true,
           practice: [today.subtract(6, "year"), today.subtract(3, "year").subtract(1, "day")],
           exam_on: true,
           exam: [today.subtract(3, "year"), today],
@@ -77,6 +85,18 @@ export default function RotationForm({ onRun, starting }: { onRun: (c: Partial<R
             Only hold what rose <span style={{ color: MUTED, fontSize: 12 }}>(otherwise that slot waits in cash: some protection in a crash)</span>
           </Checkbox>
         </Form.Item>
+        <Form.Item name="initial_cash" label="Starting capital" tooltip="Split into equal parts, one per symbol held. Matters with whole shares: a part smaller than one share's price can't buy it.">
+          <InputNumber min={100} max={10_000_000} step={100} addonBefore="$" style={{ width: "100%" }} />
+        </Form.Item>
+        <Form.Item name="fractional" valuePropName="checked" style={{ marginBottom: 4 }}>
+          <Switch checkedChildren="Fractional shares" unCheckedChildren="Whole shares" />
+        </Form.Item>
+        <Typography.Paragraph style={{ fontSize: 12, color: MUTED }}>
+          Each symbol held gets {part ? `$${part.toLocaleString("en-US")}` : "an equal part"}.{" "}
+          {v?.fractional === false
+            ? "It buys as many whole shares as fit and the rest waits in cash: a share that costs more isn't bought at all."
+            : "With fractions it buys exactly that much, even of a share that costs more. Alpaca allows it for most US stocks and ETFs, from $1."}
+        </Typography.Paragraph>
         <Form.Item name="practice" label="Practice period" rules={[{ required: true }]}>
           <DatePicker.RangePicker style={{ width: "100%" }} />
         </Form.Item>

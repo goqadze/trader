@@ -1,6 +1,6 @@
 // The parts of a bot's page that differ for a momentum rotation bot: what it holds, its rules, and what can be edited.
 
-import { Alert, Button, Card, Col, Descriptions, Form, Input, InputNumber, Modal, Row, Space, Table, Tag, Tooltip } from "antd";
+import { Alert, Button, Card, Col, Descriptions, Form, Input, InputNumber, Modal, Row, Space, Switch, Table, Tag, Tooltip } from "antd";
 import { useEffect, useRef, useState } from "react";
 import { frac, nyTime, pct, pnlColor, usd } from "./format";
 import type { Bot, Holding, RotationBotUpdate } from "./types";
@@ -73,6 +73,7 @@ export function RotationParamsCard({ bot, closeTime, onEdit }: { bot: Bot; close
           {bot.lookback_months} months{bot.skip_months ? `, skipping the latest ${bot.skip_months === 1 ? "month" : `${bot.skip_months} months`}` : ""}
         </Descriptions.Item>
         <Descriptions.Item label="Only what rose">{bot.abs_filter ? "yes (else cash)" : "no"}</Descriptions.Item>
+        <Descriptions.Item label="Shares">{bot.fractional ? "fractions where the broker allows" : "whole shares only"}</Descriptions.Item>
         <Descriptions.Item label="Rebalances">each month's last trading day, {closeTime} ET</Descriptions.Item>
         <Descriptions.Item label="Breaker">{bot.max_drawdown_pct ? `${frac(bot.max_drawdown_pct)} drawdown` : "off"}</Descriptions.Item>
         <Descriptions.Item label="Slippage · fee">{frac(bot.slippage_pct)} · {frac(bot.fee_pct)}</Descriptions.Item>
@@ -86,6 +87,7 @@ interface EditValues {
   slippage_pct: number;
   fee_pct: number;
   max_drawdown_pct: number;
+  fractional: boolean;
 }
 
 /** Edit what a rotation bot can change: its name, costs and breaker. */
@@ -109,6 +111,7 @@ export function RotationEditForm({ open, bot, onCancel, onSubmit }: {
         slippage_pct: +(b.slippage_pct * 100).toFixed(4),
         fee_pct: +(b.fee_pct * 100).toFixed(4),
         max_drawdown_pct: +(b.max_drawdown_pct * 100).toFixed(4),
+        fractional: !!b.fractional,
       });
       setError(null);
     }
@@ -124,6 +127,7 @@ export function RotationEditForm({ open, bot, onCancel, onSubmit }: {
         slippage_pct: +(v.slippage_pct / 100).toFixed(6),
         fee_pct: +(v.fee_pct / 100).toFixed(6),
         max_drawdown_pct: +(v.max_drawdown_pct / 100).toFixed(6),
+        fractional: v.fractional,
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -142,6 +146,9 @@ export function RotationEditForm({ open, bot, onCancel, onSubmit }: {
           <Col span={8}><Form.Item name="slippage_pct" label="Slippage buffer">{pctInput(5, 0.01)}</Form.Item></Col>
           <Col span={8}><Form.Item name="fee_pct" label="Fee (paper only)">{pctInput(5, 0.01)}</Form.Item></Col>
         </Row>
+        <Form.Item name="fractional" valuePropName="checked" extra="From the next rebalance: what it holds now stays as it is until then.">
+          <Switch checkedChildren="Fractional shares" unCheckedChildren="Whole shares" />
+        </Form.Item>
         <Alert type="info" showIcon message="The universe and the rules are fixed for a bot's life, so its history describes one setup. For other rules, create a new rotation bot." />
         {error && <Alert type="error" showIcon message={error} style={{ marginTop: 12 }} />}
       </Form>
