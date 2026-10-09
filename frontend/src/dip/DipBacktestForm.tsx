@@ -1,5 +1,6 @@
 import { Button, Card, Checkbox, DatePicker, Divider, Form, InputNumber, Select, Typography } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
+import { lastMonths, periodExtra, periodOptions } from "../periods";
 import UniverseField from "../rotation/UniverseField";
 import PresetPicker from "./PresetPicker";
 import RulesFields, { type RulesForm, fromRulesForm, toRulesForm } from "./RulesFields";
@@ -21,17 +22,6 @@ interface FormValues extends RulesForm {
 }
 
 const fmt = (d: Dayjs) => d.format("YYYY-MM-DD");
-
-const MONTHS = [1, 2, 3, 4, 6, 9, 12, 18, 24, 36];
-const monthsLabel = (n: number) => (n % 12 === 0 ? `${n / 12} year${n > 12 ? "s" : ""}` : `${n} month${n > 1 ? "s" : ""}`);
-const spanWords = (n: number) => (n === 1 ? "month" : n === 12 ? "year" : monthsLabel(n)); // "the last month", "the last 3 months"
-
-/** The periods for "the last n months": the exam is the last n months up to today and the practice the n months
- *  before it; without an exam, the practice is the last n months. */
-function lastMonths(n: number, exam: boolean, today = dayjs()): Pick<FormValues, "practice"> & Partial<Pick<FormValues, "exam">> {
-  const split = today.subtract(n, "month");
-  return exam ? { practice: [today.subtract(2 * n, "month"), split.subtract(1, "day")], exam: [split, today] } : { practice: [split, today] };
-}
 
 function toConfigs(v: FormValues): Partial<Record<Period, DipConfig>> {
   const base = { ...fromRulesForm(v), symbols: v.symbols, reenable_days: v.reenable_days ?? 0, initial_cash: v.initial_cash };
@@ -127,15 +117,9 @@ export default function DipBacktestForm({ onRun, starting }: { onRun: (c: Partia
           name="period_months"
           label="Test the last"
           tooltip="3 months: the exam is the last 3 months up to today, the practice the 3 months before it (6 to 3 months ago). Without an exam, the practice is the last 3 months. Change a date below to pick your own."
-          extra={
-            v?.period_months
-              ? examOn
-                ? `Exam: the last ${spanWords(v.period_months)}. Practice: the ${spanWords(v.period_months)} before.`
-                : `Practice: the last ${spanWords(v.period_months)}.`
-              : undefined
-          }
+          extra={periodExtra(v?.period_months, examOn)}
         >
-          <Select options={[...MONTHS.map((n) => ({ value: n, label: monthsLabel(n) })), { value: 0, label: "Custom dates" }]} />
+          <Select options={periodOptions()} />
         </Form.Item>
         <Form.Item name="practice" label="Practice period" rules={[{ required: true }]}>
           <DatePicker.RangePicker style={{ width: "100%" }} />

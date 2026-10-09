@@ -1,5 +1,6 @@
-import { Button, Card, Checkbox, DatePicker, Form, InputNumber, Switch, Typography } from "antd";
-import dayjs, { type Dayjs } from "dayjs";
+import { Button, Card, Checkbox, DatePicker, Divider, Form, InputNumber, Select, Switch, Typography } from "antd";
+import type { Dayjs } from "dayjs";
+import { MONTHS, lastMonths, periodExtra, periodOptions } from "../periods";
 import type { Period } from "./useRotation";
 import type { RotationConfig } from "./types";
 import UniverseField, { SECTORS } from "./UniverseField";
@@ -14,6 +15,7 @@ interface FormValues {
   abs_filter: boolean;
   initial_cash: number;
   fractional: boolean;
+  period_months: number; // 0 = the dates as picked
   practice: [Dayjs, Dayjs];
   exam_on: boolean;
   exam: [Dayjs, Dayjs];
@@ -36,8 +38,17 @@ function toConfigs(v: FormValues): Partial<Record<Period, RotationConfig>> {
 export default function RotationForm({ onRun, starting }: { onRun: (c: Partial<Record<Period, RotationConfig>>) => void; starting: boolean }) {
   const [form] = Form.useForm<FormValues>();
   const v = Form.useWatch([], form) as Partial<FormValues> | undefined;
-  const today = dayjs();
+  const examOn = v?.exam_on !== false;
   const part = v?.initial_cash && v?.top_n ? Math.floor(v.initial_cash / v.top_n) : null;
+
+  /** Picking "the last n months" (or the exam on/off with it) sets the dates; changing a date by hand makes them custom. */
+  const onValuesChange = (changed: Partial<FormValues>, all: FormValues) => {
+    if ("period_months" in changed || "exam_on" in changed) {
+      if (all.period_months) form.setFieldsValue(lastMonths(all.period_months, all.exam_on !== false));
+    } else if ("practice" in changed || "exam" in changed) {
+      form.setFieldsValue({ period_months: 0 });
+    }
+  };
   return (
     <Card title="Momentum rotation" size="small">
       <Typography.Paragraph style={{ fontSize: 12, color: MUTED }}>
@@ -48,6 +59,7 @@ export default function RotationForm({ onRun, starting }: { onRun: (c: Partial<R
         form={form}
         layout="vertical"
         onFinish={(values) => onRun(toConfigs(values))}
+        onValuesChange={onValuesChange}
         initialValues={{
           symbols: SECTORS,
           top_n: 3,
@@ -56,9 +68,9 @@ export default function RotationForm({ onRun, starting }: { onRun: (c: Partial<R
           abs_filter: true,
           initial_cash: 10_000,
           fractional: true,
-          practice: [today.subtract(6, "year"), today.subtract(3, "year").subtract(1, "day")],
+          period_months: 36,
+          ...lastMonths(36, true),
           exam_on: true,
-          exam: [today.subtract(3, "year"), today],
         }}
       >
         <UniverseField name="symbols" />
@@ -97,13 +109,22 @@ export default function RotationForm({ onRun, starting }: { onRun: (c: Partial<R
             ? "It buys as many whole shares as fit and the rest waits in cash: a share that costs more isn't bought at all."
             : "With fractions it buys exactly that much, even of a share that costs more. Alpaca allows it for most US stocks and ETFs, from $1."}
         </Typography.Paragraph>
+        <Divider style={{ margin: "8px 0 12px" }} />
+        <Form.Item
+          name="period_months"
+          label="Test the last"
+          tooltip="3 years: the exam is the last 3 years up to today, the practice the 3 years before it (6 to 3 years ago). Without an exam, the practice is the last 3 years. A rotation trades once a month, so a few months say little. Change a date below to pick your own."
+          extra={periodExtra(v?.period_months, examOn)}
+        >
+          <Select options={periodOptions([...MONTHS, 60])} />
+        </Form.Item>
         <Form.Item name="practice" label="Practice period" rules={[{ required: true }]}>
           <DatePicker.RangePicker style={{ width: "100%" }} />
         </Form.Item>
         <Form.Item name="exam_on" valuePropName="checked" style={{ marginBottom: 8 }}>
           <Checkbox>Exam on unseen data after it</Checkbox>
         </Form.Item>
-        {v?.exam_on !== false && (
+        {examOn && (
           <Form.Item
             name="exam"
             label="Exam period"
