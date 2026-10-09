@@ -185,7 +185,7 @@ export default function SymbolPicker({ open, value, groups, max = 60, title = "C
                   </Space>
                 </div>
                 {g.note && <div style={{ color: MUTED, fontSize: 12, marginBottom: 8 }}>{g.note}</div>}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 6 }}>{symbols.map(badge)}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(150px, 100%), 1fr))", gap: 6 }}>{symbols.map(badge)}</div>
               </div>
             );
           })}

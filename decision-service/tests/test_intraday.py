@@ -102,9 +102,10 @@ def test_bars_between_spans_months_and_trims_to_the_range(monkeypatch):
 
 
 class _Resp:
-    def __init__(self, payload, status_code=200):
+    def __init__(self, payload, status_code=200, headers=None):
         self._payload = payload
         self.status_code = status_code
+        self.headers = headers or {}
 
     def raise_for_status(self):
         pass
@@ -167,6 +168,40 @@ def test_a_network_blip_or_a_busy_alpaca_is_tried_again(monkeypatch):
     with pytest.raises(httpx.HTTPStatusError):  # wrong keys: no point asking again
         intraday._get("u", {}, {})
     assert waits == []
+
+
+def test_alpacas_rate_limit_is_waited_out_not_failed(monkeypatch):
+    import httpx
+
+    now = {"t": 1_000.0}
+    waits = []
+    monkeypatch.setattr(intraday.time, "time", lambda: now["t"])
+    monkeypatch.setattr(intraday.time, "sleep", lambda s: waits.append(s) or now.update(t=now["t"] + s))
+    monkeypatch.setattr(intraday, "_rate", {"remaining": None, "reset": 0.0})
+    limit = lambda left, reset: {"X-RateLimit-Remaining": str(left), "X-RateLimit-Reset": str(reset)}  # noqa: E731
+    answers = [_Resp({}, 429, limit(0, 1_020)), _Resp({}, 429), _Resp({"bars": []}, 200, limit(199, 1_080))]
+    monkeypatch.setattr(intraday.httpx, "get", lambda *a, **k: answers.pop(0))
+    assert intraday._get("u", {}, {}).json() == {"bars": []}
+    assert waits == [21, intraday.RATE_WAIT_UNKNOWN_S]  # until the minute resets (+1 s); 15 s without the reset time
+
+    # Nearly spent: the next request waits for the reset instead of running into a 429
+    waits.clear()
+    answers[:] = [_Resp({"bars": []}, 200, limit(5, 1_050)), _Resp({"bars": []}, 200, limit(199, 1_110))]
+    intraday._get("u", {}, {})
+    assert waits == []
+    intraday._get("u", {}, {})
+    assert waits == [14.5]  # the clock is at 1,036: 14 s to the reset (+0.5 s)
+
+    # Still limited after RATE_LIMIT_RETRIES: the 429 as an error, as before
+    class _Limited(_Resp):
+        def raise_for_status(self):
+            raise httpx.HTTPStatusError("429", request=None, response=None)
+
+    waits.clear()
+    monkeypatch.setattr(intraday.httpx, "get", lambda *a, **k: _Limited({}, 429))
+    with pytest.raises(httpx.HTTPStatusError):
+        intraday._get("u", {}, {})
+    assert len(waits) == intraday.RATE_LIMIT_RETRIES
 
 
 def test_five_minute_bars_are_cached_apart_from_thirty_minute_ones(monkeypatch):

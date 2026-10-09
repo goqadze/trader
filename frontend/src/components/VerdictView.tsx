@@ -21,7 +21,7 @@ export function VerdictChecks({ verdict }: { verdict: Verdict }) {
   return (
     <div style={{ lineHeight: 1.6 }}>
       <div>{verdict.summary}</div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "2px 16px", marginTop: 6 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(320px, 100%), 1fr))", gap: "2px 16px", marginTop: 6 }}>
         {verdict.checks.map((c) => (
           <div key={c.label} style={{ fontSize: 12 }}>
             {c.ok ? <CheckCircleFilled style={{ color: "#33c088" }} /> : <CloseCircleFilled style={{ color: "#ef5b6b" }} />}{" "}

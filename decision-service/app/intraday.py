@@ -30,8 +30,20 @@ CURRENT_MONTH_TTL_S = 1800  # a finished month never changes; the current one is
 _CACHE_MONTHS = 600  # a 5-minute month is ~1,600 bars: 600 of them stay well under 100 MB
 
 # A failed Alpaca request is tried again after these pauses (seconds): a network blip (a DNS lookup failing for a
-# moment, a dropped connection) or Alpaca busy (429, 5xx) shouldn't fail a whole backtest
+# moment, a dropped connection) or Alpaca busy (5xx) shouldn't fail a whole backtest
 RETRY_WAITS_S = (1, 3, 9)
+
+# Alpaca's free market data allows 200 requests a minute per account, shared by everything using the keys (this
+# service on the Mac and on the server, the bots' quotes). A 5-minute month takes 2 requests (Alpaca sends about
+# 2,300 bars a page), so a 5-minute backtest of 20 symbols over a year asks for ~500. Each answer says how many are
+# left this minute and when the minute resets: with RATE_RESERVE or fewer left, wait for the reset rather than run
+# into "429 Too Many Requests"; a 429 waits for the reset too (RATE_LIMIT_RETRIES times in a row at most).
+RATE_RESERVE = 10  # left for the bots' quotes
+RATE_LIMIT_RETRIES = 8
+RATE_WAIT_MAX_S = 65  # Alpaca's window is a minute: never wait longer than that for one reset
+RATE_WAIT_UNKNOWN_S = 15  # a 429 without the reset time
+_rate = {"remaining": None, "reset": 0.0}  # Alpaca's last X-RateLimit-Remaining / -Reset (unix seconds)
+_rate_lock = threading.Lock()
 
 COLUMNS = ["Open", "High", "Low", "Close", "Volume"]
 _cache: dict[tuple[str, str, int, int], tuple[float, pd.DataFrame]] = {}  # (symbol, timeframe, year, month)
@@ -47,20 +59,45 @@ def _alpaca_headers() -> dict | None:
     return {"APCA-API-KEY-ID": os.environ["ALPACA_API_KEY"], "APCA-API-SECRET-KEY": os.environ["ALPACA_SECRET_KEY"]}
 
 
+def _until_reset(r: httpx.Response) -> float | None:
+    """Remember the request budget an answer reports; the seconds until it resets (None without those headers)."""
+    try:
+        remaining, reset = int(r.headers["X-RateLimit-Remaining"]), float(r.headers["X-RateLimit-Reset"])
+    except (KeyError, ValueError):
+        return None
+    with _rate_lock:
+        _rate.update(remaining=remaining, reset=reset)
+    return reset - time.time()
+
+
+def _pace() -> None:
+    """Before a request: when the last answer left RATE_RESERVE requests or fewer this minute, wait for the reset."""
+    with _rate_lock:
+        remaining, reset = _rate["remaining"], _rate["reset"]
+    if remaining is not None and remaining <= RATE_RESERVE and (wait := reset - time.time()) > 0:
+        time.sleep(min(wait + 0.5, RATE_WAIT_MAX_S))
+
+
 def _get(url: str, params: dict, headers: dict) -> httpx.Response:
-    """httpx.get, tried again after RETRY_WAITS_S on a network error or a busy server; anything else fails at once."""
-    for wait in (*RETRY_WAITS_S, None):
+    """httpx.get, paced to Alpaca's rate limit and tried again: after RETRY_WAITS_S on a network error or a busy
+    server, after the minute's reset on a 429. Anything else fails at once."""
+    waits, limited = iter(RETRY_WAITS_S), 0
+    while True:
+        _pace()
         try:
             r = httpx.get(url, params=params, headers=headers, timeout=30)
         except httpx.TransportError:
-            if wait is None:
+            if (wait := next(waits, None)) is None:
                 raise
         else:
-            if wait is None or not (r.status_code == 429 or r.status_code >= 500):
+            reset_in = _until_reset(r)
+            if r.status_code == 429 and limited < RATE_LIMIT_RETRIES:
+                limited += 1
+                wait = RATE_WAIT_UNKNOWN_S if reset_in is None else min(max(reset_in, 0) + 1, RATE_WAIT_MAX_S)
+            elif r.status_code < 500 or (wait := next(waits, None)) is None:
                 r.raise_for_status()
                 return r
         time.sleep(wait)
-    raise AssertionError("unreachable")
 
 
 def _from_alpaca(symbol: str, start: datetime, end: datetime, headers: dict, timeframe: str = "30Min") -> pd.DataFrame:

@@ -1,5 +1,5 @@
 import { ZoomInOutlined, ZoomOutOutlined } from "@ant-design/icons";
-import { Alert, Button, Empty, Segmented, Space, Spin, Table, Tag, Tooltip, Typography } from "antd";
+import { Alert, Button, Empty, Space, Spin, Table, Tag, Tooltip, Typography } from "antd";
 import { useEffect, useMemo, useState } from "react";
 import {
   CartesianGrid, Line, LineChart, ReferenceArea, ReferenceDot, ReferenceLine, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis,
@@ -142,19 +142,25 @@ export default function SymbolChart({ run }: { run: DipRun }) {
 
   return (
     <div>
-      <Space wrap style={{ marginBottom: 8 }}>
-        <Segmented
-          size="small"
-          value={symbol}
-          onChange={(v) => {
-            setSymbol(v as string);
-            setZoom(null);
-          }}
-          options={symbols.map((s) => {
-            const n = r.by_symbol.find((b) => b.symbol === s)?.trades ?? 0;
-            return { value: s, label: n ? `${s} (${n})` : s };
-          })}
-        />
+      {/* One button per symbol, wrapping onto more lines: a long watchlist mustn't widen the page */}
+      <Space size={[4, 4]} wrap style={{ marginBottom: 8 }}>
+        {symbols.map((s) => {
+          const n = r.by_symbol.find((b) => b.symbol === s)?.trades ?? 0;
+          return (
+            <Button
+              key={s}
+              size="small"
+              type={s === symbol ? "primary" : "default"}
+              aria-pressed={s === symbol}
+              onClick={() => {
+                setSymbol(s);
+                setZoom(null);
+              }}
+            >
+              {n ? `${s} (${n})` : s}
+            </Button>
+          );
+        })}
         {zoomed && <Button size="small" icon={<ZoomOutOutlined />} onClick={() => setZoom(null)}>Whole test</Button>}
       </Space>
       <div style={{ fontSize: 12, color: MUTED, marginBottom: 4 }}>
