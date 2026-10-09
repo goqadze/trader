@@ -1,5 +1,6 @@
-import { AppstoreOutlined, ApartmentOutlined, DownOutlined, ExportOutlined, FundOutlined, ReadOutlined } from "@ant-design/icons";
-import { App as AntApp, Button, ConfigProvider, Dropdown, Layout, Menu, theme, type MenuProps } from "antd";
+import { AppstoreOutlined, ApartmentOutlined, DownOutlined, ExportOutlined, FundOutlined, MenuOutlined, ReadOutlined } from "@ant-design/icons";
+import { App as AntApp, Button, ConfigProvider, Drawer, Dropdown, Grid, Layout, Menu, theme, type MenuProps } from "antd";
+import { useState } from "react";
 import { BrowserRouter, Link, Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
 import { AccountMenu, UsersNavLabel } from "./auth/AccountMenu";
 import { AuthProvider, RequireAuth, useAuth } from "./auth/AuthContext";
@@ -64,10 +65,25 @@ const resources = (admin: boolean): MenuProps["items"] =>
       ]
     : GUIDES;
 
-/** Top bar: app name, page navigation, the Resources dropdown, and the account menu. */
+/** Top bar: app name, page navigation, the Resources dropdown, and the account menu. Under 1200px the pages move into
+ *  a drawer behind a menu button (the bar can't show them all), and on a phone the buttons on the right lose their
+ *  words, so the bar fits. */
 function Header() {
   const { pathname } = useLocation();
   const admin = useAuth().user?.role === "admin";
+  const screens = Grid.useBreakpoint(); // undefined before the first measure: the desktop bar
+  const drawerNav = screens.xl === false; // under 1200px
+  const mobile = screens.md === false; // under 768px
+  const [drawer, setDrawer] = useState(false);
+  const pages: MenuProps["items"] = [
+    { key: "backtest", label: <Link to="/">Backtest</Link> },
+    { key: "compare", label: <Link to="/compare">Compare strategies</Link> },
+    { key: "scan", label: <Link to="/scan">Scan</Link> },
+    { key: "rotation", label: <Link to="/rotation">Rotation</Link> },
+    { key: "dip", label: <Link to="/dip">Dip buyer</Link> },
+    { key: "trading", label: <Link to="/trading">Live trading</Link> },
+    ...(admin ? [{ key: "users", label: <Link to="/admin/users"><UsersNavLabel /></Link> }] : []),
+  ];
   const current = pathname.startsWith("/trading")
     ? "trading"
     : pathname.startsWith("/admin/users")
@@ -83,31 +99,34 @@ function Header() {
         : pathname === "/"
           ? "backtest"
           : "";
+  const selected = current ? [current] : [];
   return (
-    <Layout.Header style={{ display: "flex", alignItems: "center", gap: 16 }}>
-      <span style={{ fontWeight: 600, fontSize: 18, whiteSpace: "nowrap" }}>📈 Trading</span>
-      <Menu
-        theme="dark"
-        mode="horizontal"
-        selectedKeys={current ? [current] : []}
-        style={{ flex: "1 1 auto", minWidth: 0, background: "transparent", borderBottom: "none" }}
-        items={[
-          { key: "backtest", label: <Link to="/">Backtest</Link> },
-          { key: "compare", label: <Link to="/compare">Compare strategies</Link> },
-          { key: "scan", label: <Link to="/scan">Scan</Link> },
-          { key: "rotation", label: <Link to="/rotation">Rotation</Link> },
-          { key: "dip", label: <Link to="/dip">Dip buyer</Link> },
-          { key: "trading", label: <Link to="/trading">Live trading</Link> },
-          ...(admin ? [{ key: "users", label: <Link to="/admin/users"><UsersNavLabel /></Link> }] : []),
-        ]}
-      />
+    // overflow hidden: the horizontal menu measures the pages that don't fit off to the right, which would
+    // otherwise widen the whole page
+    <Layout.Header style={{ display: "flex", alignItems: "center", gap: mobile ? 4 : 16, paddingInline: mobile ? 8 : drawerNav ? 24 : 50, overflow: "hidden" }}>
+      {drawerNav && <Button type="text" icon={<MenuOutlined />} aria-label="Pages" onClick={() => setDrawer(true)} style={{ color: "#e6ebf5" }} />}
+      <span style={{ fontWeight: 600, fontSize: 18, whiteSpace: "nowrap", marginRight: drawerNav ? "auto" : undefined }}>📈 Trading</span>
+      {!drawerNav && (
+        <Menu
+          theme="dark"
+          mode="horizontal"
+          selectedKeys={selected}
+          style={{ flex: "1 1 auto", minWidth: 0, background: "transparent", borderBottom: "none" }}
+          items={pages}
+        />
+      )}
       <Dropdown menu={{ items: resources(admin), selectedKeys: [pathname] }} trigger={["click"]} placement="bottomRight">
-        <Button type="text" icon={<AppstoreOutlined />} style={{ color: "#8b98b5" }}>
-          Resources <DownOutlined style={{ fontSize: 10 }} />
+        <Button type="text" icon={<AppstoreOutlined />} aria-label="Resources" style={{ color: "#8b98b5" }}>
+          {!mobile && <>Resources <DownOutlined style={{ fontSize: 10 }} /></>}
         </Button>
       </Dropdown>
       <SignalBell />
-      <AccountMenu />
+      <AccountMenu compact={mobile} />
+      {drawerNav && (
+        <Drawer title="📈 Trading" placement="left" width={260} open={drawer} onClose={() => setDrawer(false)} styles={{ body: { padding: 0 } }}>
+          <Menu mode="inline" selectedKeys={selected} items={pages} onClick={() => setDrawer(false)} style={{ borderInlineEnd: "none", background: "transparent" }} />
+        </Drawer>
+      )}
     </Layout.Header>
   );
 }

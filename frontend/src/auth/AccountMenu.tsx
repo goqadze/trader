@@ -18,8 +18,8 @@ export function UsersNavLabel() {
   );
 }
 
-/** Top-right: who is signed in, change password, sign out. */
-export function AccountMenu() {
+/** Top-right: who is signed in, change password, sign out. `compact` (a phone): the icon without the name. */
+export function AccountMenu({ compact = false }: { compact?: boolean }) {
   const { user, signOut } = useAuth();
   const [changing, setChanging] = useState(false);
   if (!user) return null;
@@ -47,8 +47,8 @@ export function AccountMenu() {
           ],
         }}
       >
-        <Button type="text" icon={<UserOutlined />} style={{ color: "#8b98b5" }}>
-          {user.username} <DownOutlined style={{ fontSize: 10 }} />
+        <Button type="text" icon={<UserOutlined />} aria-label="Account" style={{ color: "#8b98b5" }}>
+          {!compact && <>{user.username} <DownOutlined style={{ fontSize: 10 }} /></>}
         </Button>
       </Dropdown>
       <ChangePasswordModal open={changing} onClose={() => setChanging(false)} />

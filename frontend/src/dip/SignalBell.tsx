@@ -99,7 +99,7 @@ export default function SignalBell() {
   };
 
   const content = (
-    <div style={{ width: 380 }}>
+    <div style={{ width: "min(380px, calc(100vw - 80px))" }}>
       <Space direction="vertical" size={6} style={{ width: "100%" }}>
         <Space style={{ justifyContent: "space-between", width: "100%" }}>
           <span>Pop-ups in the app</span>
