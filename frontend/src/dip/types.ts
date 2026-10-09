@@ -322,6 +322,16 @@ export interface DipTest {
   score: number | null;
   pick: number | null; // recommended: 1 = the best pick
   note: string;
+  extra?: string | null; // a filter tested on top of the rules (the bots don't have it yet)
+  quarters?: DipTestQuarters | null; // twelve separate 3-month tests (the best setups only)
+}
+
+/** Twelve 3-month tests back to back: how many made money, the worst, each one's return. */
+export interface DipTestQuarters {
+  won: number;
+  of: number;
+  worst: number;
+  returns: number[];
 }
 
 export interface DipTestPeriodDetail {

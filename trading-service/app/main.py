@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import delete, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from . import auth, dip, notify, rotation, scheduler
 from .brokers import SHARED_ACCOUNT_BROKERS, BrokerError, catalog, get_broker
@@ -721,7 +721,7 @@ def add_dip_tests(study_id: int, body: list[DipTestIn], session: Session = Depen
 def list_dip_tests(study_id: int, session: Session = Depends(get_session)):
     """A study's tested setups, best score first (without their curves: GET /dip/tests/{id})."""
     _get_study(session, study_id)
-    q = (select(DipTest).where(DipTest.study_id == study_id)
+    q = (select(DipTest).where(DipTest.study_id == study_id).options(defer(DipTest.detail))  # the curves: MBs, not shown here
          .order_by(DipTest.score.desc().nulls_last(), DipTest.id))
     return list(session.scalars(q))
 

@@ -279,6 +279,8 @@ class DipTestIn(BaseModel):
     score: float | None = None
     pick: int | None = Field(None, ge=1)
     note: str = Field("", max_length=2000)
+    extra: str | None = Field(None, max_length=120)  # a filter beyond the rules, which a saved setup can't keep
+    quarters: dict | None = None  # twelve 3-month tests: {"won", "of", "worst", "returns"}
 
 
 class DipStudyIn(BaseModel):
@@ -324,6 +326,8 @@ class DipTestOut(BaseModel):
     score: float | None
     pick: int | None
     note: str
+    extra: str | None = None
+    quarters: dict | None = None
 
 
 class DipTestDetailOut(DipTestOut):

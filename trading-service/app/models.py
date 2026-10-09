@@ -284,6 +284,11 @@ class DipTest(Base):
     score: Mapped[float | None] = mapped_column(Float, nullable=True)  # the study's ranking number (higher = better)
     pick: Mapped[int | None] = mapped_column(Integer, nullable=True)  # recommended: 1 = the best pick; None = not picked
     note: Mapped[str] = mapped_column(Text, default="")
+    # What the test adds beyond the setup's rules: a filter the bots don't have yet ("skip dips right after earnings").
+    # Saving such a test as a setup keeps its rules only
+    extra: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    # Twelve separate 3-month tests back to back: {"won", "of", "worst", "returns"} (run for the best setups only)
+    quarters: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 # What an email alert is about (notify.CATEGORIES describes each); you choose which ones you get

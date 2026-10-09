@@ -752,12 +752,16 @@ def test_a_study_keeps_its_tests_best_first_and_their_curves_on_demand(api):
     assert r.status_code == 200, r.text
     study = r.json()
     assert (study["name"], study["tests"], study["periods"]["exam"]) == ("Sweep 1", 0, ["2026-01-09", "2026-10-09"])
-    r = c.post(f"/dip/studies/{study['id']}/tests", json=[one_setup("T1", 1.5), one_setup("T2", None), one_setup("T3", 4.0, pick=1)])
+    r = c.post(f"/dip/studies/{study['id']}/tests",
+               json=[one_setup("T1", 1.5), one_setup("T2", None), one_setup("T3", 4.0, pick=1, extra="skip dips after earnings",
+                                                                                     quarters={"won": 9, "of": 12, "worst": -4.2, "returns": [1.0] * 12})])
     assert r.status_code == 200, r.text
     assert r.json()["tests"] == 3
     tests = c.get(f"/dip/studies/{study['id']}/tests").json()
     assert [t["code"] for t in tests] == ["T3", "T1", "T2"]  # best score first, none last
     assert tests[0]["pick"] == 1 and tests[0]["config"]["symbols"] == ["XLK", "XLF"] and "detail" not in tests[0]
+    assert (tests[0]["extra"], tests[1]["extra"]) == ("skip dips after earnings", None)
+    assert (tests[0]["quarters"]["won"], tests[1]["quarters"]) == (9, None)
     one = c.get(f"/dip/tests/{tests[0]['id']}").json()
     assert one["detail"]["exam"]["curve"] == [["2026-01-09", 400, 400]]
     assert c.get("/dip/tests/999").status_code == 404
