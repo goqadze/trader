@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- The tab icon: three rising candlesticks on the app's blue. favicon.ico and apple-touch-icon.png
+       are this drawing rendered (scripts/favicons.sh) -->
+  <rect width="64" height="64" rx="14" fill="#3b7cff"/>
+  <g fill="#fff" stroke="#fff" stroke-width="3.5" stroke-linecap="round">
+    <line x1="15" y1="35" x2="15" y2="54"/>
+    <rect x="9.5" y="39" width="11" height="11" rx="2" stroke="none"/>
+    <line x1="32" y1="23" x2="32" y2="47"/>
+    <rect x="26.5" y="27" width="11" height="15" rx="2" stroke="none"/>
+    <line x1="49" y1="10" x2="49" y2="38"/>
+    <rect x="43.5" y="14" width="11" height="19" rx="2" stroke="none"/>
+  </g>
+</svg>
