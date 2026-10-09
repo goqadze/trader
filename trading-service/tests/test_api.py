@@ -217,6 +217,21 @@ def test_status_reports_market_clock_and_brokers(client):
     assert s["live_trading_allowed"] is False
 
 
+def test_health_says_when_the_scheduler_is_stuck_or_stopped(client, clock, monkeypatch):
+    assert client.get("/health").json() == {"status": "ok", "problems": [], "last_tick": None}  # scheduler off in tests
+    monkeypatch.setattr(main, "settings", main.settings.__class__(scheduler_enabled=True, tick_seconds=30))
+    state = {"running": True, "started_at": at(22, 50), "last_tick": at(22, 58), "last_error": None}
+    monkeypatch.setattr(main.scheduler, "state", state)
+    assert client.get("/health").status_code == 200  # 2 minutes ago: fine
+    state["last_tick"], state["last_error"] = at(22, 40), "OperationalError: connection refused"
+    r = client.get("/health")
+    assert r.status_code == 503 and r.json()["status"] == "down"
+    assert r.json()["problems"] == ["the scheduler hasn't finished a round for 20 minutes: the bots don't check or trade "
+                                    "(last error: OperationalError: connection refused)"]
+    state["running"] = False
+    assert client.get("/health").json()["problems"] == ["the scheduler isn't running: the bots don't check or trade"]
+
+
 def test_unknown_bot_is_404(client):
     assert client.get("/bots/999").status_code == 404
     assert client.get("/bots/999/decisions").status_code == 404

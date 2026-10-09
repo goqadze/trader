@@ -1,0 +1,2 @@
+# The watchdog itself needs only Python's standard library, plus the time zones (the slim image has none)
+tzdata

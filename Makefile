@@ -1,11 +1,11 @@
 # Convenience commands. Run `make test` to run every test suite.
 # Tests run inside the service containers, so no local Python setup is needed.
 
-.PHONY: test test-decision test-backtest test-trading backup-trading-db guide-charts
+.PHONY: test test-decision test-backtest test-trading test-watchdog backup-trading-db guide-charts
 
 # Run all backend tests (both services).
 # SENTRY_DSN is blanked in every test run: the tests' deliberate failures must not land in GlitchTip as real errors.
-test: test-decision test-backtest test-trading
+test: test-decision test-backtest test-trading test-watchdog
 
 # decision-service tests (risk sizing, decision rules, indicators, news RAG).
 # The news store tests run against Postgres + pgvector in a separate `news_test` database.
@@ -28,6 +28,11 @@ test-trading:
 	docker compose run --rm --no-deps -v "$(CURDIR)/trading-service:/code" -w /code -e SENTRY_DSN= \
 		-e TEST_DATABASE_URL=postgresql+psycopg://trading:trading@trading-db:5432/trading_test -e SMTP_HOST= \
 		trading-service sh -c "pip install -q -r requirements-dev.txt && pytest"
+
+# watchdog tests (when a service counts as down, what is emailed and to whom). Plain Python, no stack needed.
+test-watchdog:
+	docker run --rm -v "$(CURDIR)/watchdog:/code" -w /code python:3.12-slim \
+		sh -c "pip install -q -r requirements-dev.txt && pytest"
 
 # Snapshot the trading history (bots, decisions, orders, equity, audit log) to backups/*.sql.gz,
 # keeping the last 30 days. Restore: gunzip -c backups/<file>.sql.gz | docker compose exec -T trading-db psql -U trading trading

@@ -40,7 +40,8 @@ logger = logging.getLogger("trading-service")
 _last_watch: dict[int, datetime] = {}
 _retry_after: dict[int, datetime] = {}  # a failed signal call is retried after a pause, not every tick
 _last_error: dict[tuple[int, str], datetime] = {}  # don't write the same error to the audit log every 30s
-state: dict = {"last_tick": None, "running": False}
+# The heartbeat /health reads: when the loop started, the last tick that finished, and the last tick that failed
+state: dict = {"last_tick": None, "running": False, "started_at": None, "last_error": None}
 
 SIGNAL_RETRY = timedelta(minutes=5)
 ERROR_LOG_EVERY = timedelta(hours=1)
@@ -227,13 +228,14 @@ def tick(now: datetime, signal_fn=get_signal, broker_factory=get_broker) -> None
 
 async def run_forever() -> None:
     """Started by main.py on startup; cancelled on shutdown."""
-    state["running"] = True
+    state["running"], state["started_at"] = True, utcnow()
     logger.info("scheduler started (tick every %ss)", settings.tick_seconds)
     try:
         while True:
             try:
                 await asyncio.to_thread(tick, utcnow())
-            except Exception:
+            except Exception as e:
+                state["last_error"] = f"{type(e).__name__}: {e}"[:300]
                 logger.exception("scheduler tick failed")
             await asyncio.sleep(settings.tick_seconds)
     finally:

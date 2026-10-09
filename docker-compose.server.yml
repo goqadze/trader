@@ -2,7 +2,7 @@
 # docker-compose.yml, but run from their built images (no code mounts, no --reload), with capped logs, and only the
 # parts you choose:
 #
-#   always               trading-db, trading-service (the bots, email alerts), frontend (the dashboard)
+#   always               trading-db, trading-service (the bots, email alerts), frontend (the dashboard), watchdog
 #   profile news         decision-service + news-db: the dip buyer's News switch, and the signal bots' decisions
 #   profile backtest     backtest-service (brings decision-service + news-db): the backtest pages
 #   profile monitoring   GlitchTip (errors) + Langfuse (LLM traces)
@@ -63,6 +63,24 @@ services:
       - "127.0.0.1:8080:80"             # SSH tunnel / `tailscale serve 8080`; Caddy reaches it inside the stack
     depends_on:
       - trading-service                 # the backtest pages answer 502 when backtest-service isn't running
+
+  # The watchdog (watchdog/watchdog.py): emails you when a service here is down and when it's back, when the bots'
+  # scheduler stops, the disk is nearly full or the nightly backup didn't run. A container of its own, so it can still
+  # say so when trading-service can't. It emails the Email alerts page's addresses (read from trading-service and
+  # remembered in its volume), while alerts are on there.
+  watchdog:
+    <<: *defaults
+    build: ./watchdog
+    env_file:
+      - ./trading-service/.env          # it reads only SMTP_* (the same mail server as the other alerts) and DASHBOARD_URL
+    environment:
+      COMPOSE_PROFILES: ${COMPOSE_PROFILES:-}    # the services to expect: the ones this server runs
+      WATCHDOG_TO: ${WATCHDOG_TO:-}              # addresses for before trading-service first answers (optional)
+      WATCHDOG_PING_URL: ${WATCHDOG_PING_URL:-}  # a dead man's switch for the whole server down (optional, DEPLOY.md)
+    volumes:
+      - watchdog:/data                  # the addresses it last read, for while trading-service is down
+      - ./backups:/backups:ro           # to see that the nightly backup ran
+    # No depends_on: it must run whatever else fails to start
 
   # --- profile news (also needed by backtest) --------------------------------------------------------------
 
@@ -259,6 +277,7 @@ services:
 
 volumes:
   trading-db:
+  watchdog:
   news-db:
   langfuse-db:
   glitchtip-db:

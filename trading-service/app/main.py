@@ -10,10 +10,12 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import timedelta
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.gzip import GZipMiddleware
-from sqlalchemy import delete, func, select
+from fastapi.responses import JSONResponse
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session, defer
 
 from . import auth, dip, notify, rotation, scheduler
@@ -157,9 +159,30 @@ def _broker_or_400(bot: Bot):
 # Status
 # ---------------------------------------------------------------------------
 
+TICK_LATE = timedelta(minutes=5)  # no finished tick for this long: the scheduler is stuck (a tick takes seconds)
+
+
 @app.get("/health")
-def health():
-    return {"status": "ok"}
+def health(session: Session = Depends(get_session)):
+    """For the watchdog (and you): the database answers and the scheduler ticks. 503 with what's wrong otherwise."""
+    problems = []
+    try:
+        session.execute(text("SELECT 1"))
+    except Exception as e:
+        problems.append(f"the database doesn't answer ({type(e).__name__}): the bots can't check or trade")
+    st = scheduler.state
+    if settings.scheduler_enabled:
+        since = st["last_tick"] or st["started_at"]
+        late = max(TICK_LATE, timedelta(seconds=10 * settings.tick_seconds))
+        if not st["running"]:
+            problems.append("the scheduler isn't running: the bots don't check or trade")
+        elif since is not None and utcnow() - since > late:
+            minutes = int((utcnow() - since).total_seconds() // 60)
+            problems.append(f"the scheduler hasn't finished a round for {minutes} minutes: the bots don't check or trade"
+                            + (f" (last error: {st['last_error']})" if st["last_error"] else ""))
+    return JSONResponse({"status": "down" if problems else "ok", "problems": problems,
+                         "last_tick": st["last_tick"].isoformat() if st["last_tick"] else None},
+                        status_code=503 if problems else 200)
 
 
 @app.get("/status", response_model=StatusOut)

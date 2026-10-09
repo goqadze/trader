@@ -284,6 +284,14 @@ When a new setting appears in a `.env.example`, add it to the server's `.env` by
 
 ### 11. Keep an eye on it
 
+- **The watchdog emails you** (the `watchdog` container, always on): a service down for 3 minutes, and again when it's
+  back; the bots' scheduler stuck or the database gone (trading-service's `/health`); under 10% of the disk free;
+  no backup for 36 hours. It writes to the addresses on the Email alerts page while alerts are on there, through the
+  same mail server. See what it sees: `docker compose exec watchdog python watchdog.py --once`.
+- **The whole server down** (power, network, Docker) can't be reported from inside it. For that, make a free check at
+  [healthchecks.io](https://healthchecks.io) (period 1 minute, grace 5 minutes, your email as its notification), put
+  its ping URL in `./.env` as `WATCHDOG_PING_URL=https://hc-ping.com/...` and `docker compose up -d watchdog`. The
+  watchdog pings it every minute; healthchecks.io emails you when the pings stop.
 - **Bot page header:** `Scheduler running`, or `Scheduler not ticking` (look at the logs).
 - **Logs:** `docker compose logs -f trading-service`. Every order and stop is also in each bot's audit log.
 - **Errors:** set up GlitchTip once (see README), and errors from every service land there.

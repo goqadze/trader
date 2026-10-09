@@ -10,6 +10,7 @@ An AI decision-support tool plus a backtesting app that measures it.
 | `backtest-service/` | 8001 | FastAPI + WebSocket API. Replays history, calls decision-service each step, streams progress. |
 | `trading-service/` | 8002 | Live/paper trading bots: scheduler, broker adapters, trading history database. |
 | `frontend/` | 8080 | React + TypeScript + Ant Design dashboard (Vite build, served by nginx). Sign-in, backtests, live trading pages. |
+| `watchdog/` | — | Server only: emails you when a service is down (and back), the bots' scheduler is stuck, the disk is nearly full or the nightly backup didn't run. |
 | Langfuse | 3000 | LLM tracing UI (self-hosted, free). See every prompt/response/cost. |
 | GlitchTip | 8082 | Error tracking (self-hosted, free, Sentry-compatible). |
 | pgAdmin | 5050 | Browse the databases' tables and data (trading-db and news-db, already connected). Login `admin@local.dev` + `PGADMIN_PASSWORD` from `.env`. |
@@ -167,6 +168,13 @@ How it's built (`trading-service/app/notify.py`): an outbox. The fill, the black
 stop-loss sale and its blacklisting arrive together), retrying a failed send after 1, 5, 30 and 120 minutes. A slow or
 broken mail server never holds up trading, and nothing is lost in a restart. `GET /email-alerts/history` (and the
 page) shows what was sent, is waiting, failed or was skipped.
+
+That outbox lives in trading-service, so it can't tell you trading-service is down. On a server the **watchdog**
+(`watchdog/watchdog.py`, its own container in `docker-compose.server.yml`) does: every minute it asks each service the
+server runs (trading-service's `/health` also checks the database and that the scheduler finished a round in the last
+5 minutes), and emails the same addresses when one fails 3 checks in a row, every 6 hours while it stays down, and
+when it's back. Also when the disk is under 10% free or the newest backup is over 36 hours old. Tests:
+`make test-watchdog`.
 
 ## Intraday strategies (backtest only)
 

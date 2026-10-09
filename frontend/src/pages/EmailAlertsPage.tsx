@@ -149,6 +149,11 @@ export default function EmailAlertsPage() {
               A failed send is tried again after 1, 5 and 30 minutes and 2 hours. For dip signals in the browser (sound, read
               aloud), use the bell at the top or the <Link to="/dip">Dip buyer</Link> page.
             </Typography.Paragraph>
+            <Typography.Paragraph style={{ fontSize: 12, color: MUTED, marginTop: 8, marginBottom: 0 }}>
+              On the server, the watchdog also writes to these addresses while alerts are on: when a service is down for 3
+              minutes (and when it's back), when the bots' scheduler is stuck, the disk is nearly full or the nightly backup
+              didn't run. It doesn't appear in the history below: it sends them itself, so it still can when this service is down.
+            </Typography.Paragraph>
           </Card>
         </Col>
         <Col xs={24} lg={14}>
