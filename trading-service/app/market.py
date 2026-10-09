@@ -77,6 +77,12 @@ def sessions_since(last: date | None, today: date) -> int:
     return len(_cal().sessions_in_range((last + timedelta(days=1)).isoformat(), today.isoformat()))
 
 
+def sessions_after(day: date, n: int) -> date:
+    """The trading day n sessions after `day` (a trading day itself; else the one before it counts as `day`)."""
+    cal = _cal()
+    return cal.session_offset(cal.date_to_session(day.isoformat(), direction="previous"), n).date()
+
+
 def month_end_after(day: date) -> date:
     """The first trading day after `day` that is the last trading day of its month (rotation bots rebalance then)."""
     sessions = _cal().sessions_in_range((day + timedelta(days=1)).isoformat(), (day + timedelta(days=70)).isoformat())

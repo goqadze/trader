@@ -147,6 +147,9 @@ class Bot(Base):
     rebound_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Buy fractions of a share (where the broker can split the symbol) so small slots still buy; NULL = whole shares
     fractional: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # After a stop-loss, buy that symbol again this many trading days later (the backtest's "Blacklist lasts");
+    # 0 / NULL = only once you re-enable it
+    reenable_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
@@ -193,6 +196,7 @@ class WatchItem(Base):
     added_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     blacklisted_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
     blacklist_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reenable_on: Mapped[date | None] = mapped_column(Date, nullable=True)  # a stop's blacklist ends that day; NULL = you
     # --- The last check ---
     checked_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
     last_price: Mapped[float | None] = mapped_column(Float, nullable=True)

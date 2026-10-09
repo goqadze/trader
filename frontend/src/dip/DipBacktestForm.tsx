@@ -115,13 +115,6 @@ export default function DipBacktestForm({ onRun, starting, loadRequest }: Props)
         </Form.Item>
         <UniverseField name="symbols" label="Watchlist" noCrypto min={1} />
         <RulesFields compact />
-        <Form.Item
-          name="reenable_days"
-          label="Blacklist lasts"
-          tooltip="A live bot keeps a symbol blacklisted until you re-enable it. In a backtest nobody does, unless you set this: it re-enables a blacklisted symbol after this many trading days, as if you did."
-        >
-          <InputNumber min={0} max={500} addonAfter="trading days (0 = for good)" style={{ width: "100%" }} />
-        </Form.Item>
         <Form.Item name="initial_cash" label="Capital">
           <InputNumber min={100} step={100} addonBefore="$" style={{ width: "100%" }} />
         </Form.Item>

@@ -47,7 +47,8 @@ export interface DipRules {
   drop_from: DropFrom;
   target_mode: TargetMode;
   rise_pct: number; // target_mode "percent" only
-  stop_pct: number; // z: sell this far under the buy, and blacklist the symbol
+  stop_pct: number; // z: sell this far under the buy, and blacklist the symbol ...
+  reenable_days: number; // ... for this many trading days; 0 = until you re-enable it
   max_positions: number; // slots: each buy gets 1/max_positions of the equity
   max_hold_days: number; // sell after this many trading days whatever the price; 0 = never
   news: boolean; // bearish news blocks the buy for the rest of the day
@@ -69,6 +70,7 @@ export const DEFAULT_RULES: DipRules = {
   target_mode: "reference",
   rise_pct: 0.05,
   stop_pct: 0.05,
+  reenable_days: 0,
   max_positions: 5,
   max_hold_days: 0,
   news: false,
@@ -118,7 +120,6 @@ export interface DipConfig extends DipRules {
   symbols: string[];
   start: string;
   end: string;
-  reenable_days: number; // backtest only: stands in for you re-enabling a blacklisted symbol; 0 = never
   initial_cash?: number;
   slippage_pct?: number;
   fee_pct?: number;
@@ -203,7 +204,6 @@ export interface DipRun {
 /** A setup saved under a name: the rules and the watchlist, plus the backtest's capital, blacklist and periods. */
 export interface DipPresetConfig extends DipRules {
   symbols: string[];
-  reenable_days?: number;
   initial_cash?: number | null;
   practice?: [string, string] | null;
   exam?: [string, string] | null; // null: no exam
@@ -223,6 +223,7 @@ export interface DipPreset {
 export interface DipBotCreate extends DipRules {
   name?: string;
   broker: string;
+  confirm_live?: boolean; // a real-money broker: you said yes to real orders
   allocated_cash: number;
   symbols: string[];
   fee_pct: number;
@@ -239,6 +240,7 @@ export interface WatchItem {
   added_at: string;
   blacklisted_at: string | null;
   blacklist_reason: string | null;
+  reenable_on: string | null; // a stop's blacklist ends that trading day (YYYY-MM-DD); null: when you re-enable it
   checked_at: string | null;
   last_price: number | null;
   reference_price: number | null; // the window's high (or start)

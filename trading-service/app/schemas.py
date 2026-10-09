@@ -127,7 +127,8 @@ class DipRules(BaseModel):
     drop_from: Literal["high", "start"] = "high"  # measured from the window's highest close, or its first one
     target_mode: Literal["reference", "percent"] = "reference"  # sell back at that price, or rise_pct above the buy
     rise_pct: float = Field(0.05, gt=0, le=2)
-    stop_pct: float = Field(0.05, gt=0, le=0.5)  # sell this far under the buy, and blacklist the symbol
+    stop_pct: float = Field(0.05, gt=0, le=0.5)  # sell this far under the buy, and blacklist the symbol ...
+    reenable_days: int = Field(0, ge=0, le=500)  # ... for this many trading days; 0 = until you re-enable it
     max_positions: int = Field(5, ge=1, le=20)  # slots: each buy gets 1/max_positions of the equity
     max_hold_days: int = Field(0, ge=0, le=250)  # sell after this many trading days whatever the price; 0 = never
     news: bool = False  # ask the news before a buy: bearish = not today
@@ -155,6 +156,7 @@ class DipBotCreate(DipRules):
 
     name: str | None = Field(None, max_length=80)
     broker: str = "paper"
+    confirm_live: bool = False  # a real-money broker: you said yes to real orders
     allocated_cash: float = Field(10_000, ge=100, le=10_000_000)
     symbols: list[str] = Field(..., min_length=1, max_length=60)
     fee_pct: float = Field(0.0, ge=0, le=0.05)
@@ -186,6 +188,7 @@ class DipBotUpdate(BaseModel):
     target_mode: Literal["reference", "percent"] | None = None
     rise_pct: float | None = Field(None, gt=0, le=2)
     stop_pct: float | None = Field(None, gt=0, le=0.5)
+    reenable_days: int | None = Field(None, ge=0, le=500)
     max_positions: int | None = Field(None, ge=1, le=20)
     max_hold_days: int | None = Field(None, ge=0, le=250)
     news: bool | None = None
@@ -219,7 +222,6 @@ class DipPresetConfig(DipRules):
     from a backtest, so its window may be longer than a live bot's feed allows (the bot form says so when loaded)."""
 
     symbols: list[str] = Field(..., min_length=1, max_length=60)
-    reenable_days: int = Field(0, ge=0, le=500)
     initial_cash: float | None = Field(None, ge=100, le=10_000_000)
     practice: tuple[date, date] | None = None
     exam: tuple[date, date] | None = None  # None: no exam
@@ -410,6 +412,7 @@ class WatchItemOut(BaseModel):
     added_at: datetime
     blacklisted_at: datetime | None
     blacklist_reason: str | None
+    reenable_on: date | None = None  # a stop's blacklist ends that trading day; None = when you re-enable it
     checked_at: datetime | None
     last_price: float | None
     reference_price: float | None  # the window's high (or start)
@@ -574,6 +577,7 @@ class BotOut(StrategyParams):
     rise_pct: float | None = None
     max_positions: int | None = None
     max_hold_days: int | None = None
+    reenable_days: int | None = None
     news: bool | None = None
     trend_filter: bool | None = None
     rebound: bool | None = None

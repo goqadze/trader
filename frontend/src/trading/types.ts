@@ -126,6 +126,7 @@ export interface Bot extends Omit<StrategyParams, "strategy"> {
   rise_pct: number | null;
   max_positions: number | null;
   max_hold_days: number | null;
+  reenable_days?: number | null; // dip bots: a stop's blacklist lasts this many trading days; 0 / null = until you re-enable it
   news: boolean | null;
   trend_filter: boolean | null;
   rebound: boolean | null; // null on dip bots from before the option: they buy at once

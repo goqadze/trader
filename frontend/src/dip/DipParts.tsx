@@ -26,7 +26,7 @@ export const rulesOf = (b: Bot): DipRules => ({
   price_tiers: b.price_tiers ?? DEFAULT_PRICE_TIERS, drop_atr: b.drop_atr ?? 1.5, lookback: b.lookback ?? 5, lookback_unit: b.lookback_unit ?? "days",
   drop_from: b.drop_from ?? "high", target_mode: b.target_mode ?? "reference", rise_pct: b.rise_pct ?? 0.05, stop_pct: b.stop_pct,
   max_positions: b.max_positions ?? 5, max_hold_days: b.max_hold_days ?? 0, news: !!b.news, trend_filter: !!b.trend_filter,
-  rebound: !!b.rebound, rebound_pct: b.rebound_pct ?? 0.01, fractional: !!b.fractional,
+  rebound: !!b.rebound, rebound_pct: b.rebound_pct ?? 0.01, fractional: !!b.fractional, reenable_days: b.reenable_days ?? 0,
 });
 
 const intervalLabel = (b: Bot) => INTERVALS.find((i) => i.value === b.interval)?.label ?? b.interval;
@@ -143,7 +143,10 @@ export function DipHoldingsCard({ bot, marketOpen, onChanged }: { bot: Bot; mark
 
 function statusTag(w: WatchItem, bot: Bot) {
   const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
-  if (w.status === "blacklisted") return <Tooltip title={`${w.blacklist_reason ?? ""} (${localTime(w.blacklisted_at)})`}><Tag color="red">blacklisted</Tag></Tooltip>;
+  if (w.status === "blacklisted") {
+    const until = w.reenable_on ? `until ${new Date(`${w.reenable_on}T12:00:00`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}` : "until you re-enable it";
+    return <Tooltip title={`${w.blacklist_reason ?? ""} (${localTime(w.blacklisted_at)}), ${until}`}><Tag color="red">blacklisted</Tag></Tooltip>;
+  }
   if (w.held) return <Tag color="blue">held</Tag>;
   if (w.news_blocked_on === today) return <Tooltip title="Bearish news: not bought today"><Tag color="gold">news: not today</Tag></Tooltip>;
   if (bot.rebound && w.dip_reference != null) {
@@ -282,7 +285,9 @@ export function DipParamsCard({ bot, onEdit, onChanged }: { bot: Bot; onEdit: ()
           </Space>
         </Descriptions.Item>
         <Descriptions.Item label="Sells">{sellText(r)}{r.max_hold_days ? `, or after ${r.max_hold_days} trading days` : ""}</Descriptions.Item>
-        <Descriptions.Item label="Stop-loss">{frac(r.stop_pct)} under the buy, then blacklisted until you re-enable it</Descriptions.Item>
+        <Descriptions.Item label="Stop-loss">
+          {frac(r.stop_pct)} under the buy, then blacklisted {r.reenable_days ? `for ${r.reenable_days} trading day${r.reenable_days > 1 ? "s" : ""}` : "until you re-enable it"}
+        </Descriptions.Item>
         <Descriptions.Item label="Checks">{intervalLabel(bot)}</Descriptions.Item>
         <Descriptions.Item label="Positions">up to {r.max_positions} at once, {frac(1 / r.max_positions)} of the equity each</Descriptions.Item>
         <Descriptions.Item label="Fractional shares">

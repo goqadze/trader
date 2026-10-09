@@ -1,4 +1,4 @@
-import { Alert, Col, Divider, Form, Input, InputNumber, Modal, Row, Select, Tooltip, Typography } from "antd";
+import { Alert, Checkbox, Col, Divider, Form, Input, InputNumber, Modal, Row, Select, Tooltip, Typography } from "antd";
 import { useEffect, useRef, useState } from "react";
 import UniverseField from "../rotation/UniverseField";
 import type { BrokerInfo } from "../trading/types";
@@ -12,6 +12,7 @@ const COSTS = ["fee_pct", "slippage_pct", "max_drawdown_pct"] as const;
 interface FormValues extends RulesForm {
   name?: string;
   broker: string;
+  confirm_live?: boolean;
   allocated_cash: number;
   symbols: string[];
   fee_pct: number;
@@ -40,8 +41,8 @@ function toForm(v: DipBotInitial): FormValues {
 
 function fromForm(v: FormValues): DipBotCreate {
   const out: DipBotCreate = {
-    ...fromRulesForm(v), name: v.name?.trim() || undefined, broker: v.broker, allocated_cash: v.allocated_cash, symbols: v.symbols,
-    fee_pct: 0, slippage_pct: 0, max_drawdown_pct: 0,
+    ...fromRulesForm(v), name: v.name?.trim() || undefined, broker: v.broker, confirm_live: !!v.confirm_live,
+    allocated_cash: v.allocated_cash, symbols: v.symbols, fee_pct: 0, slippage_pct: 0, max_drawdown_pct: 0,
   };
   for (const f of COSTS) out[f] = +((v[f] ?? 0) / 100).toFixed(6);
   return out;
@@ -55,11 +56,14 @@ interface Props {
   onSubmit: (body: DipBotCreate) => Promise<void>;
 }
 
-/** New dip buyer: the watchlist, the rules (prefilled from a backtest), a paper broker and the capital. */
+/** New dip buyer: the watchlist, the rules (prefilled from a backtest), the broker and the capital. A real-money broker
+ * (only listed as usable once the server allows live trading) needs the "real money" box ticked. */
 export default function DipBotForm({ open, initial, brokers, onCancel, onSubmit }: Props) {
   const [form] = Form.useForm<FormValues>();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const broker = Form.useWatch("broker", form);
+  const isLive = brokers.find((b) => b.name === broker)?.live ?? false;
 
   // Load values only when the modal opens (see BotForm)
   const initialRef = useRef(initial);
@@ -97,7 +101,7 @@ export default function DipBotForm({ open, initial, brokers, onCancel, onSubmit 
       <Typography.Paragraph style={{ fontSize: 12, color: MUTED }}>
         It checks every symbol on its watchlist at each interval: buys the ones that just fell, sells them once they're back (or at
         the stop-loss, which also blacklists the symbol), and posts every signal to the bell at the top. You can add and remove symbols,
-        re-enable blacklisted ones and switch the news on or off while it runs. Paper accounts only for now.
+        re-enable blacklisted ones and switch the news on or off while it runs.
       </Typography.Paragraph>
       <Form<FormValues> form={form} layout="vertical" requiredMark={false}>
         <Form.Item label="Start from a saved setup" tooltip="Fills in its rules, watchlist and capital (save setups on the Backtest tab)">
@@ -107,7 +111,7 @@ export default function DipBotForm({ open, initial, brokers, onCancel, onSubmit 
           <Col span={14}>
             <Form.Item name="broker" label="Broker">
               <Select
-                options={brokers.filter((b) => !b.live).map((b) => ({
+                options={brokers.map((b) => ({
                   value: b.name,
                   disabled: !b.available,
                   label: b.available ? b.label : <Tooltip title={b.reason}>{b.label} (not configured)</Tooltip>,
@@ -160,6 +164,20 @@ export default function DipBotForm({ open, initial, brokers, onCancel, onSubmit 
           message="The stop-loss is checked at each check, not held at the broker"
           description="A fast fall between two checks (or overnight) sells lower than the stop. Shorter intervals react faster."
         />
+        {isLive && (
+          <>
+            <Alert
+              type="error"
+              showIcon
+              message="This bot trades REAL MONEY"
+              description="Every buy and sell is a real order on your Alpaca account, and a live run can lose more than its backtest did. Pause or archive it any time: pausing stops the buys, its holdings still exit at their target or stop."
+              style={{ marginTop: 12, marginBottom: 12 }}
+            />
+            <Form.Item name="confirm_live" valuePropName="checked" rules={[{ validator: (_, v) => (v ? Promise.resolve() : Promise.reject(new Error("Required for a real-money bot"))) }]}>
+              <Checkbox>I understand this bot places real orders with real money</Checkbox>
+            </Form.Item>
+          </>
+        )}
         {error && <Alert type="error" showIcon message={error} style={{ marginTop: 12 }} />}
       </Form>
     </Modal>

@@ -4,7 +4,8 @@ The rules are the backtest's (backtest-service/app/engines/dip.py), so the bot t
 the end of each 5/15/30/60-minute bar from the open (9:45, 10:00 ... 15:45 for 15 minutes), or once a day in the last
 30 minutes before the close -- it goes through all its symbols:
   1. Exits, on fresh quotes: at or under a holding's stop (stop_pct below the buy) -> sell, and blacklist the symbol:
-     no more buys until you re-enable it. At or over its target (the price the fall started from, or rise_pct above
+     no more buys until you re-enable it, or (with reenable_days, the backtest's "Blacklist lasts") until the first
+     check that many trading days later. At or over its target (the price the fall started from, or rise_pct above
      the buy) -> sell. Held max_hold_days trading days (when set) -> sell.
   2. Where each symbol stands: its reference -- the highest close of the last `lookback` days (or hours) of bars, or
      the close at that window's start -- and how far under it the price is. Falling into the buy zone (drop_pct or
@@ -22,8 +23,8 @@ Every signal is saved (Signal) for your information, whatever the bot did about 
 Where it differs from the backtest: real quotes (Yahoo's bars for the window, the broker's quote before each trade),
 real fills, and a check runs at the first scheduler tick after its moment (within ~30 s). The stop is checked at
 each check, not held at the broker: a fast fall between checks fills lower. A paused bot still checks its holdings'
-exits at each interval (no buys), like the other bots' stop-loss. Paper accounts only for now: main.py refuses real
-money.
+exits at each interval (no buys), like the other bots' stop-loss. A real-money broker works the same way (main.py
+asks for confirm_live when the bot is created).
 
 Like trader.py and rotation.py, every function takes `now`, and the price download (`bars_fn`), the news (`news_fn`),
 the trend filter (`trend_fn`) and the daily moves (`moves_fn`) can be swapped, so tests replay any moment without the
@@ -43,7 +44,7 @@ from . import notify
 from .brokers import Broker, BrokerError
 from .config import settings
 from .decision_client import get_news
-from .market import NY, ny_date, session_bounds, sessions_since, slot_window
+from .market import NY, ny_date, session_bounds, sessions_after, sessions_since, slot_window
 from .models import Bot, Decision, Holding, Order, Signal, WatchItem
 from .rotation import _quote, yahoo_closes
 from .schemas import DEFAULT_PRICE_TIERS
@@ -301,11 +302,22 @@ def end_fall(item: WatchItem) -> None:
     item.dip_reference = item.armed_at = item.trough_price = item.trough_at = item.turned_at = None
 
 
-def blacklist(session: Session, bot: Bot, item: WatchItem, now: datetime, reason: str) -> None:
-    item.status, item.blacklisted_at, item.blacklist_reason = "blacklisted", now, reason
+def blacklist(session: Session, bot: Bot, item: WatchItem, now: datetime, reason: str, until: date | None = None) -> None:
+    """No more buys of it until you re-enable it, or until the trading day `until` (a stop with reenable_days)."""
+    item.status, item.blacklisted_at, item.blacklist_reason, item.reenable_on = "blacklisted", now, reason, until
     item.in_zone = False
     end_fall(item)
-    log_event(session, bot.id, "risk", f"{item.symbol} blacklisted: {reason}. No more buys until you re-enable it.", "warning", now)
+    log_event(session, bot.id, "risk", f"{item.symbol} blacklisted: {reason}. No more buys {until_text(until)}.", "warning", now)
+
+
+def until_text(until: date | None) -> str:
+    return f"until {until:%a %b} {until.day} (or until you re-enable it)" if until else "until you re-enable it"
+
+
+def reenable(item: WatchItem) -> None:
+    """Back on the watchlist: its dips may be bought again; a fall still under way is followed afresh."""
+    item.status, item.blacklisted_at, item.blacklist_reason, item.reenable_on = "watching", None, None, None
+    end_fall(item)
 
 
 def signal(session: Session, bot: Bot, symbol: str, kind: str, now: datetime, message: str, outcome: str = "",
@@ -380,6 +392,12 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
         session.commit()
         return d
 
+    if trade:  # a stop's blacklist that is over (reenable_days): watched again from this check, as in the backtest
+        for item in items:
+            if item.status == "blacklisted" and item.reenable_on and item.reenable_on <= today:
+                reenable(item)
+                log_event(session, bot.id, "risk", f"{item.symbol} re-enabled: its blacklist after the stop-loss is over", now=now)
+
     levels = {s: stand(closes[s] if s in closes else None, bot, moment, today) for s in symbols}
     pending = {o.symbol for o in open_orders(session, bot)}
     lines: list[str] = []
@@ -428,11 +446,12 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
             end_fall(item)
         events += 1
         if reason == "stop-loss":
+            until = sessions_after(today, bot.reenable_days) if bot.reenable_days else None
             signal(session, bot, s, "stop", now, f"{s} fell to ${q.price:.2f}, under its stop ${h.stop_price:.2f} "
-                   f"({_pct(change)} from the buy): sell", f"{done}. Blacklisted until you re-enable it." if item else done,
+                   f"({_pct(change)} from the buy): sell", f"{done}. Blacklisted {until_text(until)}." if item else done,
                    q.price, h.reference_price, change)
             if item is not None:
-                blacklist(session, bot, item, now, f"stop-loss at ${q.price:.2f} (stop ${h.stop_price:.2f})")
+                blacklist(session, bot, item, now, f"stop-loss at ${q.price:.2f} (stop ${h.stop_price:.2f})", until)
         elif reason == "target":
             signal(session, bot, s, "up", now, f"{s} is back at ${q.price:.2f}, its target ${h.target_price:.2f} "
                    f"({_pct(change)} from the buy): sell", done, q.price, h.reference_price, change)
@@ -602,7 +621,7 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
         if item.symbol in held and item.symbol not in sold:
             continue
         if item.status == "blacklisted":
-            lines.append(f"{item.symbol}: blacklisted ({item.blacklist_reason or 'by you'})")
+            lines.append(f"{item.symbol}: blacklisted ({item.blacklist_reason or 'by you'}) {until_text(item.reenable_on)}")
         elif item.drop is None:
             lines.append(f"{item.symbol}: not enough prices yet for a {window_label(bot)}")
         elif rebound and item.dip_reference and item.symbol not in notes:

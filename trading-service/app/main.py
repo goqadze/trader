@@ -275,14 +275,16 @@ def create_rotation_bot(body: RotationBotCreate, session: Session = Depends(get_
     return _bot_out(session, bot)
 
 
-def _paper_broker_or_422(name: str, what: str) -> None:
+def _usable_broker_or_422(name: str, confirm_live: bool) -> bool:
+    """A broker a new bot may use: known, configured, and a real-money one only with confirm_live. True = real money."""
     info = next((b for b in catalog() if b["name"] == name), None)
     if info is None:
         raise HTTPException(422, f"unknown broker '{name}'")
     if not info["available"]:
         raise HTTPException(422, f"broker '{name}' unavailable: {info['reason']}")
-    if info["live"]:
-        raise HTTPException(422, f"{what} trade on paper accounts only for now: paper-trade it first")
+    if info["live"] and not confirm_live:
+        raise HTTPException(422, "real-money bot: set confirm_live=true to confirm")
+    return info["live"]
 
 
 def _prices_or_422(symbols: list[str]) -> dict[str, float]:
@@ -299,14 +301,14 @@ def _prices_or_422(symbols: list[str]) -> dict[str, float]:
 @app.post("/bots/dip", response_model=BotOut, status_code=201)
 def create_dip_bot(body: DipBotCreate, session: Session = Depends(get_session)):
     """A dip buyer: watches `symbols` and buys any that fell drop_pct during the last `lookback` days (or hours),
-    selling it back up (dip.py). Paper accounts only for now. The watchlist can change while it runs."""
-    _paper_broker_or_422(body.broker, "dip bots")
+    selling it back up (dip.py). A real-money broker needs confirm_live. The watchlist can change while it runs."""
+    live = _usable_broker_or_422(body.broker, body.confirm_live)
     if clash := _symbol_clash(session, body.broker, body.symbols):
         raise HTTPException(409, f"bot #{clash[1].id} already trades {clash[0]} on {body.broker}; one bot per symbol "
                                  "per real account, or their positions would mix")
     prices = _prices_or_422(body.symbols)  # also the benchmark: the starting watchlist held in equal parts
     now = utcnow()
-    params = body.model_dump(exclude={"name", "broker", "allocated_cash", "symbols"})
+    params = body.model_dump(exclude={"name", "broker", "allocated_cash", "symbols", "confirm_live"})
     bot = Bot(name=body.name or f"Dip buyer on {len(body.symbols)} symbol{'s' if len(body.symbols) > 1 else ''}",
               symbol="DIP", broker=body.broker, status="active", strategy=DIP, allocated_cash=body.allocated_cash,
               cash=body.allocated_cash, peak_equity=body.allocated_cash, universe=body.symbols, benchmark_prices=prices,
@@ -315,8 +317,9 @@ def create_dip_bot(body: DipBotCreate, session: Session = Depends(get_session)):
     session.flush()
     for s in body.symbols:
         session.add(WatchItem(bot_id=bot.id, symbol=s, status="watching", added_at=now))
-    log_event(session, bot.id, "created", f"Created {bot.name}: dip buyer on {bot.broker} with ${bot.allocated_cash:,.2f}, "
-              f"watching {', '.join(body.symbols)}. {_dip_rules_text(bot)}", now=now)
+    log_event(session, bot.id, "created", f"Created {bot.name}: dip buyer on {bot.broker} with ${bot.allocated_cash:,.2f}"
+              f"{' (REAL MONEY)' if live else ''}, watching {', '.join(body.symbols)}. {_dip_rules_text(bot)}",
+              "warning" if live else "info", now)
     session.commit()
     return _bot_out(session, bot)
 
@@ -328,7 +331,8 @@ def _dip_rules_text(bot: Bot) -> str:
                           "bearish news blocks a buy" if bot.news else "", "only in an uptrend" if bot.trend_filter else "",
                           "buys fractions of a share" if bot.fractional else "") if x]
     return (f"Checks every {bot.interval}; buys {dip.fall_label(bot)} under the {dip.window_label(bot)}, "
-            f"{bot.max_positions} slots; sells {sell}, stop {bot.stop_pct:.1%} (then blacklisted)"
+            f"{bot.max_positions} slots; sells {sell}, stop {bot.stop_pct:.1%} (then blacklisted"
+            f"{f' for {bot.reenable_days} trading days' if bot.reenable_days else ''})"
             + (f"; {', '.join(extras)}" if extras else "") + ".")
 
 
@@ -418,8 +422,7 @@ def enable_symbol(bot_id: int, symbol: str, session: Session = Depends(get_sessi
         item = _watch_item(session, bot, symbol)
         if item.status != "blacklisted":
             raise HTTPException(409, f"{item.symbol} isn't blacklisted")
-        item.status, item.blacklisted_at, item.blacklist_reason = "watching", None, None
-        dip.end_fall(item)  # a fall still under way is followed afresh from the next check
+        dip.reenable(item)
         log_event(session, bot.id, "params", f"{item.symbol} re-enabled by user")
         session.commit()
         return _bot_out(session, bot)

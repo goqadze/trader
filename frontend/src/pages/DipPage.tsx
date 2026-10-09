@@ -37,7 +37,7 @@ function BotCard({ bot }: { bot: Bot }) {
       extra={
         <Space size={4}>
           <Tag color={STATUS_COLOR[bot.status]}>{bot.status}</Tag>
-          <Tag color="blue">{bot.broker === "paper" ? "PAPER" : bot.broker}</Tag>
+          <Tag color={bot.live ? "red" : "blue"}>{bot.live ? "LIVE — real money" : bot.broker === "paper" ? "PAPER" : bot.broker}</Tag>
         </Space>
       }
     >

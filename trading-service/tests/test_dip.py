@@ -287,6 +287,29 @@ def test_a_stop_loss_sells_and_blacklists_until_re_enabled(session):
     assert len(broker.sent) == 2 and signals(session, bot)[-1] == ("A", "stop")
 
 
+def test_with_reenable_days_a_stop_blacklists_for_that_many_trading_days(session):
+    bot, broker = _bought(session)
+    bot.reenable_days = 2  # the backtest's "Blacklist lasts 2 trading days": a stop on Monday, buyable again on Wednesday
+    broker.prices["A"] = 97.0
+    check(session, bot, broker, now=T15, df=bars(A=[110] * 5 + [103, 97], B=[50] * 7))
+    a = item(session, bot, "A")
+    assert a.status == "blacklisted" and a.reenable_on == date(2025, 6, 4)
+    assert session.scalars(select(Signal).order_by(Signal.id.desc())).first().outcome.endswith(
+        "Blacklisted until Wed Jun 4 (or until you re-enable it).")
+    tuesday = datetime(2025, 6, 3, 15, 0, 20, tzinfo=timezone.utc)
+    broker.now, broker.prices["A"] = tuesday, 90.0
+    check(session, bot, broker, now=tuesday, df=bars(day=3, A=[100] * 5 + [90], B=[50] * 6))
+    assert len(broker.sent) == 2 and item(session, bot, "A").status == "blacklisted"
+    wednesday = datetime(2025, 6, 4, 15, 0, 20, tzinfo=timezone.utc)
+    broker.now = wednesday
+    check(session, bot, broker, now=wednesday, df=bars(day=4, A=[100] * 5 + [90], B=[50] * 6))
+    a = item(session, bot, "A")
+    assert (a.status, a.reenable_on, a.blacklisted_at) == ("watching", None, None)
+    assert broker.sent[-1][:2] == ("BUY", "A")
+    events = [e.message for e in session.scalars(select(Event).where(Event.bot_id == bot.id))]
+    assert "A re-enabled: its blacklist after the stop-loss is over" in events
+
+
 def test_max_hold_days_sells_on_time(session):
     bot, broker = _bought(session)
     bot.max_hold_days = 2
@@ -662,6 +685,18 @@ def test_a_removed_symbol_that_is_held_still_exits(api):
     assert "still held" in c.get(f"/bots/{bot['id']}/events").json()[0]["message"]
 
 
+def test_the_blacklist_length_is_set_and_changed_and_a_manual_one_waits_for_you(api):
+    c, _, _ = api
+    bot = c.post("/bots/dip", json={**BODY, "reenable_days": 2}).json()
+    assert bot["reenable_days"] == 2
+    assert "then blacklisted for 2 trading days" in c.get(f"/bots/{bot['id']}/events").json()[-1]["message"]
+    assert c.patch(f"/bots/{bot['id']}/dip", json={"reenable_days": 3}).json()["reenable_days"] == 3
+    assert c.patch(f"/bots/{bot['id']}/dip", json={"reenable_days": -1}).status_code == 422
+    w = {x["symbol"]: x for x in c.post(f"/bots/{bot['id']}/watchlist/A/blacklist").json()["watchlist"]}
+    assert w["A"]["status"] == "blacklisted" and w["A"]["reenable_on"] is None
+    assert c.post("/bots/dip", json={**BODY, "symbols": ["C"]}).json()["reenable_days"] == 0
+
+
 def test_the_rules_and_the_news_switch_change_while_it_runs(api):
     c, _, _ = api
     bot = c.post("/bots/dip", json=BODY).json()
@@ -674,7 +709,7 @@ def test_the_rules_and_the_news_switch_change_while_it_runs(api):
     assert c.patch(f"/bots/{bot['id']}", json={"name": "Dips", "stop_pct": 0.07}).status_code == 200
 
 
-def test_dip_bots_are_checked_and_paper_only(api, monkeypatch):
+def test_dip_bots_are_checked_and_real_money_needs_a_yes(api, monkeypatch):
     c, _, _ = api
     assert c.post("/bots/dip", json={**BODY, "symbols": ["A", "BTC-USD"]}).status_code == 422
     assert c.post("/bots/dip", json={**BODY, "symbols": []}).status_code == 422
@@ -682,9 +717,15 @@ def test_dip_bots_are_checked_and_paper_only(api, monkeypatch):
     assert r.status_code == 422 and "at most 40 trading days" in r.text
     r = c.post("/bots/dip", json={**BODY, "symbols": ["A", "ZZZZ"]})
     assert r.status_code == 422 and "no prices for ZZZZ" in r.text
+    r = c.post("/bots/dip", json={**BODY, "broker": "alpaca-live", "confirm_live": True})
+    assert r.status_code == 422 and "ALLOW_LIVE_TRADING" in r.text  # switched off on the server: no real money
     monkeypatch.setattr(main, "catalog", lambda: [{**b, "available": True} for b in real_catalog()])
     r = c.post("/bots/dip", json={**BODY, "broker": "alpaca-live"})
-    assert r.status_code == 422 and "paper accounts only" in r.text
+    assert r.status_code == 422 and "confirm_live" in r.text
+    r = c.post("/bots/dip", json={**BODY, "broker": "alpaca-live", "confirm_live": True})
+    assert r.status_code == 201 and r.json()["live"] is True
+    created = c.get(f"/bots/{r.json()['id']}/events").json()[-1]
+    assert created["level"] == "warning" and "(REAL MONEY)" in created["message"]
 
 
 def test_one_bot_per_symbol_on_a_real_account_counts_the_watchlist(api, monkeypatch):

@@ -23,7 +23,7 @@ export function fromRulesForm(v: RulesForm): DipRules {
     price_tiers: tidyTiers(v.price_tiers), drop_atr: v.drop_atr ?? DEFAULT_RULES.drop_atr,
     lookback: v.lookback, lookback_unit: v.interval === "1d" ? "days" : v.lookback_unit,
     drop_from: v.drop_from, target_mode: v.target_mode, rise_pct: v.rise_pct, stop_pct: v.stop_pct, max_positions: v.max_positions,
-    max_hold_days: v.max_hold_days ?? 0, news: !!v.news, trend_filter: !!v.trend_filter, rebound: v.rebound ?? DEFAULT_RULES.rebound,
+    reenable_days: v.reenable_days ?? 0, max_hold_days: v.max_hold_days ?? 0, news: !!v.news, trend_filter: !!v.trend_filter, rebound: v.rebound ?? DEFAULT_RULES.rebound,
     rebound_pct: v.rebound_pct, fractional: !!v.fractional,
   } as DipRules;
   // A value the form didn't send (an unmounted field) falls back to the default instead of 0, which the API refuses
@@ -277,7 +277,7 @@ export default function RulesFields({ forBot = false, compact = false }: { forBo
       </Row>
       <Row gutter={12}>
         <Col span={span}>
-          <Form.Item name="stop_pct" label="Stop-loss" tooltip="z: sell when it falls this far under your buy, and blacklist the symbol until you re-enable it" rules={[{ required: true }]}>
+          <Form.Item name="stop_pct" label="Stop-loss" tooltip="z: sell when it falls this far under your buy, and blacklist the symbol (see Blacklist lasts)" rules={[{ required: true }]}>
             {pct(0.5, 50, 0.5)}
           </Form.Item>
         </Col>
@@ -287,6 +287,15 @@ export default function RulesFields({ forBot = false, compact = false }: { forBo
           </Form.Item>
         </Col>
       </Row>
+      <Form.Item
+        name="reenable_days"
+        label="Blacklist lasts"
+        tooltip={forBot
+          ? "After a stop-loss the bot doesn't buy that symbol for this many trading days, then watches it again (a stop on Monday with 2: buyable again on Wednesday). 0 = until you re-enable it yourself. You can always re-enable it sooner."
+          : "After a stop-loss the symbol isn't bought for this many trading days. A live bot with the same setting does the same; 0 = for good (a live bot: until you re-enable it)."}
+      >
+        <InputNumber min={0} max={500} addonAfter="trading days (0 = until re-enabled)" style={{ width: "100%" }} />
+      </Form.Item>
       <Form.Item name="fractional" valuePropName="checked" style={{ marginBottom: 4 }}>
         <Switch checkedChildren="Fractional shares" unCheckedChildren="Whole shares" />
       </Form.Item>
