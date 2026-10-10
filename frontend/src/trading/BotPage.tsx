@@ -239,7 +239,8 @@ export default function BotPage() {
 
       {/* ---------- Header: identity + controls ---------- */}
       <Row justify="space-between" align="middle" gutter={[16, 12]} style={{ margin: "8px 0 16px" }}>
-        <Col>
+        {/* The title side wraps its own tags; the buttons stay on the right until the row can't fit both */}
+        <Col flex="1 1 420px" style={{ minWidth: 0 }}>
           <Space align="center" wrap>
             <Typography.Title level={3} style={{ margin: 0 }}>{botTitle(bot)}</Typography.Title>
             <span style={{ color: MUTED }}>{bot.name}</span>
@@ -256,7 +257,7 @@ export default function BotPage() {
           <div style={{ marginTop: 4 }}><MarketStatus status={status.data} bot={bot} /></div>
         </Col>
         {bot.status !== "archived" && (
-          <Col>
+          <Col flex="0 1 auto">
             <Space wrap>
               <Tooltip
                 title={marketOpen && bot.status === "active"

@@ -220,11 +220,12 @@ export default function TradingPage() {
   return (
     <>
       <Row justify="space-between" align="middle" gutter={[16, 12]} style={{ marginBottom: 16 }}>
-        <Col>
+        {/* The title side wraps its own tags; the buttons stay on the right until the row can't fit both */}
+        <Col flex="1 1 420px" style={{ minWidth: 0 }}>
           <Typography.Title level={4} style={{ margin: 0 }}>Trading bots</Typography.Title>
           <MarketStatus status={status.data} />
         </Col>
-        <Col>
+        <Col flex="0 1 auto">
           <Space wrap>
             <Popconfirm
               title="Pause ALL bots?"
