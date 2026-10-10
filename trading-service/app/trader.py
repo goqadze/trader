@@ -88,6 +88,33 @@ def bot_equity(session: Session, bot: Bot, price: float | None) -> float:
     return round(bot.cash + bot.shares * (price or 0.0), 2)
 
 
+def capital(bot: Bot) -> float:
+    """What you put in: the starting capital plus any money added since (the return is measured against it)."""
+    return round(bot.allocated_cash + (bot.added_cash or 0.0), 2)
+
+
+def benchmark_value(bot: Bot, price: float | None) -> float | None:
+    """What buy & hold is worth at `price` (the symbol's; a rotation or dip bot's basket value): the starting capital
+    bought it at benchmark_price, and each addition bought benchmark_added more of it at that day's price."""
+    if not bot.benchmark_price or not price:
+        return None
+    return round(price * (bot.allocated_cash / bot.benchmark_price + (bot.benchmark_added or 0.0)), 2)
+
+
+def add_capital(session: Session, bot: Bot, amount: float, now: datetime) -> None:
+    """Put `amount` more in the bot: its cash, what you put in, the drawdown peak (the breaker measures losses, not
+    deposits) and the buy & hold baseline, which buys its basket with it at today's price. The bot spends it by its
+    own rules: bigger slots for a dip bot's next buys, the next rebalance or buy for the others."""
+    price = bot.last_price or (bot.allocated_cash if bot.strategy in HOLDINGS_STRATEGIES else None)
+    if price and bot.benchmark_price:
+        bot.benchmark_added = (bot.benchmark_added or 0.0) + amount / price
+    bot.cash = round(bot.cash + amount, 2)
+    bot.added_cash = round((bot.added_cash or 0.0) + amount, 2)
+    bot.peak_equity = round(bot.peak_equity + amount, 2)
+    if price:
+        mark_to_market(session, bot, price, now)
+
+
 def fresh_quote(broker: Broker, bot: Bot, now: datetime) -> Quote:
     """A quote we're willing to trade on. Also refreshes the bot's last known price."""
     q = broker.quote(bot.symbol)
@@ -373,6 +400,7 @@ def mark_to_market(session: Session, bot: Bot, price: float, now: datetime) -> N
         snap = EquitySnapshot(bot_id=bot.id, day=day, equity=equity, cash=bot.cash, shares=bot.shares, price=price)
         session.add(snap)
     snap.equity, snap.cash, snap.shares, snap.price, snap.updated_at = equity, bot.cash, bot.shares, price, now
+    snap.benchmark = benchmark_value(bot, price)
 
     bot.peak_equity = max(bot.peak_equity, equity)
     floor = bot.peak_equity * (1 - bot.max_drawdown_pct)

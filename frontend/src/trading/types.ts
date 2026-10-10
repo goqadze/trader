@@ -82,7 +82,9 @@ export interface Bot extends Omit<StrategyParams, "strategy"> {
   broker: string;
   live: boolean;
   status: BotStatus;
-  allocated_cash: number;
+  allocated_cash: number; // the starting capital
+  added_cash: number | null; // money added since (Add money); null = none
+  capital: number; // what was put in: allocated_cash + added_cash; return_pct and buy_hold_return_pct are measured on it
   cash: number;
   shares: number;
   entry_price: number | null;
@@ -132,7 +134,15 @@ export interface Bot extends Omit<StrategyParams, "strategy"> {
   rebound: boolean | null; // null on dip bots from before the option: they buy at once
   rebound_pct: number | null;
   fractional: boolean | null; // dip and rotation bots; null on bots from before the option: whole shares
+  top_up?: boolean | null; // dip bots: money was added with "top up"; its next check that can buy tops up the holdings
   watchlist: WatchItem[];
+}
+
+/** More money for a running bot (POST /bots/{id}/capital). */
+export interface CapitalAdd {
+  amount: number;
+  top_up?: boolean; // dip bots: bring each holding up to a full slot at the next check that can buy
+  confirm_live?: boolean; // required on a real-money bot
 }
 
 export interface Decision {
@@ -177,6 +187,7 @@ export interface Snapshot {
   cash: number;
   shares: number;
   price: number;
+  benchmark?: number | null; // buy & hold's value that day, added money included (null on days from before)
 }
 
 export interface TradingEvent {

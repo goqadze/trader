@@ -312,6 +312,21 @@ def test_create_a_rotation_bot_and_trade_it_through_the_api(api):
     assert c.post(f"/bots/{bot['id']}/archive").json()["status"] == "archived"
 
 
+def test_money_added_to_a_rotation_bot_goes_in_at_its_next_rebalance(api):
+    c, clock, broker = api
+    bot = c.post("/bots/rotation", json=BODY).json()
+    clock["t"] = broker.now = OPEN
+    c.post(f"/bots/{bot['id']}/run")  # 50 A, 100 B: half of 10,000 each
+    r = c.post(f"/bots/{bot['id']}/capital", json={"amount": 10_000, "top_up": True})
+    assert r.status_code == 422 and "next rebalance" in r.text
+    r = c.post(f"/bots/{bot['id']}/capital", json={"amount": 10_000})
+    assert r.status_code == 200 and (r.json()["capital"], r.json()["return_pct"], r.json()["buy_hold_return_pct"]) == (20_000, 0.0, 0.0)
+    assert c.get(f"/bots/{bot['id']}/events").json()[0]["message"].endswith(
+        "Invested at its next rebalance: each pick 1/2 of the equity.")
+    d = c.post(f"/bots/{bot['id']}/run").json()
+    assert "Done: holding 100 A, 200 B" in d["outcome"]  # each pick topped up to half of 20,000
+
+
 def test_rotation_bots_are_checked_and_paper_only(api, monkeypatch):
     c, _, _ = api
     assert c.post("/bots/rotation", json={**BODY, "top_n": 5}).status_code == 422

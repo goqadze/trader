@@ -19,6 +19,8 @@ the end of each 5/15/30/60-minute bar from the open (9:45, 10:00 ... 15:45 for 1
      With `rebound` (wait for the turn) a fall into the buy zone isn't bought yet: the bot follows it -- the reference
      it fell from, its lowest price since -- and buys once the price is rebound_pct above that low (bearish turned
      bullish, a "rebound" signal) while still under the reference. Back at the reference first = that dip is over.
+     Money added while it runs makes the slots bigger from the next buy on. Added with "top up" (bot.top_up), the
+     first check that can buy first brings each holding up to a full slot at today's price (see `top_up`).
 Every signal is saved (Signal) for your information, whatever the bot did about it: the dashboard can notify you.
 Where it differs from the backtest: real quotes (Yahoo's bars for the window, the broker's quote before each trade),
 real fills, and a check runs at the first scheduler tick after its moment (within ~30 s). The stop is checked at
@@ -46,9 +48,9 @@ from .config import settings
 from .decision_client import get_news
 from .market import NY, ny_date, session_bounds, sessions_after, sessions_since, slot_window
 from .models import Bot, Decision, Holding, Order, Signal, WatchItem
-from .rotation import _quote, yahoo_closes
+from .rotation import MIN_TRADE_OF_SLOT, _quote, yahoo_closes
 from .schemas import DEFAULT_PRICE_TIERS
-from .shares import affordable, fmt_qty
+from .shares import MIN_FRACTIONAL_ORDER, affordable, fmt_qty
 from .trader import _describe, bot_equity, holdings, log_event, mark_to_market, open_orders, submit_order
 
 logger = logging.getLogger("trading-service")
@@ -510,15 +512,32 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
     in_use = len([s for s in held if s not in sold]) + len(pending - set(held))
     free = bot.max_positions - in_use
     budget = bot.cash
-    if candidates and buying:
+    topping = bool(bot.top_up) and any(s not in sold for s in held)
+    paid = True  # the account could tell what it can pay
+    if (candidates or topping) and buying:
         try:
             bp = broker.buying_power()  # a real account: never more than it can pay
         except BrokerError as e:
-            bp = 0.0
+            bp, paid = 0.0, False
             lines.append(f"Buying power unknown ({e}): no buys this check")
         if bp is not None:
             budget = min(budget, bp)
     slot = bot_equity(session, bot, None) / bot.max_positions
+    topped: list[str] = []
+    if topping:  # money was added with "top up": the holdings get theirs first (see top_up)
+        if trade and not buying:
+            lines.append("Top-up of the holdings: waits until the bot is resumed")
+        elif trade and not paid:
+            lines.append("Top-up of the holdings: waits for the next check (buying power unknown)")
+        else:  # a preview shows it; a check that can buy does it, once
+            ups, spent, topped = top_up(session, bot, broker, now, held, set(sold) | pending, by_symbol, slot, budget,
+                                        decide, send=trade)
+            lines.extend(ups)
+            budget -= spent
+            if trade:
+                bot.top_up = None
+    elif bot.top_up and trade:
+        bot.top_up = None  # nothing held any more: nothing to top up
     trend = None
     for item in candidates:
         s, ref = item.symbol, buy_reference(item)
@@ -641,15 +660,16 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
         session.commit()
         return None
     d = decide()
-    d.action = "TRADE" if bought and sold else "BUY" if bought else "SELL" if sold else "HOLD"
+    d.action = "TRADE" if (bought or topped) and sold else "BUY" if bought or topped else "SELL" if sold else "HOLD"
     d.steps = [f"Buy {fall_label(bot)} under the {window_label(bot)}"
                + (f" once it turns up {bot.rebound_pct:.1%} from its low" if rebound else "") + "; sell at "
                f"{'the reference' if bot.target_mode == 'reference' else f'+{bot.rise_pct:.0%}'}, stop {bot.stop_pct:.0%}"
                + ("; fractions of a share" if bot.fractional else "")] + lines
     in_zone = [i.symbol for i in candidates]
-    if bought or sold:
-        d.reasoning = "; ".join(filter(None, [f"Bought {', '.join(bought)}" if bought else "",
-                                              f"sold {', '.join(sold)}" if sold else ""])) + "."
+    if bought or sold or topped:
+        d.reasoning = _sentence("; ".join(filter(None, [f"bought {', '.join(bought)}" if bought else "",
+                                                        f"topped up {', '.join(topped)}" if topped else "",
+                                                        f"sold {', '.join(sold)}" if sold else ""])))
     else:
         waiting = [i.symbol for i in items if rebound and i.dip_reference and i.symbol not in turned]
         why = "; ".join(f"{s}: {notes[s]}" for s in in_zone if s in notes)
@@ -659,6 +679,66 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
     d.outcome = ("Preview only (market closed or bot paused): no order sent. " if kind == "preview" else "") + d.reasoning
     session.commit()
     return d
+
+
+def top_up(session: Session, bot: Bot, broker: Broker, now: datetime, held: dict[str, Holding], skip: set[str],
+           by_symbol: dict[str, WatchItem], slot: float, budget: float, decide, send: bool) -> tuple[list[str], float, list[str]]:
+    """Money was added with "top up" (POST /bots/{id}/capital): bring each holding up to a full slot -- 1/max_positions
+    of the equity now, the size a new buy gets -- at today's price, so the positions already open get their share of it
+    too, like a rotation bot's top-up. The holding's exit levels follow its new average buy: the stop stop_pct under it,
+    the target still the price its fall started from (or rise_pct above the new average); its days held still count
+    from the first buy. Left as they are: holdings in `skip` (sold this check, an order pending), ones no longer on the
+    watchlist or blacklisted, and ones less than MIN_TRADE_OF_SLOT of a slot short of it (the top-up would mostly pay
+    slippage). Never more than `budget`. send=False (a preview): says what it would buy.
+    Returns (one line per holding, what it spent or would spend, the symbols topped up)."""
+    lines: list[str] = []
+    spent = 0.0
+    topped: list[str] = []
+    for s, h in sorted(held.items()):
+        if s in skip:
+            continue
+        item = by_symbol.get(s)
+        if item is None or item.status != "watching":
+            lines.append(f"{s}: not topped up ({'no longer on the watchlist' if item is None else 'blacklisted'})")
+            continue
+        try:
+            q = _quote(broker, s, now, fresh=send)
+        except BrokerError as e:
+            lines.append(f"{s}: not topped up, no fresh quote ({e})")
+            continue
+        value = h.shares * q.price
+        short = slot - value
+        if short < max(MIN_TRADE_OF_SLOT * slot, MIN_FRACTIONAL_ORDER):
+            lines.append(f"{s}: not topped up, already a full slot (${value:,.2f} of ${slot:,.2f})")
+            continue
+        unit = q.price * (1 + bot.slippage_pct) * (1 + bot.fee_pct)
+        split, whole_why = bool(bot.fractional), ""
+        if split:
+            try:
+                split = broker.fractionable(s)
+                whole_why = "" if split else f"; {s} can't be bought in fractions at {broker.name}"
+            except BrokerError as e:
+                split, whole_why = False, f"; fractions unknown ({e})"
+        shares = affordable(min(short, budget - spent), unit, split)
+        if shares <= 0:
+            lines.append(f"{s}: not topped up, ${min(short, budget - spent):,.2f} of the ${short:,.2f} it is short "
+                         f"{'is under the $1 smallest fractional order' if split else f'buys no whole share at ${q.price:.2f}'}"
+                         f"{whole_why}")
+            continue
+        spent += shares * unit
+        if not send:
+            lines.append(f"{s}: would top up {fmt_qty(shares)} sh at ${q.price:.2f} (${shares * unit:,.2f}): "
+                         f"${value:,.2f} -> a full slot of ${slot:,.2f}{whole_why}")
+            continue
+        order = submit_order(session, bot, broker, "BUY", shares, "top-up", now, decide(), symbol=s,
+                             reference_price=h.reference_price)
+        topped.append(s)
+        after = (f"; now {fmt_qty(h.shares)} sh, average ${h.entry_price:.2f}, stop ${h.stop_price:.2f}, target "
+                 f"${h.target_price:.2f}" if order.status in ("filled", "partially_filled") and h.entry_price else "")
+        lines.append(f"{s}: topped up to a full slot of ${slot:,.2f} (was ${value:,.2f}): {_describe(order)}{after}{whole_why}")
+    if send:
+        log_event(session, bot.id, "order", "Top-up after adding capital: " + ("; ".join(lines) or "nothing to top up"), now=now)
+    return lines, spent, topped
 
 
 def sell_one(session: Session, bot: Bot, broker: Broker, symbol: str, now: datetime) -> Order:

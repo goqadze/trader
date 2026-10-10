@@ -10,7 +10,8 @@ from sqlalchemy import select
 from app.brokers import BrokerError
 from app.decision_client import SignalError
 from app.models import Decision, EquitySnapshot, Event, Order
-from app.trader import evaluate, fresh_quote, reconcile, submit_order, sync_pending, watch
+from app.trader import (add_capital, benchmark_value, capital, evaluate, fresh_quote, reconcile, submit_order, sync_pending,
+                        watch)
 
 T = at(19, 30)  # Monday 15:30 New York, market open
 
@@ -255,3 +256,39 @@ def test_a_flat_bot_does_not_need_a_fresh_quote(session):
     broker = FakeBroker(price=42.0, now=T, quote_at=T - timedelta(hours=1))
     assert watch(session, bot, broker, T) is None  # no BrokerError
     assert bot.last_price == 42.0
+
+
+# --- Adding money --------------------------------------------------------------------------------
+
+def test_added_money_is_put_in_not_profit_and_buy_and_hold_gets_it_the_same_day(session):
+    bot = make_bot(session)  # $10,000; buy & hold bought at $100
+    bot.last_price = 110.0  # the stock is 10% up when $5,500 more goes in
+    add_capital(session, bot, 5_500, T)
+    assert (bot.cash, bot.added_cash, capital(bot), bot.peak_equity) == (15_500, 5_500, 15_500, 15_500)
+    assert bot.allocated_cash == 10_000 and bot.benchmark_price == 100.0  # the start stays as it was
+    assert benchmark_value(bot, 110.0) == 16_500  # its 100 shares, and the 50 that $5,500 buys at $110
+    assert benchmark_value(bot, 121.0) == 18_150  # 150 shares
+    snap = session.scalar(select(EquitySnapshot))
+    assert (snap.equity, snap.benchmark, snap.price) == (15_500, 16_500, 110.0)
+    add_capital(session, bot, 1_000, T)  # the same day again: still one point for the day
+    assert bot.added_cash == 6_500 and capital(bot) == 16_500
+    assert session.scalar(select(EquitySnapshot)).equity == 16_500
+    assert benchmark_value(bot, 110.0) == 17_500
+
+
+def test_without_added_money_buy_and_hold_is_the_start_alone(session):
+    bot = make_bot(session)
+    assert capital(bot) == 10_000 and benchmark_value(bot, 120.0) == 12_000 and benchmark_value(bot, None) is None
+    watch(session, bot, FakeBroker(price=120.0, now=T), T)
+    assert session.scalar(select(EquitySnapshot)).benchmark == 12_000
+
+
+def test_added_money_does_not_hide_a_loss_from_the_drawdown_breaker(session):
+    bot = _long(session, max_drawdown_pct=0.1, peak_equity=10_000.0)
+    bot.stop_price = 50.0  # far away, so only the breaker can act
+    watch(session, bot, FakeBroker(price=82.0, now=T), T)  # 5000 + 50*82 = 9100: 9% down, still on
+    add_capital(session, bot, 5_000, T)
+    assert bot.peak_equity == 15_000 and bot.status == "active"  # the $900 lost is still counted
+    watch(session, bot, FakeBroker(price=69.0, now=T), T)  # 10000 + 50*69 = 13450: over 10% under 15000
+    assert bot.status == "paused"
+

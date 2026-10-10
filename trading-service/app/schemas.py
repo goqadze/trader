@@ -172,6 +172,14 @@ class DipBotCreate(DipRules):
         return out
 
 
+class CapitalAdd(BaseModel):
+    """More money for a running bot (POST /bots/{id}/capital)."""
+
+    amount: float = Field(gt=0, le=10_000_000)
+    top_up: bool = False  # dip bots: the next check that can buy brings each holding up to a full slot first
+    confirm_live: bool = False  # required on a real-money bot
+
+
 class DipBotUpdate(BaseModel):
     """Change a dip buyer's rules while it runs; only the fields sent change. New rules apply from the next check; a
     position already held keeps the target and stop it was bought with."""
@@ -532,7 +540,8 @@ class BotOut(StrategyParams):
     broker: str
     live: bool
     status: str
-    allocated_cash: float
+    allocated_cash: float  # the starting capital
+    added_cash: float | None = None  # money added since (None = none)
     cash: float
     shares: int
     entry_price: float | None
@@ -550,6 +559,7 @@ class BotOut(StrategyParams):
     # --- derived for the dashboard ---
     next_decision_at: datetime | None  # when the scheduler will next decide for this bot (None = paused/archived)
     equity: float
+    capital: float  # what you put in: allocated_cash + added_cash; return_pct and buy_hold_return_pct are measured on it
     return_pct: float
     unrealized_pnl: float
     buy_hold_return_pct: float | None
@@ -582,6 +592,7 @@ class BotOut(StrategyParams):
     trend_filter: bool | None = None
     rebound: bool | None = None
     rebound_pct: float | None = None
+    top_up: bool | None = None  # money was added with "top up": the next check that can buy tops up the holdings
     watchlist: list[WatchItemOut] = []
 
 
@@ -632,6 +643,7 @@ class SnapshotOut(BaseModel):
     cash: float
     shares: int
     price: float
+    benchmark: float | None = None  # buy & hold's value that day, money added included (None on days from before)
 
 
 class EventOut(BaseModel):

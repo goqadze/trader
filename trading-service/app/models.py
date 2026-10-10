@@ -97,7 +97,7 @@ class Bot(Base):
     max_drawdown_pct: Mapped[float] = mapped_column(Float, default=0.2)
 
     # --- Capital and the current position (the bot's own "sub-account") ---
-    allocated_cash: Mapped[float] = mapped_column(Float)  # starting capital, never changes
+    allocated_cash: Mapped[float] = mapped_column(Float)  # starting capital, never changes (added money: added_cash)
     cash: Mapped[float] = mapped_column(Float)  # uninvested cash right now
     shares: Mapped[int] = mapped_column(Integer, default=0)  # long-only, whole shares
     entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # average fill of the open position
@@ -106,6 +106,11 @@ class Bot(Base):
     target_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     realized_pnl: Mapped[float] = mapped_column(Float, default=0.0)  # sum of closed trades' profit/loss
     peak_equity: Mapped[float] = mapped_column(Float)  # best equity so far, for the drawdown breaker
+    # Money you added while it runs (POST /bots/{id}/capital; NULL = none): what you put in is allocated_cash + this,
+    # which the return is measured against. The buy & hold baseline "buys" its basket with each addition at that
+    # day's price, benchmark_added more units of it: see trader.benchmark_value
+    added_cash: Mapped[float | None] = mapped_column(Float, nullable=True)
+    benchmark_added: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # --- Market data bookkeeping ---
     benchmark_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # price at creation: buy & hold baseline
@@ -150,6 +155,8 @@ class Bot(Base):
     # After a stop-loss, buy that symbol again this many trading days later (the backtest's "Blacklist lasts");
     # 0 / NULL = only once you re-enable it
     reenable_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Capital was added with "top up": the next check that can buy brings each holding up to a full slot (dip.top_up)
+    top_up: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
@@ -402,6 +409,9 @@ class EquitySnapshot(Base):
     cash: Mapped[float] = mapped_column(Float)
     shares: Mapped[int] = mapped_column(Integer)
     price: Mapped[float] = mapped_column(Float)
+    # The buy & hold baseline's value that day, the money added since the start included (NULL on days from before:
+    # allocated_cash x price / benchmark_price then)
+    benchmark: Mapped[float | None] = mapped_column(Float, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
 
 

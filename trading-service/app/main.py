@@ -25,11 +25,12 @@ from .db import get_session, init_db, utcnow
 from .market import is_open, next_decision_time, ny_date, session_bounds
 from .models import (DIP, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPreset, DipStudy, DipTest, EquitySnapshot, Event,
                      Notification, Order, Signal, WatchItem)
-from .schemas import (BotCreate, BotOut, BotUpdate, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn, DipPresetOut,
+from .schemas import (BotCreate, BotOut, BotUpdate, CapitalAdd, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn, DipPresetOut,
                       DipStudyIn, DipStudyOut, DipTestDetailOut, DipTestIn, DipTestOut,
                       EmailAlertsIn, EmailAlertsOut, EventOut, HoldingOut, NotificationOut, NotifyCategoryOut, OrderOut,
                       RotationBotCreate, SignalOut, SnapshotOut, StatusOut, WatchItemOut, WatchSymbols, check_window)
-from .trader import bot_equity, bot_lock, close_position, evaluate, holdings, log_event, open_orders, resting_stop
+from .trader import (add_capital, benchmark_value, bot_equity, bot_lock, capital, close_position, evaluate, holdings,
+                     log_event, open_orders, resting_stop)
 
 logger = logging.getLogger("trading-service")
 logging.basicConfig(level=logging.INFO)
@@ -102,10 +103,11 @@ def _bot_out(session: Session, bot: Bot) -> BotOut:
         **{c: getattr(bot, c) for c in BotOut.model_fields if hasattr(bot, c)},
         "live": live,
         "equity": equity,
-        "return_pct": round((equity / bot.allocated_cash - 1) * 100, 2),
+        "capital": capital(bot),
+        "return_pct": round((equity / capital(bot) - 1) * 100, 2),
         "unrealized_pnl": round(sum(r.unrealized_pnl for r in rows) if rows else
                                 bot.shares * price - bot.cost_basis if bot.shares else 0.0, 2),
-        "buy_hold_return_pct": round((price / bot.benchmark_price - 1) * 100, 2) if bot.benchmark_price and price else None,
+        "buy_hold_return_pct": round((bh / capital(bot) - 1) * 100, 2) if (bh := benchmark_value(bot, price)) else None,
         "pending_order": bool(open_orders(session, bot)),
         "stop_at_broker": resting_stop(session, bot) is not None,
         "next_decision_at": scheduler.next_decision_at(bot, now),
@@ -557,6 +559,63 @@ def archive_bot(bot_id: int, session: Session = Depends(get_session)):
         if bot.shares or holdings(session, bot) or open_orders(session, bot) or resting_stop(session, bot):
             raise HTTPException(409, "close the position (and let pending orders finish) before archiving")
         return _set_status(session, bot, ("active", "paused"), "archived", "Archived by user")
+
+
+CAPITAL_MAX = 10_000_000  # all the money put in one bot, like the most it can start with
+
+
+@app.post("/bots/{bot_id}/capital", response_model=BotOut)
+def add_bot_capital(bot_id: int, body: CapitalAdd, session: Session = Depends(get_session)):
+    """Put more money in a running bot. It spends it by its own rules: a dip bot's slots (1/max_positions of the
+    equity) are bigger from its next buy on, and with top_up its next check that can buy first brings each holding up to
+    a full slot (dip.top_up); a rotation bot sizes its picks with it at its next rebalance; a single-symbol bot's next
+    buy uses it. The return is measured on all the money put in from then on, and buy & hold gets the same money on the
+    same day (trader.add_capital). On a real account, move the money to the broker yourself: no bot spends more than
+    the account's buying power."""
+    with _Locked(bot_id):
+        bot = _get_bot(session, bot_id)
+        if bot.status == "archived":
+            raise HTTPException(409, "bot is archived")
+        if body.top_up and bot.strategy != DIP:
+            raise HTTPException(422, "only a dip bot tops up its holdings; a rotation bot resizes them at its next rebalance")
+        live = next((b["live"] for b in catalog() if b["name"] == bot.broker), False)
+        if live and not body.confirm_live:
+            raise HTTPException(422, "real-money bot: set confirm_live=true to confirm")
+        if capital(bot) + body.amount > CAPITAL_MAX:
+            raise HTTPException(422, f"at most ${CAPITAL_MAX:,.0f} in one bot; it has ${capital(bot):,.2f}")
+        broker = _broker_or_400(bot)
+        now = utcnow()
+        add_capital(session, bot, body.amount, now)
+        held = holdings(session, bot)
+        if bot.strategy == DIP:
+            slot = f"${bot_equity(session, bot, None) / bot.max_positions:,.2f} (1/{bot.max_positions} of the equity)"
+            if body.top_up and held:
+                bot.top_up = True
+                how = (f"Its next check that can buy tops up its {len(held)} holding{'s' if len(held) > 1 else ''} to a "
+                       f"full slot of about {slot}, then buys new dips with the same slots.")
+            else:
+                how = (("Nothing held to top up. " if body.top_up else "What it holds stays as it is. ")
+                       + f"New buys get slots of about {slot}.")
+        elif bot.strategy == ROTATION:
+            how = f"Invested at its next rebalance: each pick 1/{bot.top_n} of the equity."
+        else:
+            how = f"Its next buy uses {bot.position_pct:.0%} of its cash."
+        note = ""
+        if bot.broker in SHARED_ACCOUNT_BROKERS:  # a real account: does it have the money?
+            try:
+                bp = broker.buying_power()
+            except BrokerError as e:
+                note = f" The account's buying power is unknown ({e})."
+            else:
+                cash = sum(b.cash for b in session.scalars(select(Bot).where(Bot.broker == bot.broker, Bot.status != "archived")))
+                if bp is not None and bp < cash:
+                    note = (f" The {bot.broker} account can spend ${bp:,.2f}, less than the ${cash:,.2f} its bots hold as "
+                            "cash: their buys stop at what the account can pay. Move the money to the account first.")
+        log_event(session, bot.id, "capital", f"Added ${body.amount:,.2f}{' of REAL MONEY' if live else ''}: "
+                  f"${capital(bot):,.2f} put in (started with ${bot.allocated_cash:,.2f}). {how}{note}",
+                  "warning" if live or note else "info", now)
+        session.commit()
+        return _bot_out(session, bot)
 
 
 @app.post("/bots/{bot_id}/run", response_model=DecisionOut)

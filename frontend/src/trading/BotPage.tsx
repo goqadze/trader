@@ -1,5 +1,5 @@
 import {
-  ArrowLeftOutlined, CaretRightOutlined, EditOutlined, InboxOutlined, PauseOutlined, ThunderboltOutlined,
+  ArrowLeftOutlined, CaretRightOutlined, DollarOutlined, EditOutlined, InboxOutlined, PauseOutlined, ThunderboltOutlined,
 } from "@ant-design/icons";
 import {
   Alert, App as AntApp, Button, Card, Col, Descriptions, Empty, Popconfirm, Row, Space, Statistic, Table, Tabs, Tag, Tooltip, Typography,
@@ -8,6 +8,7 @@ import type { ColumnsType } from "antd/es/table";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { CartesianGrid, Legend, Line, LineChart, ReferenceDot, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
+import AddMoney from "./AddMoney";
 import { tradingApi } from "./api";
 import BotForm from "./BotForm";
 import {
@@ -48,12 +49,14 @@ const decisionColumns: ColumnsType<Decision> = [
 
 const REASON_COLOR: Record<string, string> = {
   "stop-loss": "red", target: "green", manual: "purple", rotation: "geekblue", rebalance: "blue", dip: "cyan", time: "gold",
+  "top-up": "lime",
 };
 const REASON_TIP: Record<string, string> = {
   rotation: "A rotation bot moving into or out of this symbol",
   rebalance: "A rotation bot trimming or topping up a symbol it keeps, back to an equal part",
   dip: "A dip buyer buying a fall",
   time: "A dip buyer selling a position held its maximum number of days",
+  "top-up": "A dip buyer bringing a holding up to a full slot with money you added",
 };
 
 /** `symbol`: the bot's symbol, for orders saved before each order stored its own. */
@@ -115,7 +118,8 @@ function EquityCard({ bot, snapshots, orders }: { bot: Bot; snapshots: Snapshot[
   const data = snapshots.map((s) => ({
     day: s.day,
     bot: Math.round(s.equity * 100) / 100,
-    buyhold: bot.benchmark_price ? Math.round((bot.allocated_cash * s.price) / bot.benchmark_price * 100) / 100 : null,
+    // Saved per day since money can be added (it buys more on that day); days from before: the starting capital alone
+    buyhold: s.benchmark ?? (bot.benchmark_price ? Math.round((bot.allocated_cash * s.price) / bot.benchmark_price * 100) / 100 : null),
   }));
   // Mark filled trades on the curve (orders are timestamped; snapshots are New York trading days)
   const nyDay = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
@@ -157,6 +161,7 @@ export default function BotPage() {
   const id = Number(useParams().id);
   const { message, modal } = AntApp.useApp();
   const [editOpen, setEditOpen] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
   // One poll for everything on the page, so all panels show the same moment
@@ -242,6 +247,11 @@ export default function BotPage() {
             <Tag color={bot.live ? "red" : "blue"}>{bot.live ? "LIVE — real money" : bot.broker === "paper" ? "PAPER (simulated)" : bot.broker}</Tag>
             {bot.pending_order && <Tag color="processing">order pending</Tag>}
             {bot.rebalancing && !bot.pending_order && <Tag color="processing">rebalancing</Tag>}
+            {bot.top_up && (
+              <Tooltip title="You added money with top up: its next check that can buy brings each holding up to a full slot">
+                <Tag color="processing">top-up at the next check</Tag>
+              </Tooltip>
+            )}
           </Space>
           <div style={{ marginTop: 4 }}><MarketStatus status={status.data} bot={bot} /></div>
         </Col>
@@ -268,6 +278,9 @@ export default function BotPage() {
               ) : (
                 <Button type="primary" icon={<CaretRightOutlined />} loading={busy === "resume"} onClick={() => act("resume", () => tradingApi.resume(bot.id), "Resumed")}>Resume</Button>
               )}
+              <Tooltip title={dip ? "More money for this bot: bigger slots, and a top-up of what it holds if you like" : "More money for this bot"}>
+                <Button icon={<DollarOutlined />} onClick={() => setAddOpen(true)}>Add money</Button>
+              </Tooltip>
               <Popconfirm
                 title={many ? `Sell all ${bot.holdings.length} holdings at market now?` : `Sell all ${bot.shares} ${bot.symbol} at market now?`}
                 description={many && bot.status === "active"
@@ -312,7 +325,11 @@ export default function BotPage() {
 
       {/* ---------- KPIs ---------- */}
       <Row gutter={[16, 16]}>
-        <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="Equity" value={usd(bot.equity)} /><span style={{ color: MUTED, fontSize: 12 }}>of {usd(bot.allocated_cash, 0)} allocated</span></Card></Col>
+        <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="Equity" value={usd(bot.equity)} />
+          <Tooltip title={bot.added_cash ? `${usd(bot.allocated_cash)} at the start, ${usd(bot.added_cash)} added since` : undefined}>
+            <span style={{ color: MUTED, fontSize: 12 }}>of {usd(bot.capital, 0)} {bot.added_cash ? "put in" : "allocated"}</span>
+          </Tooltip>
+        </Card></Col>
         <Col xs={12} md={8} xl={4}>
           <Card size="small">
             <Statistic title="Return" value={pct(bot.return_pct)} valueStyle={{ color: pnlColor(bot.return_pct) }} />
@@ -456,6 +473,8 @@ export default function BotPage() {
         />
       </Card>
 
+      <AddMoney bot={bot} open={addOpen} onClose={() => setAddOpen(false)}
+        onAdded={() => { message.success("Money added"); setAddOpen(false); page.reload(); }} />
       {dip ? (
         <DipEditForm open={editOpen} bot={bot} onCancel={() => setEditOpen(false)} onSaved={() => { message.success("Rules saved"); setEditOpen(false); page.reload(); }} />
       ) : rotation ? (

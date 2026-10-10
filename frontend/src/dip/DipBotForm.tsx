@@ -120,7 +120,7 @@ export default function DipBotForm({ open, initial, brokers, onCancel, onSubmit 
             </Form.Item>
           </Col>
           <Col span={10}>
-            <Form.Item name="allocated_cash" label="Capital for this bot" tooltip="The bot never spends more than this; fixed for the bot's life">
+            <Form.Item name="allocated_cash" label="Capital for this bot" tooltip="The bot never spends more than this. You can add more later (Add money on its page)">
               <InputNumber min={100} step={1000} addonBefore="$" style={{ width: "100%" }} />
             </Form.Item>
           </Col>

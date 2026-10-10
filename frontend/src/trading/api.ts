@@ -4,7 +4,7 @@
 import type { DipBotCreate, DipBotUpdate, DipPreset, DipPresetConfig, DipSignal, DipStudy, DipTest, DipTestDetail } from "../dip/types";
 import { request as http } from "../http";
 import type {
-  Bot, BotCreate, BotUpdate, Decision, EmailAlert, EmailAlerts, EmailAlertsSave, Order, RotationBotCreate, RotationBotUpdate, Snapshot,
+  Bot, BotCreate, BotUpdate, CapitalAdd, Decision, EmailAlert, EmailAlerts, EmailAlertsSave, Order, RotationBotCreate, RotationBotUpdate, Snapshot,
   TradingEvent, TradingStatus,
 } from "./types";
 
@@ -22,6 +22,7 @@ export const tradingApi = {
   pause: (id: number) => request<Bot>("POST", `/bots/${id}/pause`),
   resume: (id: number) => request<Bot>("POST", `/bots/${id}/resume`),
   archive: (id: number) => request<Bot>("POST", `/bots/${id}/archive`),
+  addCapital: (id: number, body: CapitalAdd) => request<Bot>("POST", `/bots/${id}/capital`, body),
   runNow: (id: number) => request<Decision>("POST", `/bots/${id}/run`),
   closePosition: (id: number) => request<Order | Order[]>("POST", `/bots/${id}/close`), // a rotation bot: one order per holding
   halt: () => request<{ paused: number }>("POST", "/halt"),

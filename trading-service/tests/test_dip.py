@@ -12,7 +12,7 @@ from app import dip, main, rotation, scheduler
 from app.brokers import BrokerError
 from app.brokers import catalog as real_catalog
 from app.models import DIP, Decision, Event, Holding, Order, Signal, WatchItem
-from app.trader import holdings
+from app.trader import add_capital, holdings
 
 T = datetime(2025, 6, 2, 15, 0, 20, tzinfo=timezone.utc)  # Monday June 2 2025, 11:00:20 New York
 T15 = T + timedelta(minutes=15)  # the next check (11:15)
@@ -603,6 +603,109 @@ def test_the_scheduler_checks_once_per_interval(session, monkeypatch):
     assert len(calls) == 2
 
 
+# --- Adding money --------------------------------------------------------------------------------------
+
+AFTER = bars(A=[110] * 5 + [103, 100], B=[50] * 7)  # by 11:15 A is at 100: held from 103, over its stop 97.85
+
+
+def _topping(session, amount=10_000.0, **kw):
+    """Holding 48 A bought at $103 (half the $10,000), then `amount` more added with "top up"; A is at $100 now."""
+    bot = make_dip(session, **kw)
+    broker = FakeBroker(now=T, prices=dict(QUOTES))
+    check(session, bot, broker)
+    add_capital(session, bot, amount, T15)
+    bot.top_up = True
+    session.commit()
+    broker.now, broker.prices["A"] = T15, 100.0
+    return bot, broker
+
+
+def test_added_money_with_top_up_brings_a_holding_up_to_a_full_slot(session):
+    bot, broker = _topping(session)
+    assert bot.cash == 15_056 and bot.peak_equity == 20_000
+    d = check(session, bot, broker, now=T15, df=AFTER)
+    # equity 15,056 + 48 x $100 = 19,856: a slot is 9,928; A is worth 4,800, so 5,128 more buys 51 at $100
+    assert broker.sent == [("BUY", "A", 48), ("BUY", "A", 51)]
+    order = session.scalars(select(Order).order_by(Order.id.desc())).first()
+    assert (order.reason, order.reference_price) == ("top-up", 110.0)
+    h = session.scalar(select(Holding).where(Holding.symbol == "A"))
+    # the levels follow the new average buy (48 x 103 + 51 x 100) / 99; the target is still where the fall started
+    assert (h.shares, h.entry_price, h.stop_price, h.target_price) == (99, 101.4545, 96.38, 110.0)
+    assert h.cost_basis == 10_044 and bot.cash == 9_956 and bot.top_up is None
+    assert d.action == "BUY" and d.reasoning == "Topped up A."
+    assert any(x.startswith("A: topped up to a full slot of $9,928.00 (was $4,800.00): BUY 51 sh filled @ $100.00; now "
+                            "99 sh, average $101.45, stop $96.38, target $110.00") for x in d.steps)
+    log = session.scalars(select(Event).where(Event.message.startswith("Top-up"))).one()
+    assert "BUY 51 sh filled" in log.message
+    # Done once: the next check doesn't top up again
+    check(session, bot, broker, now=T15 + timedelta(minutes=15), df=bars(A=[110] * 5 + [103, 100, 100], B=[50] * 8))
+    assert len(broker.sent) == 2
+
+
+def test_a_top_up_waits_while_paused_and_a_preview_only_shows_it(session):
+    bot, broker = _topping(session)
+    bot.status = "paused"
+    check(session, bot, broker, now=T15, df=AFTER)
+    assert broker.sent == [("BUY", "A", 48)] and bot.top_up is True
+    d = check(session, bot, broker, now=T15, df=AFTER, kind="manual")
+    assert "Top-up of the holdings: waits until the bot is resumed" in d.steps and bot.top_up is True
+    d = check(session, bot, broker, now=T15, df=AFTER, kind="preview")
+    assert "A: would top up 51 sh at $100.00 ($5,100.00): $4,800.00 -> a full slot of $9,928.00" in d.steps
+    assert len(broker.sent) == 1 and bot.top_up is True
+    bot.status = "active"
+    check(session, bot, broker, now=T15, df=AFTER)
+    assert broker.sent[-1] == ("BUY", "A", 51) and bot.top_up is None
+
+
+def test_a_top_up_goes_first_and_new_buys_get_the_bigger_slots(session):
+    bot, broker = _topping(session)
+    broker.prices["B"] = 45.0
+    check(session, bot, broker, now=T15, df=bars(A=[110] * 5 + [103, 100], B=[50] * 6 + [45]))
+    # A tops up to a slot of 9,928, then B (10% under its high) gets a whole slot: 220 x $45 = 9,900
+    assert broker.sent == [("BUY", "A", 48), ("BUY", "A", 51), ("BUY", "B", 220)]
+    bot2, broker2 = _topping(session)
+    broker2.prices["B"], broker2.bp = 45.0, 6_000.0  # the account can pay 6,000: the top-up's 5,100 leaves 900 for B
+    check(session, bot2, broker2, now=T15, df=bars(A=[110] * 5 + [103, 100], B=[50] * 6 + [45]))
+    assert broker2.sent == [("BUY", "A", 48), ("BUY", "A", 51), ("BUY", "B", 20)]
+
+
+def test_a_top_up_leaves_a_full_slot_and_a_removed_symbol_alone(session):
+    bot, broker = _topping(session, amount=50.0)  # equity 10,050 at $103: a slot of 5,025 is only $81 more
+    broker.prices["A"] = 103.0
+    d = check(session, bot, broker, now=T15, df=bars(A=[110] * 5 + [103, 103], B=[50] * 7), kind="manual")
+    assert "A: not topped up, already a full slot ($4,944.00 of $5,025.00)" in d.steps
+    assert len(broker.sent) == 1 and bot.top_up is None  # tried once: it's done
+    bot2, broker2 = _topping(session)
+    session.delete(item(session, bot2, "A"))
+    session.commit()
+    d = check(session, bot2, broker2, now=T15, df=AFTER, kind="manual")
+    assert "A: not topped up (no longer on the watchlist)" in d.steps and len(broker2.sent) == 1
+
+
+def test_a_top_up_never_spends_more_than_the_account_can_pay(session):
+    bot, broker = _topping(session)
+    broker.bp = 1_000.0
+    check(session, bot, broker, now=T15, df=AFTER)
+    assert broker.sent[-1] == ("BUY", "A", 10)  # $1,000 at $100
+    bot2, broker2 = _topping(session)
+
+    def unknown():
+        raise BrokerError("account down")
+
+    broker2.buying_power = unknown
+    d = check(session, bot2, broker2, now=T15, df=AFTER, kind="manual")
+    assert "Top-up of the holdings: waits for the next check (buying power unknown)" in d.steps
+    assert len(broker2.sent) == 1 and bot2.top_up is True
+
+
+def test_a_top_up_buys_fractions_with_fractional_on(session):
+    bot, broker = _topping(session, fractional=True)
+    check(session, bot, broker, now=T15, df=AFTER)
+    h = session.scalar(select(Holding).where(Holding.bot_id == bot.id))
+    slot = (bot.cash + h.shares * 100) / 2  # what the top-up aimed at, the cash it spent back in
+    assert broker.sent[-1][2] == pytest.approx(50.728, abs=1e-3) and h.shares * 100 == pytest.approx(slot, abs=0.01)
+
+
 # --- The API --------------------------------------------------------------------------------------------
 
 CLOSED, OPEN = at(23, 0), T  # Monday 19:00 and 11:00 New York
@@ -827,3 +930,65 @@ def test_a_study_and_its_tests_are_checked(api):
     bad = one_setup("T2", 1.0, config={**SETUP, "drop_pct": 0})
     assert c.post(f"/dip/studies/{study['id']}/tests", json=[bad]).status_code == 422
     assert c.post("/dip/studies/999/tests", json=[one_setup("T1", 1.0)]).status_code == 404
+
+
+def test_money_is_added_to_a_running_bot_and_tops_up_what_it_holds(api):
+    c, clock, broker = api
+    bot = c.post("/bots/dip", json=BODY).json()
+    clock["t"] = broker.now = OPEN
+    c.post(f"/bots/{bot['id']}/run")  # buys 48 A at $103
+    r = c.post(f"/bots/{bot['id']}/capital", json={"amount": 10_000, "top_up": True})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert (out["capital"], out["added_cash"], out["allocated_cash"], out["cash"], out["equity"]) == (20_000, 10_000, 10_000, 15_056, 20_000)
+    assert out["return_pct"] == 0.0 and out["buy_hold_return_pct"] == 0.0 and out["top_up"] is True  # money in, not profit
+    ev = c.get(f"/bots/{bot['id']}/events").json()[0]
+    assert (ev["kind"], ev["level"]) == ("capital", "info")
+    assert ev["message"] == ("Added $10,000.00: $20,000.00 put in (started with $10,000.00). Its next check that can buy tops up "
+                             "its 1 holding to a full slot of about $10,000.00 (1/2 of the equity), then buys new dips with the same slots.")
+    snap = c.get(f"/bots/{bot['id']}/equity").json()[-1]
+    assert (snap["equity"], snap["benchmark"]) == (20_000, 20_000)
+    d = c.post(f"/bots/{bot['id']}/run").json()  # the check tops A up: 10,000 - 4,944 buys 49 more at $103
+    assert d["action"] == "BUY" and d["reasoning"] == "Topped up A."
+    detail = c.get(f"/bots/{bot['id']}").json()
+    assert detail["holdings"][0]["shares"] == 97 and detail["top_up"] is None and detail["equity"] == 20_000
+    assert sorted(o["reason"] for o in c.get(f"/bots/{bot['id']}/orders").json()) == ["dip", "top-up"]
+
+
+def test_adding_money_is_checked(api):
+    c, _, _ = api
+    bot = c.post("/bots/dip", json=BODY).json()
+    url = f"/bots/{bot['id']}/capital"
+    assert c.post(url, json={"amount": 0}).status_code == 422
+    assert c.post(url, json={"amount": -100}).status_code == 422
+    r = c.post(url, json={"amount": 9_995_000})
+    assert r.status_code == 422 and "at most $10,000,000" in r.text
+    r = c.post(url, json={"amount": 500, "top_up": True})  # nothing held yet: nothing to top up
+    assert r.status_code == 200 and r.json()["top_up"] is None and r.json()["capital"] == 10_500
+    assert "Nothing held to top up. New buys get slots of about $5,250.00" in c.get(f"/bots/{bot['id']}/events").json()[0]["message"]
+    single = c.post("/bots", json={"symbol": "A", "allocated_cash": 5_000})
+    assert single.status_code == 201, single.text
+    one = f"/bots/{single.json()['id']}/capital"
+    r = c.post(one, json={"amount": 500, "top_up": True})
+    assert r.status_code == 422 and "only a dip bot" in r.text
+    r = c.post(one, json={"amount": 500})
+    assert r.status_code == 200 and r.json()["capital"] == 5_500 and r.json()["cash"] == 5_500
+    assert c.get(f"/bots/{single.json()['id']}/events").json()[0]["message"].endswith("Its next buy uses 100% of its cash.")
+    assert c.post(f"/bots/{bot['id']}/archive").status_code == 200
+    assert c.post(url, json={"amount": 100}).status_code == 409
+
+
+def test_real_money_needs_a_yes_and_an_account_short_of_it_is_flagged(api, monkeypatch):
+    c, _, broker = api
+    monkeypatch.setattr(main, "catalog", lambda: [{**b, "available": True} for b in real_catalog()])
+    live = c.post("/bots/dip", json={**BODY, "broker": "alpaca-live", "confirm_live": True}).json()
+    url = f"/bots/{live['id']}/capital"
+    r = c.post(url, json={"amount": 1_000})
+    assert r.status_code == 422 and "confirm_live" in r.text
+    assert c.get(f"/bots/{live['id']}").json()["capital"] == 10_000  # refused: nothing changed
+    broker.bp = 10_500.0  # the account can pay less than the 11,000 the bot will hold as cash
+    r = c.post(url, json={"amount": 1_000, "confirm_live": True})
+    assert r.status_code == 200 and r.json()["capital"] == 11_000
+    ev = c.get(f"/bots/{live['id']}/events").json()[0]
+    assert ev["level"] == "warning" and ev["message"].startswith("Added $1,000.00 of REAL MONEY: $11,000.00 put in")
+    assert "The alpaca-live account can spend $10,500.00, less than the $11,000.00 its bots hold as cash" in ev["message"]

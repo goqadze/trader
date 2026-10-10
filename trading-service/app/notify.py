@@ -45,7 +45,7 @@ RETRY_AFTER = (timedelta(minutes=1), timedelta(minutes=5), timedelta(minutes=30)
 PROBLEM_QUIET = timedelta(hours=1)  # a bot failing every check emails once an hour, not every 15 minutes
 COLORS = {"trades": "#4f8cff", "risk": "#ef5b6b", "problems": "#d4a72c", "signals": "#13c2c2", "test": "#33c088"}
 REASONS = {"dip": "bought the dip", "signal": "buy signal", "target": "back at its target", "stop-loss": "stop-loss",
-           "time": "held too long", "manual": "you asked", "rebalance": "rebalance"}
+           "time": "held too long", "manual": "you asked", "rebalance": "rebalance", "top-up": "topped up with added money"}
 SIGNAL_HEADS = {"down": "in the buy zone", "rebound": "turned up from its low", "up": "is back up", "stop": "hit its stop",
                 "time": "held too long", "news": "bearish news, not bought"}
 
