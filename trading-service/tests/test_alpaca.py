@@ -27,6 +27,17 @@ def test_paper_and_live_hit_different_hosts():
     assert seen == ["paper-api.alpaca.markets", "api.alpaca.markets"]
 
 
+@pytest.mark.parametrize("account, spendable", [
+    ({"cash": "3000", "non_marginable_buying_power": "3000", "buying_power": "6000"}, 3000),  # margin: 2x, not borrowed
+    ({"cash": "3000", "non_marginable_buying_power": "2600", "buying_power": "5200"}, 2600),  # $400 of buys still open
+    ({"cash": "1500", "non_marginable_buying_power": "1500", "buying_power": "1500"}, 1500),  # under $2,000: no margin
+    ({"cash": "-250", "non_marginable_buying_power": "0", "buying_power": "4000"}, -250),  # a loan already: buys nothing
+    ({"buying_power": "800"}, 800),  # an older answer without the cash fields
+])
+def test_the_bots_spend_the_accounts_own_money_never_a_margin_loan(account, spendable):
+    assert _broker(lambda req: httpx.Response(200, json=account)).buying_power() == spendable
+
+
 def test_submit_sends_a_day_market_order_with_our_client_id():
     sent = {}
 

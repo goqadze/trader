@@ -1,5 +1,7 @@
 """Dip buyer bots: when they check, what they buy and sell, the blacklist, the news switch, the signals, and the API."""
 
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
@@ -8,10 +10,11 @@ from conftest import FakeBroker, at, make_bot
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app import dip, main, rotation, scheduler
+from app import dip, main, rotation, scheduler, splits, trader
 from app.brokers import BrokerError, BrokerOrder
 from app.brokers import catalog as real_catalog
-from app.models import DIP, Decision, Event, Holding, Order, Signal, WatchItem
+from app.db import SessionLocal
+from app.models import DIP, Bot, Decision, Event, Holding, Order, Signal, WatchItem
 from app.trader import add_capital, holdings
 
 T = datetime(2025, 6, 2, 15, 0, 20, tzinfo=timezone.utc)  # Monday June 2 2025, 11:00:20 New York
@@ -61,8 +64,9 @@ def no_news(*a):
     raise AssertionError("asked the news while it is off")
 
 
-def check(session, bot, broker, now=T, kind="scheduled", df=FALL, news=no_news, trend=None, moves=None):
-    return dip.check(session, bot, broker, now, kind, bars_fn=feed(df), news_fn=news, trend_fn=trend, moves_fn=moves)
+def check(session, bot, broker, now=T, kind="scheduled", df=FALL, news=no_news, trend=None, moves=None, splits_fn=None):
+    return dip.check(session, bot, broker, now, kind, bars_fn=feed(df), news_fn=news, trend_fn=trend, moves_fn=moves,
+                     splits_fn=splits_fn)
 
 
 @pytest.fixture(autouse=True)
@@ -878,6 +882,121 @@ def test_a_buy_waits_while_the_other_bots_sale_of_that_stock_is_still_filling(se
     assert (_held(session, one), _held(session, two)) == (0, 23) and (one.status, two.status) == ("active", "active")
 
 
+def test_orders_on_one_account_go_out_one_at_a_time(session, monkeypatch):
+    """The scheduler handles a few bots at once. Two of them must never both pass the crossing check before either
+    order is saved: their opposite orders would both reach Alpaca, which rejects the second."""
+    one = make_dip(session, broker="alpaca-paper")
+    two = make_dip(session, broker="alpaca-paper")
+    broker = FakeBroker(now=T, prices=dict(QUOTES))
+    broker.held_by, broker.submit_mode = {"A": 100}, "pending"  # bot #1's sale keeps working at Alpaca
+    real = trader._crossing
+
+    def slow(*a, **kw):  # widen the gap between the check and the order being saved
+        found = real(*a, **kw)
+        time.sleep(0.3)
+        return found
+
+    monkeypatch.setattr(trader, "_crossing", slow)
+
+    def send(bot_id, side):
+        with SessionLocal() as s:
+            return trader.submit_order(s, s.get(Bot, bot_id), broker, side, 10, "manual", T, symbol="A").status
+
+    with ThreadPoolExecutor(2) as pool:
+        first = pool.submit(send, one.id, "SELL")
+        time.sleep(0.05)
+        second = pool.submit(send, two.id, "BUY")
+        assert (first.result(), second.result()) == ("submitted", "rejected")
+    assert broker.sent == [("SELL", "A", 10)]
+
+
+# --- Stock splits ---------------------------------------------------------------------------------------
+
+JUNE3 = date(2025, 6, 3)
+T3 = T + timedelta(days=1)  # Tuesday June 3, 11:00:20 New York
+
+
+def two_for_one(*symbols):
+    """Split data: these symbols split 2-for-1 with Tuesday June 3 as their ex-date."""
+    return lambda wanted, today: {s: [(JUNE3, 2.0)] if s in symbols else [] for s in wanted}
+
+
+def test_a_split_scales_the_holding_and_its_levels_once(session):
+    bot, _ = _bought(session)  # 48 A at $103: stop $97.85, target $110
+    assert splits.apply(session, bot, JUNE3, two_for_one("A"), T3) == {"A"}
+    h = session.scalar(select(Holding))
+    assert (h.shares, h.entry_price, h.stop_price, h.target_price, h.reference_price, h.last_price) == (96, 51.5, 48.925, 55, 55, 51.5)
+    assert h.cost_basis == 4944 and h.splits_through == JUNE3  # what it cost stays; the split applied
+    log = session.scalars(select(Event).where(Event.kind == "split")).one()
+    assert log.message == ("A split 2-for-1 (ex-date Tue Jun 03): 48 -> 96 shares; bought at $103.00 -> $51.50, stop $97.85 -> "
+                           "$48.92, target $110.00 -> $55.00 (what it cost is the same)")
+    splits.apply(session, bot, JUNE3, two_for_one("A"), T3)  # the next check the same day: nothing more
+    assert h.shares == 96 and len(session.scalars(select(Event).where(Event.kind == "split")).all()) == 1
+
+
+def test_a_reverse_split_too(session):
+    bot, _ = _bought(session)
+    splits.apply(session, bot, JUNE3, lambda wanted, today: {s: [(JUNE3, 0.5)] for s in wanted}, T3)
+    h = session.scalar(select(Holding))
+    assert (h.shares, h.entry_price, h.stop_price, h.target_price) == (24, 206, 195.7, 220)
+    assert "A split 1-for-2" in session.scalars(select(Event).where(Event.kind == "split")).one().message
+
+
+def test_after_a_split_its_stop_loss_does_not_fire_and_a_splitting_symbol_is_not_bought_that_day(session):
+    bot, broker = _bought(session)
+    broker.now, broker.prices = T3, {"A": 51.5, "B": 22.0}  # A is where it was ($103 = 2 x 51.50); B fell 12%
+    d = check(session, bot, broker, now=T3, kind="manual", df=bars(day=3, A=[55] * 5 + [51.5], B=[25] * 5 + [22]),
+              splits_fn=two_for_one("A", "B"))
+    assert broker.sent == [("BUY", "A", 48)] and _held(session, bot) == 96  # held, not sold at the old stop $97.85
+    assert any(x.startswith("A: held 96 sh, $51.50") for x in d.steps)
+    assert any(x.startswith("B: ") and x.endswith("it splits today: not bought or followed before tomorrow") for x in d.steps)
+    assert signals(session, bot) == [("A", "down")] and item(session, bot, "B").dip_reference is None
+
+
+def test_a_fall_followed_from_before_a_split_is_dropped(session):
+    bot = make_dip(session, rebound=True, rebound_pct=0.01)
+    check(session, bot, FakeBroker(now=T, prices=dict(QUOTES)))  # A fell into the buy zone: followed, not bought yet
+    assert item(session, bot, "A").dip_reference == 110
+    splits.apply(session, bot, JUNE3, two_for_one("A"), T3)
+    assert item(session, bot, "A").dip_reference is None and item(session, bot, "A").trough_price is None
+
+
+def test_a_split_the_data_misses_is_not_sold_on_a_real_account(session):
+    bot = make_dip(session, broker="alpaca-paper")
+    broker = FakeBroker(now=T, prices=dict(QUOTES))
+    broker.held_by = {}
+    check(session, bot, broker)  # 48 A at $103
+    broker.held_by["A"], broker.now, broker.prices["A"] = 96, T3, 51.5  # split 2-for-1 at Alpaca; no split data here
+    d = check(session, bot, broker, now=T3, kind="manual", df=bars(day=3, A=[55] * 5 + [51.5], B=[50] * 6))
+    assert broker.sent == [("BUY", "A", 48)] and _held(session, bot) == 48 and bot.status == "paused"
+    assert "A: $51.50 and 96 shares in the account against 48 recorded: a split not in the data yet; not sold" in d.steps
+    alert = session.scalars(select(Event).where(Event.kind == "reconcile")).one()
+    assert alert.level == "error" and "a split the split data doesn't show yet" in alert.message
+    check(session, bot, broker, now=T3 + timedelta(minutes=15), df=bars(day=3, A=[55] * 5 + [51.5, 51.5], B=[50] * 7),
+          splits_fn=two_for_one("A"))  # the data has it now: the records follow, nothing is sold
+    assert _held(session, bot) == 96 and len(broker.sent) == 1 and rotation.reconcile(session, bot, broker, T3)
+
+
+def test_a_real_fall_or_a_share_bought_by_hand_still_sells(session):
+    bot = make_dip(session, broker="alpaca-paper")
+    broker = FakeBroker(now=T, prices=dict(QUOTES))
+    broker.held_by = {}
+    check(session, bot, broker)
+    broker.held_by["A"] += 1  # one bought by hand: not a split
+    broker.now, broker.prices["A"] = T3, 51.5  # and a real 50% fall: the account's shares didn't double with it
+    check(session, bot, broker, now=T3, df=bars(day=3, A=[110] * 5 + [51.5], B=[50] * 6))
+    assert broker.sent[-1] == ("SELL", "A", 48) and broker.held_by["A"] == 1
+
+
+def test_bots_sharing_a_symbol_all_get_a_split_before_any_compares_with_the_account(session):
+    one, two, broker = _sharing(session)  # 48 + 24 = 72 A
+    broker.held_by["A"] = 144  # 2-for-1 at Alpaca
+    splits.apply_all(T3, two_for_one("A"))
+    session.expire_all()
+    assert (_held(session, one), _held(session, two)) == (96, 48)
+    assert rotation.reconcile(session, one, broker, T3) and rotation.reconcile(session, two, broker, T3)
+
+
 # --- The API --------------------------------------------------------------------------------------------
 
 CLOSED, OPEN = at(23, 0), T  # Monday 19:00 and 11:00 New York
@@ -1163,7 +1282,8 @@ def test_real_money_needs_a_yes_and_an_account_short_of_it_is_flagged(api, monke
     assert r.status_code == 200 and r.json()["capital"] == 11_000
     ev = c.get(f"/bots/{live['id']}/events").json()[0]
     assert ev["level"] == "warning" and ev["message"].startswith("Added $1,000.00 of REAL MONEY: $11,000.00 put in")
-    assert "The alpaca-live account can spend $10,500.00, less than the $11,000.00 its bots hold as cash" in ev["message"]
+    assert ("The alpaca-live account has $10,500.00 of its own money to spend, less than the $11,000.00 its bots hold as "
+            "cash") in ev["message"]
 
 
 def test_only_dip_bots_share_symbols_on_a_real_account(api, monkeypatch):

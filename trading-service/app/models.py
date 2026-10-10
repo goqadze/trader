@@ -183,6 +183,8 @@ class Holding(Base):
     reference_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # the price the fall started from
     target_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # sell at or above (back at the reference)
     stop_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # sell at or below, and blacklist the symbol
+    # The ex-date of the last stock split applied to it (splits.apply); NULL = none since the day it was opened
+    splits_through: Mapped[date | None] = mapped_column(Date, nullable=True)
 
 
 # A watched symbol's status: watching -> blacklisted (a stop-loss sold it; it stays out until you re-enable it)

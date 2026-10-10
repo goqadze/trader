@@ -50,6 +50,17 @@ def bot_lock(bot_id: int) -> threading.Lock:
         return _locks.setdefault(bot_id, threading.Lock())
 
 
+_account_locks: dict[str, threading.Lock] = {}
+
+
+def account_lock(broker_name: str) -> threading.Lock:
+    """Orders on one real account go out one at a time (submit_order). The scheduler handles a few bots at once, and
+    two bots trading one symbol must never both pass the crossing check (_refusal) and send opposite orders together:
+    Alpaca would reject the second. Each order holds it until booked, at most the broker's fill wait (~10 s)."""
+    with _locks_guard:
+        return _account_locks.setdefault(broker_name, threading.Lock())
+
+
 def log_event(session: Session, bot_id: int | None, kind: str, message: str, level: str = "info",
               now: datetime | None = None) -> None:
     """Append to the audit log (and the service log, so `docker compose logs` shows it too)."""
@@ -206,7 +217,16 @@ def submit_order(session: Session, bot: Bot, broker: Broker, side: str, qty: flo
     2. send it with our client_order_id;
     3. book whatever the broker answered.
     If we crash or the network drops between 1 and 3, the scheduler finds the "new" order and asks
-    the broker what happened to it -- so an order can be neither lost nor sent twice."""
+    the broker what happened to it -- so an order can be neither lost nor sent twice.
+    On a real account the whole of it holds account_lock: one order at a time there."""
+    if bot.broker not in SHARED_ACCOUNT_BROKERS:
+        return _submit(session, bot, broker, side, qty, reason, now, decision, stop_price, symbol, reference_price)
+    with account_lock(bot.broker):
+        return _submit(session, bot, broker, side, qty, reason, now, decision, stop_price, symbol, reference_price)
+
+
+def _submit(session: Session, bot: Bot, broker: Broker, side: str, qty: float, reason: str, now: datetime,
+            decision: Decision | None, stop_price: float | None, symbol: str | None, reference_price: float | None) -> Order:
     symbol = symbol or bot.symbol
     order = Order(bot_id=bot.id, decision_id=decision.id if decision else None, side=side, symbol=symbol, qty=qty,
                   order_type="market" if stop_price is None else "stop", stop_price=stop_price, reference_price=reference_price,

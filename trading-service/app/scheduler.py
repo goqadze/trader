@@ -30,7 +30,7 @@ from .config import settings
 from .db import SessionLocal, utcnow
 from .decision_client import get_signal
 from .market import NY, is_open, ny_date, session_bounds, sessions_since, slot_window
-from . import dip, rotation
+from . import dip, rotation, splits
 from .models import DIP, ROTATION, Bot
 from .trader import bot_lock, evaluate, log_event, protect, reconcile, sync_pending, watch
 
@@ -218,7 +218,12 @@ def _log_error_throttled(session, bot_id: int, e: Exception, now: datetime) -> N
 
 
 def tick(now: datetime, signal_fn=get_signal, broker_factory=get_broker) -> None:
-    """One pass over every non-archived bot, a few in parallel (LLM decisions can take seconds each)."""
+    """One pass over every non-archived bot, a few in parallel (LLM decisions can take seconds each). Stock splits
+    first, one bot after another: dip bots sharing a symbol must all have them before any compares with the account."""
+    try:
+        splits.apply_all(now)
+    except Exception:
+        logger.exception("split pass failed")
     with SessionLocal() as session:
         ids = list(session.scalars(select(Bot.id).where(Bot.status != "archived")))
     with ThreadPoolExecutor(max_workers=4) as pool:

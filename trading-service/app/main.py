@@ -619,8 +619,9 @@ def add_bot_capital(bot_id: int, body: CapitalAdd, session: Session = Depends(ge
             else:
                 cash = sum(b.cash for b in session.scalars(select(Bot).where(Bot.broker == bot.broker, Bot.status != "archived")))
                 if bp is not None and bp < cash:
-                    note = (f" The {bot.broker} account can spend ${bp:,.2f}, less than the ${cash:,.2f} its bots hold as "
-                            "cash: their buys stop at what the account can pay. Move the money to the account first.")
+                    note = (f" The {bot.broker} account has ${bp:,.2f} of its own money to spend, less than the ${cash:,.2f} "
+                            "its bots hold as cash: their buys stop there (never on borrowed money). Move the money to "
+                            "the account first.")
         log_event(session, bot.id, "capital", f"Added ${body.amount:,.2f}{' of REAL MONEY' if live else ''}: "
                   f"${capital(bot):,.2f} put in (started with ${bot.allocated_cash:,.2f}). {how}{note}",
                   "warning" if live or note else "info", now)

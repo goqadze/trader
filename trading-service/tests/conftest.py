@@ -157,6 +157,14 @@ class FakeBroker(Broker):
         return self.held_by.get(symbol, 0) if self.held_by is not None else self.held
 
 
+@pytest.fixture(autouse=True)
+def no_split_data(monkeypatch):
+    """No test asks Alpaca or Yahoo about stock splits: none, unless a test passes its own splits_fn."""
+    from app import splits
+
+    monkeypatch.setattr(splits, "fetch", lambda symbols, today, now=None: {s: [] for s in symbols})
+
+
 @pytest.fixture(scope="session", autouse=True)
 def schema():
     """Build the schema from the models once per run (drop first, so model changes are always picked up)."""

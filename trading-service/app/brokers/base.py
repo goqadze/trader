@@ -51,7 +51,8 @@ class Broker(ABC):
         """Current state of an order we sent, by OUR id. None = the broker never received it."""
 
     def buying_power(self) -> float | None:
-        """Cash the account can spend right now. None = no real account (simulator): the bot's own cash is the limit."""
+        """The account's own money it can spend right now, never borrowed (no margin). None = no real account
+        (simulator): the bot's own cash is the limit."""
         return None
 
     def position_qty(self, symbol: str) -> float | None:

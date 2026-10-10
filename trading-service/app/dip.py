@@ -42,7 +42,7 @@ import yfinance as yf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import notify
+from . import notify, splits
 from .brokers import Broker, BrokerError
 from .config import settings
 from .decision_client import get_news
@@ -51,7 +51,7 @@ from .models import Bot, Decision, Holding, Order, Signal, WatchItem
 from .rotation import MIN_TRADE_OF_SLOT, _quote, yahoo_closes
 from .schemas import DEFAULT_PRICE_TIERS
 from .shares import MIN_FRACTIONAL_ORDER, affordable, fmt_qty
-from .trader import _describe, bot_equity, holdings, log_event, mark_to_market, open_orders, submit_order
+from .trader import _describe, bot_equity, holdings, log_event, mark_to_market, open_orders, others_hold, submit_order
 
 logger = logging.getLogger("trading-service")
 
@@ -355,7 +355,7 @@ def _zone_note(bot: Bot, fall: float | None, move: float | None) -> str:
 
 
 def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, bars_fn=None, news_fn=None,
-          trend_fn=None, moves_fn=None) -> Decision | None:
+          trend_fn=None, moves_fn=None, splits_fn=None) -> Decision | None:
     """One check of every symbol (see the module docstring): exits, then where each stands, then buys.
 
     kind: 'scheduled' (the interval), 'manual' (Run now while the market is open and the bot active), 'preview' (Run now
@@ -394,6 +394,10 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
         d.outcome = msg
         session.commit()
         return d
+
+    # Stock splits: the holdings' records follow them (a preview too: a split is a fact, not a decision); a symbol
+    # splitting today is neither bought nor followed today (see splits.py)
+    split_today = splits.apply(session, bot, today, splits_fn, now)
 
     if trade:  # a stop's blacklist that is over (reenable_days): watched again from this check, as in the backtest
         for item in items:
@@ -439,6 +443,9 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
         if not trade:
             lines.append(f"{s}: would sell ({reason}) at ${q.price:.2f}, {_pct(change)} from the buy")
             continue
+        if split := _unrecorded_split(session, bot, broker, h, q.price, now):
+            lines.append(split)
+            continue
         order = submit_order(session, bot, broker, "SELL", h.shares, reason, now, decide(), symbol=s)
         done = _describe(order)
         if order.status in NOT_SENT:  # still held: the next check tries again
@@ -478,8 +485,10 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
         item.checked_at, item.last_price, item.reference_price = now, price, ref
         item.drop = round(1 - price / ref, 6) if ref and price else None
         item.buy_drop = buy_fall(bot, ref, moves.get(s))
-        zone[s] = item.drop is not None and item.buy_drop is not None and item.drop >= item.buy_drop - 1e-12
-        following = item.status == "watching" and not (s in held and s not in sold) and price is not None
+        zone[s] = (item.drop is not None and item.buy_drop is not None and item.drop >= item.buy_drop - 1e-12
+                   and s not in split_today)
+        following = (item.status == "watching" and not (s in held and s not in sold) and price is not None
+                     and s not in split_today)
         if trade:  # a preview changes no state: the next real check still sees a new fall as new
             if following and item.dip_reference:
                 if item.trough_price is None or price < item.trough_price:
@@ -511,7 +520,8 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
         ref = buy_reference(i)
         return 1 - i.last_price / ref if ref and i.last_price else 0.0
 
-    notes: dict[str, str] = {}
+    notes: dict[str, str] = {s: "it splits today: not bought or followed before tomorrow" for s in split_today
+                             if s in by_symbol and s not in held}
     candidates = sorted((i for i in items if i.status == "watching" and i.symbol not in held and i.symbol not in pending
                          and (i.symbol in turned if rebound else zone[i.symbol])), key=lambda i: -fall(i))
     in_use = len([s for s in held if s not in sold]) + len(pending - set(held))
@@ -687,6 +697,37 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
     d.outcome = ("Preview only (market closed or bot paused): no order sent. " if kind == "preview" else "") + d.reasoning
     session.commit()
     return d
+
+
+SPLIT_MATCH = 0.35  # how close the account's share ratio and the price ratio must be to call it a split
+
+
+def _unrecorded_split(session: Session, bot: Bot, broker: Broker, h: Holding, price: float, now: datetime) -> str | None:
+    """Before an exit on a real account: is this a split the split data doesn't show yet (splits.py)? Then the account
+    holds a different number of shares than the bots' records, by about the same ratio as the price moved from the
+    buy (10x the shares at a tenth of the price; a share bought by hand doesn't move the price). Not sold at levels
+    from before the split: the bot pauses and says so; the split is applied once the data has it (asked again at the
+    next check). Returns the line for the check, or None (the exit goes ahead)."""
+    try:
+        have = broker.position_qty(h.symbol)
+    except BrokerError:
+        return None
+    view = others_hold(session, bot, h.symbol)
+    records = h.shares + (view[0] if view else 0.0)
+    if have is None or records <= 0 or not h.entry_price or have <= 0:
+        return None  # the simulator (no account), or nothing to compare
+    shares_ratio, price_ratio = have / records, h.entry_price / price
+    if abs(shares_ratio - 1) < 0.1 or abs(shares_ratio / price_ratio - 1) > SPLIT_MATCH:
+        return None
+    splits.forget(h.symbol)
+    if bot.status == "active":
+        bot.status = "paused"
+        log_event(session, bot.id, "reconcile", f"{h.symbol}: the account holds {fmt_qty(have)} shares where the bots' records "
+                  f"say {fmt_qty(records)}, and it trades at ${price:,.2f} after a buy at ${h.entry_price:,.2f}: a split the "
+                  "split data doesn't show yet. Not sold at its levels from before it. Paused: the split is applied as "
+                  "soon as the data has it; resume once the holding looks right.", "error", now)
+    return (f"{h.symbol}: ${price:.2f} and {fmt_qty(have)} shares in the account against {fmt_qty(records)} recorded: "
+            "a split not in the data yet; not sold")
 
 
 def top_up(session: Session, bot: Bot, broker: Broker, now: datetime, held: dict[str, Holding], skip: set[str],

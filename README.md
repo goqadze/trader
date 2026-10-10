@@ -296,13 +296,20 @@ Safety built in:
 - **Drawdown breaker**: a bot auto-pauses if equity falls `max_drawdown_pct` below its peak.
 - **No duplicate or lost orders**: each order is saved *before* it is sent, with a unique client id; after a crash or
   a network drop the scheduler asks the broker what happened instead of re-sending.
+- **Your own money only, never a loan**: every Alpaca account is a margin account, and from $2,000 of equity its
+  buying power includes borrowed money. The bots' buys stop at the smallest of the account's cash, its non-margin
+  buying power and its buying power, so they never trade on margin.
+- **Stock splits**: once a day each holding follows its splits (Alpaca's corporate actions, else Yahoo): shares x
+  ratio, its buy / stop / target prices / ratio, so a 10-for-1 split never looks like a 90% fall to the stop-loss. A
+  symbol isn't bought on its split day. If the split data misses one, a sale whose share count and price both moved by
+  the same ratio is held back and the bot pauses until the data has it.
 - **Reconciliation** (real brokers): if the account's shares don't match the bots' records (e.g. you traded by
   hand), the bot pauses.
 - **Several bots, one symbol, one account**: dip bots may trade the same symbol on one real account.
   Each books only its own fills and sells only its own shares; the account check adds up all their records; a sale
   bigger than what the account holds beyond the other bots' shares isn't sent (it would sell theirs, or sell short)
-  and pauses the bot; and no order goes out while another bot's order on the other side of that symbol is still
-  working (Alpaca's wash-trade protection would reject it), it's retried at the next check. Rotation and
+  and pauses the bot; orders on one account go out one at a time, and none while another bot's order on the other
+  side of that symbol is still working (Alpaca's wash-trade protection would reject it): it's retried at the next check. Rotation and
   single-symbol bots keep their symbols to themselves: a single-symbol bot's stop-loss rests at Alpaca as an open sell
   order, and Alpaca rejects buys of that symbol meanwhile.
 - **Restart-safe**: the time of the last decision is stored in the database, so a restart never repeats a

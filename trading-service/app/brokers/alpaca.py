@@ -122,10 +122,18 @@ class AlpacaBroker(Broker):
         return self._parse(r.json())
 
     def buying_power(self) -> float | None:
+        """The account's own money only, never a margin loan. Every Alpaca account is a margin account, and from $2,000
+        of equity its buying_power counts borrowed money (2x, more intraday). So: the smallest of the cash, the
+        non-margin buying power and the buying power (open orders and settlement rules included). Negative cash (a loan
+        already taken) buys nothing."""
         r = self._get(self._api, "/v2/account")
         if r.status_code != 200:
             raise BrokerError(f"Alpaca account {r.status_code}: {r.text[:200]}")
-        return float(r.json()["buying_power"])
+        a = r.json()
+        found = [float(a[k]) for k in ("cash", "non_marginable_buying_power", "buying_power") if a.get(k) is not None]
+        if not found:
+            raise BrokerError("Alpaca account: no cash or buying power in the answer")
+        return min(found)
 
     def position_qty(self, symbol: str) -> float | None:
         r = self._get(self._api, f"/v2/positions/{symbol}")
