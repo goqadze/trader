@@ -109,6 +109,17 @@ def test_halt_pauses_every_active_bot(client):
     assert client.get("/events").json()[0]["kind"] == "halt"
 
 
+def test_events_of_one_broker_s_bots(client, monkeypatch):
+    monkeypatch.setattr(main, "catalog", lambda: [{**b, "available": True} for b in real_catalog()])
+    sim = _create(client, broker="paper")
+    alpaca = _create(client, broker="alpaca-paper", symbol="MSFT")
+    client.post("/halt")  # a system event, no bot's
+    assert {e["bot_id"] for e in client.get("/events?broker=alpaca-paper").json()} == {alpaca["id"]}
+    assert {e["bot_id"] for e in client.get("/events?broker=paper").json()} == {sim["id"]}
+    assert client.get("/events?broker=alpaca-live").json() == []
+    assert None in {e["bot_id"] for e in client.get("/events").json()}
+
+
 def test_param_changes_are_audited(client):
     bot = _create(client)
     r = client.patch(f"/bots/{bot['id']}", json={"min_confidence": 0.75, "stop_pct": 0.05})

@@ -1,5 +1,7 @@
 import { FallOutlined, PlusOutlined, RetweetOutlined, StopOutlined } from "@ant-design/icons";
-import { Alert, App as AntApp, Badge, Button, Card, Col, List, Popconfirm, Row, Space, Statistic, Switch, Table, Tag, Tooltip, Typography } from "antd";
+import {
+  Alert, App as AntApp, Badge, Button, Card, Col, Grid, List, Popconfirm, Row, Segmented, Select, Space, Statistic, Switch, Table, Tag, Tooltip, Typography,
+} from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
@@ -130,18 +132,40 @@ const columns: ColumnsType<Bot> = [
 
 const LEVEL_COLOR: Record<string, string> = { info: "default", warning: "orange", error: "red" };
 
-/** Recent audit events across all bots. */
-function ActivityFeed({ events, bots }: { events: TradingEvent[]; bots: Bot[] }) {
+// The overview's broker filter: one account's bots (or the simulator's), with their totals and activity; remembered in
+// this browser only
+const BROKER_KEY = "trading.brokerFilter";
+const BROKER_ORDER = ["alpaca-live", "alpaca-paper", "paper"];
+const BROKER_LABEL: Record<string, string> = { "alpaca-live": "Alpaca live", "alpaca-paper": "Alpaca paper", paper: "Simulator" };
+
+function rememberedBroker(): string {
+  try {
+    return localStorage.getItem(BROKER_KEY) ?? "all";
+  } catch {
+    return "all";
+  }
+}
+
+function rememberBroker(broker: string) {
+  try {
+    localStorage.setItem(BROKER_KEY, broker);
+  } catch {
+    /* private window or blocked storage: the filter still works, it just won't be remembered */
+  }
+}
+
+/** Recent audit events across all bots (or one broker's). */
+function ActivityFeed({ events, bots, title, emptyText }: { events: TradingEvent[]; bots: Bot[]; title: string; emptyText: string }) {
   const symbol = (id: number | null) => {
     const bot = id == null ? undefined : bots.find((b) => b.id === id);
     return id == null ? "system" : bot ? botTitle(bot) : `#${id}`;
   };
   return (
-    <Card title="Recent activity" size="small" style={{ marginTop: 16 }}>
+    <Card title={title} size="small" style={{ marginTop: 16 }}>
       <List
         size="small"
         dataSource={events.slice(0, 15)}
-        locale={{ emptyText: "Nothing yet. Create a bot to get started." }}
+        locale={{ emptyText }}
         renderItem={(e) => (
           <List.Item>
             <Space align="start">
@@ -166,10 +190,23 @@ export default function TradingPage() {
   const [initial, setInitial] = useState<BotFormInitial>({});
   const [rotationOpen, setRotationOpen] = useState(false);
   const [rotationInitial, setRotationInitial] = useState<RotationBotInitial>({});
+  const [brokerPick, setBrokerPick] = useState(rememberedBroker);
 
   const bots = usePolling(() => tradingApi.listBots(showArchived), 15_000, [showArchived]);
   const status = usePolling(tradingApi.status, 30_000);
-  const events = usePolling(tradingApi.allEvents, 15_000);
+  const list = bots.data ?? [];
+  // The brokers the listed bots use, live first. The filter shows with two or more; a remembered pick with no bots listed
+  // (any more), or with the filter hidden, shows them all (the pick holds while the list loads)
+  const brokers = [...BROKER_ORDER, ...list.map((b) => b.broker)].filter((n, i, all) => all.indexOf(n) === i && list.some((b) => b.broker === n));
+  const broker = !bots.data || (brokers.length > 1 && brokers.includes(brokerPick)) ? brokerPick : "all";
+  const brokerLabel = (name: string) => BROKER_LABEL[name] ?? name;
+  const brokerOptions = [
+    { label: `All (${list.length})`, value: "all" },
+    ...brokers.map((n) => ({ label: `${brokerLabel(n)} (${list.filter((b) => b.broker === n).length})`, value: n })),
+  ];
+  const pickBroker = (v: string) => { setBrokerPick(v); rememberBroker(v); };
+  const phone = Grid.useBreakpoint().sm === false; // undefined before the first measure: the desktop control
+  const events = usePolling(() => tradingApi.allEvents(broker === "all" ? undefined : broker), 15_000, [broker]);
 
   // Arriving from the backtest page's "Trade this strategy" (or the rotation page's "Paper trade this"): open the form pre-filled
   useEffect(() => {
@@ -184,15 +221,15 @@ export default function TradingPage() {
     navigate(location.pathname, { replace: true, state: null }); // don't reopen on refresh
   }, [location, navigate]);
 
-  const list = bots.data ?? [];
+  const shown = useMemo(() => (broker === "all" ? list : list.filter((b) => b.broker === broker)), [list, broker]);
   const totals = useMemo(() => {
-    const running = list.filter((b) => b.status !== "archived");
+    const running = shown.filter((b) => b.status !== "archived");
     // Everything put in (the start plus Add money), so added money never shows as profit
     const allocated = running.reduce((s, b) => s + b.capital, 0);
     const added = running.reduce((s, b) => s + (b.added_cash ?? 0), 0);
     const equity = running.reduce((s, b) => s + b.equity, 0);
     return { allocated, added, equity, pnl: equity - allocated, active: running.filter((b) => b.status === "active").length, count: running.length };
-  }, [list]);
+  }, [shown]);
 
   const create = async (body: BotCreate | object) => {
     const bot = await tradingApi.createBot(body as BotCreate);
@@ -236,7 +273,7 @@ export default function TradingPage() {
               okButtonProps={{ danger: true }}
               onConfirm={halt}
             >
-              <Button danger icon={<StopOutlined />} disabled={totals.active === 0}>Halt all</Button>
+              <Button danger icon={<StopOutlined />} disabled={!list.some((b) => b.status === "active")}>Halt all</Button>
             </Popconfirm>
             <Tooltip title="Watches a list of symbols, buys the ones that just fell and sells them once they're back (see the Dip buyer page)">
               <Button icon={<FallOutlined />} onClick={() => navigate("/dip", { state: { newDipBot: true } })}>
@@ -261,6 +298,15 @@ export default function TradingPage() {
           description={`${bots.error ?? status.error}. Is it running? docker compose up -d trading-service`} />
       )}
 
+      {/* On a phone the four options don't fit a row: a list instead */}
+      {brokers.length > 1 && (phone ? (
+        <Select value={broker} onChange={pickBroker} options={brokerOptions} style={{ width: "100%", marginBottom: 12 }} />
+      ) : (
+        <div style={{ marginBottom: 12 }}>
+          <Segmented value={broker} onChange={(v) => pickBroker(String(v))} options={brokerOptions} />
+        </div>
+      ))}
+
       <Row gutter={[16, 16]}>
         <Col xs={12} md={6}>
           <Card size="small">
@@ -284,13 +330,13 @@ export default function TradingPage() {
       <Card
         size="small"
         style={{ marginTop: 16 }}
-        title="Bots"
+        title={broker === "all" ? "Bots" : `Bots · ${brokerLabel(broker)}`}
         extra={<Space><span style={{ color: "#8b98b5" }}>Show archived</span><Switch size="small" checked={showArchived} onChange={setShowArchived} /></Space>}
       >
         <Table<Bot>
           rowKey="id"
           columns={columns}
-          dataSource={list}
+          dataSource={shown}
           loading={bots.loading && !bots.data}
           pagination={false}
           size="middle"
@@ -300,7 +346,12 @@ export default function TradingPage() {
         />
       </Card>
 
-      <ActivityFeed events={events.data ?? []} bots={list} />
+      <ActivityFeed
+        events={events.data ?? []}
+        bots={list}
+        title={broker === "all" ? "Recent activity" : `Recent activity · ${brokerLabel(broker)}`}
+        emptyText={broker === "all" ? "Nothing yet. Create a bot to get started." : "Nothing yet for these bots."}
+      />
 
       <BotForm
         open={formOpen}

@@ -30,7 +30,7 @@ export const tradingApi = {
   orders: (id: number) => request<Order[]>("GET", `/bots/${id}/orders`),
   events: (id: number) => request<TradingEvent[]>("GET", `/bots/${id}/events`),
   equity: (id: number) => request<Snapshot[]>("GET", `/bots/${id}/equity`),
-  allEvents: () => request<TradingEvent[]>("GET", "/events"),
+  allEvents: (broker?: string) => request<TradingEvent[]>("GET", broker ? `/events?broker=${encodeURIComponent(broker)}` : "/events"),
   // Dip buyers (trading-service dip.py): rules, the watchlist (changes while it runs), the blacklist, signals
   createDipBot: (body: DipBotCreate) => request<Bot>("POST", "/bots/dip", body),
   updateDip: (id: number, body: DipBotUpdate) => request<Bot>("PATCH", `/bots/${id}/dip`, body),

@@ -879,9 +879,13 @@ def email_alert_history(limit: int = Query(50, le=500), session: Session = Depen
 
 
 @app.get("/events", response_model=list[EventOut])
-def list_events(limit: int = Query(100, le=1000), session: Session = Depends(get_session)):
-    """Recent events across all bots (the overview page's activity feed)."""
-    return list(session.scalars(select(Event).order_by(Event.id.desc()).limit(limit)))
+def list_events(limit: int = Query(100, le=1000), broker: str | None = None, session: Session = Depends(get_session)):
+    """Recent events across all bots (the overview page's activity feed); with a broker, only its bots' (no system
+    events), so a quiet live bot's few events aren't pushed out of the latest `limit` by busy paper bots."""
+    q = select(Event)
+    if broker:
+        q = q.join(Bot, Bot.id == Event.bot_id).where(Bot.broker == broker)
+    return list(session.scalars(q.order_by(Event.id.desc()).limit(limit)))
 
 
 @app.get("/summary")
