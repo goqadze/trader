@@ -187,9 +187,11 @@ export default function TradingPage() {
   const list = bots.data ?? [];
   const totals = useMemo(() => {
     const running = list.filter((b) => b.status !== "archived");
-    const allocated = running.reduce((s, b) => s + b.allocated_cash, 0);
+    // Everything put in (the start plus Add money), so added money never shows as profit
+    const allocated = running.reduce((s, b) => s + b.capital, 0);
+    const added = running.reduce((s, b) => s + (b.added_cash ?? 0), 0);
     const equity = running.reduce((s, b) => s + b.equity, 0);
-    return { allocated, equity, pnl: equity - allocated, active: running.filter((b) => b.status === "active").length, count: running.length };
+    return { allocated, added, equity, pnl: equity - allocated, active: running.filter((b) => b.status === "active").length, count: running.length };
   }, [list]);
 
   const create = async (body: BotCreate | object) => {
@@ -260,7 +262,12 @@ export default function TradingPage() {
       )}
 
       <Row gutter={[16, 16]}>
-        <Col xs={12} md={6}><Card size="small"><Statistic title="Capital allocated" value={usd(totals.allocated, 0)} /></Card></Col>
+        <Col xs={12} md={6}>
+          <Card size="small">
+            <Statistic title="Capital allocated" value={usd(totals.allocated, 0)} />
+            {totals.added > 0 && <span style={{ color: "#8b98b5", fontSize: 12 }}>incl. {usd(totals.added, 0)} added</span>}
+          </Card>
+        </Col>
         <Col xs={12} md={6}><Card size="small"><Statistic title="Current equity" value={usd(totals.equity, 0)} /></Card></Col>
         <Col xs={12} md={6}>
           <Card size="small">
