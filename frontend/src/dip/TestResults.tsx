@@ -505,15 +505,20 @@ export default function TestResults({ onLoad }: Props) {
   return (
     <>
       <Card size="small" style={{ marginBottom: 12 }}>
-        <Space wrap style={{ marginBottom: 8 }}>
-          {studies.length > 1 ? (
-            <Select value={studyId} onChange={setStudyId} style={{ minWidth: 260 }}
-              options={studies.map((s) => ({ value: s.id, label: `${s.name} (${s.tests})` }))} />
-          ) : (
-            <Typography.Text strong>{study?.name}</Typography.Text>
-          )}
+        {/* The batch on a line of its own, never wider than the card (a phone): the box cuts a long name short, the
+            list wraps it (a date's hyphens don't break) */}
+        {studies.length > 1 ? (
+          <Select value={studyId} onChange={setStudyId} style={{ width: "100%", maxWidth: 520, marginBottom: 8 }}
+            options={studies.map((s) => ({ value: s.id, label: `${s.name} (${s.tests})` }))}
+            optionRender={(o) => <div style={{ whiteSpace: "normal" }}>{String(o.label).replace(/(\d)-(\d)/g, "$1\u2011$2")}</div>} />
+        ) : (
+          <Typography.Text strong style={{ display: "block", marginBottom: 8 }}>{study?.name}</Typography.Text>
+        )}
+        <Space wrap size={[8, 6]} style={{ marginBottom: 8 }}>
           {Object.entries(periods).map(([k, v]) => (
-            <Tooltip key={k} title={periodTip(k, v)}><Tag>{periodLabel(k, v)}: {span(v)}</Tag></Tooltip>
+            <Tooltip key={k} title={periodTip(k, v)}>
+              <Tag style={{ whiteSpace: "normal", marginInlineEnd: 0 }}>{periodLabel(k, v)}: {span(v)}</Tag>
+            </Tooltip>
           ))}
         </Space>
         {study?.description && (
