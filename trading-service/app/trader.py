@@ -11,6 +11,9 @@ Two things are stricter than the backtest because real money is involved:
   - a quote older than MAX_QUOTE_AGE_MINUTES blocks trading (no acting on a frozen feed)
 On brokers that can hold orders for us (Alpaca) the stop-loss also rests AT THE BROKER as a real stop
 order (see protect), so it still fires while this service -- or the machine it runs on -- is down.
+Several dip bots may trade one symbol on one real account (main._symbol_clash): each books only its own fills and sells
+only its own shares; the account check adds up all their records (others_hold), and an order that would sell another bot's
+shares or cross another bot's working order isn't sent (_refusal).
 
 Every function takes `now` explicitly instead of reading the clock, so tests can replay any moment.
 """
@@ -21,11 +24,11 @@ import threading
 import uuid
 from datetime import datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import notify
-from .brokers import Broker, BrokerError, BrokerOrder, Quote
+from .brokers import SHARED_ACCOUNT_BROKERS, Broker, BrokerError, BrokerOrder, Quote
 from .config import settings
 from .decision_client import SignalError, get_signal
 from .market import NY, ny_date
@@ -88,6 +91,68 @@ def bot_equity(session: Session, bot: Bot, price: float | None) -> float:
     return round(bot.cash + bot.shares * (price or 0.0), 2)
 
 
+def others_hold(session: Session, bot: Bot, symbol: str) -> tuple[float, dict[int, float]] | None:
+    """A real account several bots trade on: the shares of `symbol` the OTHER bots on it hold by their records, in all
+    and per bot id. None while one of them has a market order for it working (the account is in flux: compare later).
+    The simulator gives every bot its own account: (0, {})."""
+    if bot.broker not in SHARED_ACCOUNT_BROKERS:
+        return 0.0, {}
+    mates = (Bot.broker == bot.broker, Bot.id != bot.id)  # the other bots on this account
+    working = select(Order.id).join(Bot, Bot.id == Order.bot_id).where(
+        *mates, Order.order_type == "market", Order.status.in_(OPEN_ORDER_STATUSES),
+        func.coalesce(Order.symbol, Bot.symbol) == symbol)
+    if session.scalar(working.limit(1)) is not None:
+        return None
+    per: dict[int, float] = {}
+    for bot_id, shares in session.execute(select(Holding.bot_id, Holding.shares).join(Bot, Bot.id == Holding.bot_id)
+                                          .where(*mates, Holding.symbol == symbol)):
+        per[bot_id] = tidy(per.get(bot_id, 0.0) + shares)
+    for bot_id, shares in session.execute(select(Bot.id, Bot.shares).where(  # single-symbol bots: their one position
+            *mates, Bot.symbol == symbol, Bot.strategy.not_in(HOLDINGS_STRATEGIES), Bot.shares > 0)):
+        per[bot_id] = tidy(per.get(bot_id, 0.0) + shares)
+    return tidy(sum(per.values())), per
+
+
+def _crossing(session: Session, bot: Bot, side: str, symbol: str) -> Order | None:
+    """Another bot's order on the other side of `symbol` still working on this account: a market order, or (when
+    buying) a stop-loss resting at the broker. Alpaca rejects an order while one like that is open (wash-trade
+    protection)."""
+    opposite = "SELL" if side == "BUY" else "BUY"
+    types = ("market", "stop") if side == "BUY" else ("market",)
+    return session.scalars(select(Order).join(Bot, Bot.id == Order.bot_id).where(
+        Bot.broker == bot.broker, Bot.id != bot.id, Order.side == opposite, Order.order_type.in_(types),
+        Order.status.in_(OPEN_ORDER_STATUSES), func.coalesce(Order.symbol, Bot.symbol) == symbol).limit(1)).first()
+
+
+def _refusal(session: Session, bot: Bot, broker: Broker, side: str, qty: float, symbol: str) -> tuple[str, bool] | None:
+    """On a real account several bots share, why an order mustn't go out, and whether that pauses the bot; else None.
+    - Another bot's order on the other side of the symbol is still working: the broker would reject this one. Not sent;
+      the bot tries again at its next check (its order normally fills within seconds).
+    - A sale bigger than what the account holds beyond the other bots' shares (by their records): it would sell
+      theirs, or sell short. This bot's records are off: paused, like the account check does."""
+    if bot.broker not in SHARED_ACCOUNT_BROKERS:
+        return None
+    if (other := _crossing(session, bot, side, symbol)) is not None:
+        what = "stop-loss order" if other.order_type == "stop" else other.side
+        return (f"bot #{other.bot_id}'s {what} of {symbol} is still working at the broker, which rejects an order on "
+                "the other side of the same symbol meanwhile; tries again at the next check", False)
+    if side != "SELL":
+        return None
+    try:
+        have = broker.position_qty(symbol)
+    except BrokerError:
+        return None  # can't ask now: the sale goes out (holding on to a position the bot wants out of is worse)
+    if have is None:
+        return None
+    view = others_hold(session, bot, symbol)
+    theirs = view[0] if view else 0.0  # another bot's order on it working: their records lag, only the account counts
+    if qty <= have - theirs + 1e-6:
+        return None
+    whose = f", {fmt_qty(theirs)} of them other bots'" if theirs else ""
+    return (f"the account holds {fmt_qty(have)} {symbol}{whose}: selling {fmt_qty(qty)} would "
+            f"{'sell theirs' if qty <= have + 1e-6 else 'sell short'}", True)
+
+
 def capital(bot: Bot) -> float:
     """What you put in: the starting capital plus any money added since (the return is measured against it)."""
     return round(bot.allocated_cash + (bot.added_cash or 0.0), 2)
@@ -136,6 +201,7 @@ def submit_order(session: Session, bot: Bot, broker: Broker, side: str, qty: flo
                  symbol: str | None = None, reference_price: float | None = None) -> Order:
     """Write-ahead order submission (a market order, or a resting SELL stop when stop_price is given), for the
     bot's symbol or, on a rotation or dip bot, `symbol` (a dip buy carries its reference_price: the target to come):
+    0. on a real account other bots trade on too, refuse what would cross them (_refusal: saved as rejected);
     1. save the order as "new" and COMMIT, before the broker hears about it;
     2. send it with our client_order_id;
     3. book whatever the broker answered.
@@ -146,6 +212,16 @@ def submit_order(session: Session, bot: Bot, broker: Broker, side: str, qty: flo
                   order_type="market" if stop_price is None else "stop", stop_price=stop_price, reference_price=reference_price,
                   reason=reason, status="new", client_order_id=f"bot{bot.id}-{uuid.uuid4().hex[:16]}",
                   created_at=now, updated_at=now)
+    if refused := _refusal(session, bot, broker, side, qty, symbol):  # a real account other bots trade on too
+        why, pause = refused
+        order.status, order.error = "rejected", why
+        session.add(order)
+        if pause and bot.status == "active":
+            bot.status = "paused"
+        log_event(session, bot.id, "reconcile" if pause else "order", f"{_label(order, bot)} not sent: {why}"
+                  + (". Paused: check the account before resuming." if pause else ""), "error" if pause else "info", now)
+        session.commit()
+        return order
     session.add(order)
     session.commit()
     try:

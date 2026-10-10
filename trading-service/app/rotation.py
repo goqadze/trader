@@ -32,7 +32,7 @@ from .config import settings
 from .market import NY, month_end_after, ny_date, slot_window
 from .models import Bot, Decision, Order
 from .shares import MIN_FRACTIONAL_ORDER, affordable, fmt_qty, same_qty, tidy
-from .trader import holdings, log_event, mark_to_market, open_orders, submit_order
+from .trader import holdings, log_event, mark_to_market, open_orders, others_hold, submit_order
 
 logger = logging.getLogger("trading-service")
 
@@ -363,8 +363,10 @@ def watch(session: Session, bot: Bot, broker: Broker, now: datetime, closes_fn=N
 
 
 def reconcile(session: Session, bot: Bot, broker: Broker, now: datetime) -> bool:
-    """Real (paper) accounts: does the account hold what the bot thinks, symbol by symbol? If not (a manual trade, a
-    missed fill), pause instead of trading on a wrong picture. Always fine on the simulator."""
+    """Real (paper) accounts: does the account hold what the bots think, symbol by symbol? Several dip bots may trade one
+    symbol there, so the account's position is compared with all their records added up (others_hold).
+    If it differs (a manual trade, a missed fill), pause instead of trading on a wrong picture. Always fine on the
+    simulator."""
     if open_orders(session, bot):
         return True  # in flux; compare once the orders finish
     held = {h.symbol: h.shares for h in holdings(session, bot)}
@@ -373,10 +375,18 @@ def reconcile(session: Session, bot: Bot, broker: Broker, now: datetime) -> bool
         qty = broker.position_qty(s)
         if qty is None:
             return True  # the simulator: nothing to compare with
-        if not same_qty(qty, held.get(s, 0)):
+        view = others_hold(session, bot, s)
+        if view is None:
+            continue  # another bot's order for it is working: compare next time
+        theirs, per = view
+        mine = held.get(s, 0)
+        if not same_qty(qty, mine + theirs):
             if bot.status == "active":
                 bot.status = "paused"
-                log_event(session, bot.id, "reconcile", f"Broker holds {fmt_qty(qty)} {s} but the bot's records say {fmt_qty(held.get(s, 0))}. "
+                records = (f"the bots' records say {fmt_qty(mine + theirs)} (this bot {fmt_qty(mine)}, "
+                           + ", ".join(f"bot #{i} {fmt_qty(n)}" for i, n in per.items()) + ")" if per
+                           else f"the bot's records say {fmt_qty(mine)}")
+                log_event(session, bot.id, "reconcile", f"Broker holds {fmt_qty(qty)} {s} but {records}. "
                           "Paused: check the account (manual trades on this symbol?) before resuming.", "error", now)
             return False
     return True

@@ -62,6 +62,7 @@ TREND_HISTORY_DAYS = 320  # calendar days of daily closes for the trend filter's
 MOVE_DAYS = 14  # drop_mode "volatility": a symbol's usual daily move is the average of its last 14 daily ranges
 MOVE_HISTORY_DAYS = 40  # calendar days of daily bars for them
 UNIT = {"days": "day", "hours": "hour"}
+NOT_SENT = ("rejected", "canceled", "failed")  # an order that ended without a fill (or was never sent: trader._refusal)
 
 
 # ---------------------------------------------------------------------------
@@ -439,8 +440,12 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
             lines.append(f"{s}: would sell ({reason}) at ${q.price:.2f}, {_pct(change)} from the buy")
             continue
         order = submit_order(session, bot, broker, "SELL", h.shares, reason, now, decide(), symbol=s)
-        sold.append(s)
         done = _describe(order)
+        if order.status in NOT_SENT:  # still held: the next check tries again
+            lines.append(f"{s}: {reason} at ${q.price:.2f} ({_pct(change)}), but {done.rstrip('.')}. Still held: tried again at "
+                         "the next check")
+            continue
+        sold.append(s)
         lines.append(f"{s}: {reason} at ${q.price:.2f} ({_pct(change)}): {done}")
         item = by_symbol.get(s)
         if item is not None:
@@ -603,6 +608,9 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
                         else f"a slot (${min(slot, budget):,.0f}) can't buy one share at ${q.price:.2f}{whole_why}")
             continue
         order = submit_order(session, bot, broker, "BUY", shares, "dip", now, decide(), symbol=s, reference_price=ref)
+        if order.status in NOT_SENT:  # not bought: the fall is still followed, the slot and the money still free
+            notes[s] = f"not bought: {_describe(order)}"
+            continue
         budget -= shares * unit
         free -= 1
         bought.append(s)
@@ -732,6 +740,10 @@ def top_up(session: Session, bot: Bot, broker: Broker, now: datetime, held: dict
             continue
         order = submit_order(session, bot, broker, "BUY", shares, "top-up", now, decide(), symbol=s,
                              reference_price=h.reference_price)
+        if order.status in NOT_SENT:
+            spent -= shares * unit
+            lines.append(f"{s}: not topped up: {_describe(order)}")
+            continue
         topped.append(s)
         after = (f"; now {fmt_qty(h.shares)} sh, average ${h.entry_price:.2f}, stop ${h.stop_price:.2f}, target "
                  f"${h.target_price:.2f}" if order.status in ("filled", "partially_filled") and h.entry_price else "")

@@ -117,13 +117,20 @@ def _bot_out(session: Session, bot: Bot) -> BotOut:
     })
 
 
-def _symbol_clash(session: Session, broker: str, symbols: list[str], exclude: int | None = None) -> tuple[str, Bot] | None:
-    """On a real (paper) account, another bot already trading one of these symbols: (symbol, that bot). Both would
-    buy and sell the same shares and corrupt each other's position. The simulator keeps every bot apart.
+def _symbol_clash(session: Session, broker: str, symbols: list[str], exclude: int | None = None,
+                  dip_bot: bool = False) -> tuple[str, Bot] | None:
+    """On a real (paper) account, a bot that can't share one of these symbols with the new one: (symbol, that bot).
+    Dip bots share symbols with each other (dip_bot=True: the new one is a dip bot): each books its own fills and sells
+    only its own shares, the account check adds up all their records (rotation.reconcile), and no order crosses
+    another bot's (trader._refusal). The others keep their symbols to themselves: a single-symbol bot's stop-loss rests
+    at the broker as an open sell order, and Alpaca rejects any buy of that symbol while it's open (wash-trade
+    protection); a rotation bot's rebalance isn't made for sharing. The simulator keeps every bot apart.
     exclude: a bot that may trade them (a dip bot adding symbols to its own watchlist)."""
     if broker not in SHARED_ACCOUNT_BROKERS:
         return None
     for other in session.scalars(select(Bot).where(Bot.broker == broker, Bot.status != "archived", Bot.id != (exclude or 0))):
+        if dip_bot and other.strategy == DIP:
+            continue  # two dip bots: fine
         if other.strategy == ROTATION:
             theirs = set(other.universe or [])
         elif other.strategy == DIP:  # what it watches now, and what it still holds after a symbol was removed
@@ -134,6 +141,13 @@ def _symbol_clash(session: Session, broker: str, symbols: list[str], exclude: in
             if s in theirs:
                 return s, other
     return None
+
+
+def _clash_text(clash: tuple[str, Bot], broker: str) -> str:
+    symbol, other = clash
+    return (f"bot #{other.id} already trades {symbol} on {broker}. On a real account only dip bots share symbols, with "
+            "each other: a single-symbol bot's stop-loss waits at Alpaca as an open sell order (Alpaca rejects buys of "
+            "that symbol meanwhile), and a rotation bot keeps its symbols to itself")
 
 
 class _Locked:
@@ -235,8 +249,7 @@ def create_bot(body: BotCreate, session: Session = Depends(get_session)):
     if info["live"] and not body.confirm_live:
         raise HTTPException(422, "real-money bot: set confirm_live=true to confirm")
     if clash := _symbol_clash(session, body.broker, [symbol]):
-        raise HTTPException(409, f"bot #{clash[1].id} already trades {symbol} on {body.broker}; one bot per symbol "
-                                 "per real account, or their positions would mix")
+        raise HTTPException(409, _clash_text(clash, body.broker))
 
     params = body.model_dump(exclude={"name", "symbol", "broker", "allocated_cash", "confirm_live"})
     bot = Bot(name=body.name or f"{symbol} {body.strategy}", symbol=symbol, broker=body.broker, status="active",
@@ -271,8 +284,7 @@ def create_rotation_bot(body: RotationBotCreate, session: Session = Depends(get_
     if info["live"]:
         raise HTTPException(422, "rotation bots trade on paper accounts only for now: paper-trade it first")
     if clash := _symbol_clash(session, body.broker, body.universe):
-        raise HTTPException(409, f"bot #{clash[1].id} already trades {clash[0]} on {body.broker}; one bot per symbol "
-                                 "per real account, or their positions would mix")
+        raise HTTPException(409, _clash_text(clash, body.broker))
 
     # The universe's prices today: they validate the symbols and start the benchmark (the universe held equally)
     now = utcnow()
@@ -328,9 +340,8 @@ def create_dip_bot(body: DipBotCreate, session: Session = Depends(get_session)):
     """A dip buyer: watches `symbols` and buys any that fell drop_pct during the last `lookback` days (or hours),
     selling it back up (dip.py). A real-money broker needs confirm_live. The watchlist can change while it runs."""
     live = _usable_broker_or_422(body.broker, body.confirm_live)
-    if clash := _symbol_clash(session, body.broker, body.symbols):
-        raise HTTPException(409, f"bot #{clash[1].id} already trades {clash[0]} on {body.broker}; one bot per symbol "
-                                 "per real account, or their positions would mix")
+    if clash := _symbol_clash(session, body.broker, body.symbols, dip_bot=True):
+        raise HTTPException(409, _clash_text(clash, body.broker))
     prices = _prices_or_422(body.symbols)  # also the benchmark: the starting watchlist held in equal parts
     now = utcnow()
     params = body.model_dump(exclude={"name", "broker", "allocated_cash", "symbols", "confirm_live"})
@@ -412,9 +423,8 @@ def add_to_watchlist(bot_id: int, body: WatchSymbols, session: Session = Depends
             raise HTTPException(409, "already on the watchlist")
         if len(have) + len(new) > 60:
             raise HTTPException(422, "a watchlist holds at most 60 symbols")
-        if clash := _symbol_clash(session, bot.broker, new, exclude=bot.id):
-            raise HTTPException(409, f"bot #{clash[1].id} already trades {clash[0]} on {bot.broker}; one bot per symbol "
-                                     "per real account, or their positions would mix")
+        if clash := _symbol_clash(session, bot.broker, new, exclude=bot.id, dip_bot=True):
+            raise HTTPException(409, _clash_text(clash, bot.broker))
         _prices_or_422(new)
         now = utcnow()
         for s in new:

@@ -296,8 +296,15 @@ Safety built in:
 - **Drawdown breaker**: a bot auto-pauses if equity falls `max_drawdown_pct` below its peak.
 - **No duplicate or lost orders**: each order is saved *before* it is sent, with a unique client id; after a crash or
   a network drop the scheduler asks the broker what happened instead of re-sending.
-- **Reconciliation** (real brokers): if the account's shares don't match the bot's records (e.g. you traded by
-  hand), the bot pauses. Only one bot per symbol per real account, so positions can't mix.
+- **Reconciliation** (real brokers): if the account's shares don't match the bots' records (e.g. you traded by
+  hand), the bot pauses.
+- **Several bots, one symbol, one account**: dip bots may trade the same symbol on one real account.
+  Each books only its own fills and sells only its own shares; the account check adds up all their records; a sale
+  bigger than what the account holds beyond the other bots' shares isn't sent (it would sell theirs, or sell short)
+  and pauses the bot; and no order goes out while another bot's order on the other side of that symbol is still
+  working (Alpaca's wash-trade protection would reject it), it's retried at the next check. Rotation and
+  single-symbol bots keep their symbols to themselves: a single-symbol bot's stop-loss rests at Alpaca as an open sell
+  order, and Alpaca rejects buys of that symbol meanwhile.
 - **Restart-safe**: the time of the last decision is stored in the database, so a restart never repeats a
   check (and never skips the afternoon one because the morning one ran).
 - **History is never deleted**: bots are archived, not removed. Data lives in its own Postgres container

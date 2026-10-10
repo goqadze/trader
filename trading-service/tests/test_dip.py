@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app import dip, main, rotation, scheduler
-from app.brokers import BrokerError
+from app.brokers import BrokerError, BrokerOrder
 from app.brokers import catalog as real_catalog
 from app.models import DIP, Decision, Event, Holding, Order, Signal, WatchItem
 from app.trader import add_capital, holdings
@@ -706,6 +706,178 @@ def test_a_top_up_buys_fractions_with_fractional_on(session):
     assert broker.sent[-1][2] == pytest.approx(50.728, abs=1e-3) and h.shares * 100 == pytest.approx(slot, abs=0.01)
 
 
+# --- One real account, several bots on one symbol --------------------------------------------------------
+
+def _sharing(session):
+    """Two dip bots on one Alpaca account, both watching A: bot #1 (2 slots) buys 48 A, then bot #2 (4 slots) 24."""
+    one = make_dip(session, broker="alpaca-paper")
+    two = make_dip(session, broker="alpaca-paper", max_positions=4)
+    broker = FakeBroker(now=T, prices=dict(QUOTES))
+    broker.held_by = {}  # the account's positions
+    check(session, one, broker)
+    check(session, two, broker)
+    broker.now = T15
+    return one, two, broker
+
+
+def _held(session, bot, symbol="A"):
+    h = session.scalar(select(Holding).where(Holding.bot_id == bot.id, Holding.symbol == symbol))
+    return h.shares if h else 0
+
+
+BACK = bars(A=[110] * 5 + [103, 110], B=[50] * 7)  # by 11:15 A is back at its target, $110
+
+
+def test_two_bots_trade_one_symbol_each_with_its_own_shares(session):
+    one, two, broker = _sharing(session)
+    assert broker.sent == [("BUY", "A", 48), ("BUY", "A", 24)] and broker.held_by == {"A": 72}
+    assert (_held(session, one), _held(session, two)) == (48, 24)
+    assert rotation.reconcile(session, one, broker, T15) and rotation.reconcile(session, two, broker, T15)
+    broker.prices["A"] = 110.0
+    check(session, two, broker, now=T15, df=BACK)  # bot #2 sells its 24 at the target, and only those
+    assert broker.sent[-1] == ("SELL", "A", 24) and broker.held_by == {"A": 48}
+    assert (_held(session, one), _held(session, two)) == (48, 0) and two.realized_pnl == pytest.approx(24 * 7)
+    assert rotation.reconcile(session, one, broker, T15) and one.status == "active"
+    check(session, one, broker, now=T15, df=BACK)
+    assert broker.sent[-1] == ("SELL", "A", 48) and broker.held_by == {"A": 0}
+
+
+def test_the_account_check_adds_up_every_bots_records(session):
+    one, two, broker = _sharing(session)
+    broker.held_by["A"] = 70  # 2 sold by hand
+    assert not rotation.reconcile(session, one, broker, T15) and one.status == "paused"
+    log = session.scalars(select(Event).where(Event.kind == "reconcile")).one()
+    assert log.message.startswith("Broker holds 70 A but the bots' records say 72 (this bot 48, bot #2 24). Paused")
+    one.status = "active"
+    session.add(Order(bot_id=two.id, side="SELL", symbol="A", qty=24, reason="target", status="submitted",
+                      client_order_id="working", created_at=T15, updated_at=T15))
+    session.commit()
+    assert rotation.reconcile(session, one, broker, T15)  # bot #2's sale is still working: compared next time
+
+
+def test_a_sale_never_takes_another_bots_shares_or_sells_short(session):
+    one, two, broker = _sharing(session)
+    h = session.scalar(select(Holding).where(Holding.bot_id == two.id))
+    h.shares = 30  # bot #2's records are off: 6 more than it bought
+    session.commit()
+    broker.prices["A"] = 110.0
+    d = check(session, two, broker, now=T15, df=BACK)
+    assert broker.sent == [("BUY", "A", 48), ("BUY", "A", 24)]  # nothing sent
+    order = session.scalars(select(Order).order_by(Order.id.desc())).first()
+    assert order.status == "rejected" and order.error == ("the account holds 72 A, 48 of them other bots': selling 30 "
+                                                          "would sell theirs")
+    assert two.status == "paused" and _held(session, two) == 30 and item(session, two, "A").sold_on is None
+    assert any("but SELL 30 sh rejected" in x and "Still held" in x for x in d.steps)
+    alert = session.scalars(select(Event).where(Event.kind == "reconcile")).one()
+    assert alert.level == "error" and "not sent" in alert.message and "Paused" in alert.message
+    broker.held_by["A"] = 40  # fewer in the account than bot #1 alone thinks it has
+    check(session, one, broker, now=T15, df=BACK)
+    assert len(broker.sent) == 2 and "would sell short" in session.scalars(select(Order).order_by(Order.id.desc())).first().error
+
+
+def test_no_order_crosses_another_bots_working_order(session):
+    one = make_dip(session, broker="alpaca-paper")
+    two = make_dip(session, broker="alpaca-paper", max_positions=4)
+    broker = FakeBroker(now=T, prices=dict(QUOTES))
+    broker.held_by = {}
+    check(session, one, broker)
+    working = Order(bot_id=one.id, side="SELL", symbol="A", qty=48, reason="manual", status="submitted",
+                    client_order_id="working", created_at=T, updated_at=T)
+    session.add(working)
+    session.commit()
+    d = check(session, two, broker, kind="manual")  # Alpaca would reject a buy of A while bot #1's sale of it works
+    assert broker.sent == [("BUY", "A", 48)] and two.status == "active" and _held(session, two) == 0
+    line = next(x for x in d.steps if x.startswith("A: "))
+    assert line.endswith("not bought: BUY 24 sh rejected: bot #1's SELL of A is still working at the broker, which rejects "
+                         "an order on the other side of the same symbol meanwhile; tries again at the next check")
+    assert item(session, two, "A").dip_reference == 110  # the fall is still followed: bought once it can be
+    working.status = "filled"
+    session.commit()
+    broker.now = T15
+    check(session, two, broker, now=T15, df=bars(A=[110] * 5 + [103, 103], B=[50] * 7))
+    assert broker.sent[-1] == ("BUY", "A", 24)
+
+
+def test_a_sale_the_broker_rejects_keeps_the_holding_and_tries_again(session):
+    bot, broker = _bought(session)
+    broker.prices["A"], broker.submit_mode = 97.0, "reject"  # under the stop 97.85, but the broker says no
+    d = check(session, bot, broker, now=T15, df=bars(A=[110] * 5 + [103, 97], B=[50] * 7))
+    assert any(x.startswith("A: stop-loss at $97.00") and "but SELL 48 sh rejected: insufficient buying power. Still held"
+               in x for x in d.steps)
+    assert _held(session, bot) == 48 and item(session, bot, "A").status == "watching"  # not blacklisted
+    broker.submit_mode = "fill"
+    check(session, bot, broker, now=T15 + timedelta(minutes=15), df=bars(A=[110] * 5 + [103, 97, 97], B=[50] * 8))
+    assert broker.sent[-1] == ("SELL", "A", 48) and item(session, bot, "A").status == "blacklisted"
+
+
+def test_a_buy_the_broker_rejects_is_not_counted(session):
+    bot = make_dip(session)
+    broker = FakeBroker(now=T, prices=dict(QUOTES))
+    broker.submit_mode = "reject"
+    check(session, bot, broker)
+    assert holdings(session, bot) == [] and bot.cash == 10_000
+    assert session.scalar(select(Signal)).outcome == "Not bought: BUY 48 sh rejected: insufficient buying power."
+    assert item(session, bot, "A").dip_reference == 110
+
+
+# One bot sells A at +2% while the other, with other rules, buys it on the turn up: the same scheduler tick. 15-minute
+# closes from 9:45 New York (index = close time): A peaked at 125 at 10:15, fell to 103 by 11:00, is back at 106 at 11:15
+TURN = bars(A=[110, 110, 125, 110, 110, 103, 106, 106, 106], B=[50] * 9)
+
+
+def _two_dip_bots(session, monkeypatch):
+    """Bot #1 buys a 5% fall at once and sells 2% up; bot #2 needs a 15% fall and waits for the turn, with 4 slots. One
+    Alpaca account; the scheduler runs them one after the other, as it does every 30 seconds."""
+    one = make_dip(session, broker="alpaca-paper", target_mode="percent", rise_pct=0.02)
+    two = make_dip(session, broker="alpaca-paper", drop_pct=0.15, max_positions=4, rebound=True, rebound_pct=0.01)
+    broker = FakeBroker(prices=dict(QUOTES))
+    broker.held_by = {}
+    monkeypatch.setattr(rotation, "yahoo_closes", lambda symbols, start: pd.DataFrame(
+        {s: [QUOTES[s]] for s in symbols}, index=pd.DatetimeIndex(["2025-06-02"])))
+    clock = {"t": T}
+    fns = {"bars_fn": lambda symbols, interval, start: TURN[TURN.index <= clock["t"]].reindex(columns=symbols),
+           "news_fn": no_news}
+
+    def tick(t, price):
+        clock["t"] = broker.now = t
+        broker.prices["A"] = price
+        for bot in (one, two):
+            scheduler.process_bot(bot.id, t, broker_factory=lambda b: broker, dip_fns=fns)
+        session.expire_all()
+
+    return one, two, broker, tick
+
+
+def test_two_dip_bots_buy_and_sell_one_stock_in_the_same_tick(session, monkeypatch):
+    one, two, broker, tick = _two_dip_bots(session, monkeypatch)
+    tick(T, 103.0)  # 11:00: bot #1 buys the fall (17.6% under 125); bot #2 starts following it
+    assert broker.sent == [("BUY", "A", 48)] and item(session, two, "A").dip_reference == 125
+    tick(T15, 106.0)  # 11:15: bot #1 is 2% up and sells; bot #2 sees the turn up from 103 and buys
+    assert broker.sent == [("BUY", "A", 48), ("SELL", "A", 48), ("BUY", "A", 23)]  # its sale was filled first
+    assert broker.held_by == {"A": 23} and (_held(session, one), _held(session, two)) == (0, 23)
+    assert one.realized_pnl == pytest.approx(48 * 3) and (one.status, two.status) == ("active", "active")
+    tick(T15 + timedelta(minutes=15), 106.0)  # 11:30: the account check adds up both: 0 + 23 = 23, nobody paused
+    assert (one.status, two.status) == ("active", "active") and len(broker.sent) == 3
+    assert not session.scalars(select(Event).where(Event.kind.in_(("reconcile", "error")))).all()
+
+
+def test_a_buy_waits_while_the_other_bots_sale_of_that_stock_is_still_filling(session, monkeypatch):
+    one, two, broker, tick = _two_dip_bots(session, monkeypatch)
+    tick(T, 103.0)
+    broker.submit_mode = "pending"  # bot #1's sale doesn't fill within the wait: still working at Alpaca
+    tick(T15, 106.0)
+    assert broker.sent == [("BUY", "A", 48), ("SELL", "A", 48)]  # bot #2's buy wasn't sent: Alpaca would reject it
+    note = session.scalars(select(Signal).where(Signal.bot_id == two.id, Signal.kind == "rebound")).one().outcome
+    assert note.startswith("Not bought: BUY 23 sh rejected: bot #1's SELL of A is still working at the broker")
+    assert two.status == "active" and _held(session, two) == 0
+    sale = session.scalars(select(Order).where(Order.bot_id == one.id, Order.side == "SELL")).one()
+    broker.orders[sale.client_order_id] = BrokerOrder(status="filled", filled_qty=48, avg_price=106.0, broker_order_id="b")
+    broker.held_by["A"], broker.submit_mode = 0, "fill"  # it filled at Alpaca
+    tick(T15 + timedelta(minutes=15), 106.0)  # 11:30: bot #1 books its sale, then bot #2 buys
+    assert broker.sent[-1] == ("BUY", "A", 23) and broker.held_by == {"A": 23}
+    assert (_held(session, one), _held(session, two)) == (0, 23) and (one.status, two.status) == ("active", "active")
+
+
 # --- The API --------------------------------------------------------------------------------------------
 
 CLOSED, OPEN = at(23, 0), T  # Monday 19:00 and 11:00 New York
@@ -992,3 +1164,18 @@ def test_real_money_needs_a_yes_and_an_account_short_of_it_is_flagged(api, monke
     ev = c.get(f"/bots/{live['id']}/events").json()[0]
     assert ev["level"] == "warning" and ev["message"].startswith("Added $1,000.00 of REAL MONEY: $11,000.00 put in")
     assert "The alpaca-live account can spend $10,500.00, less than the $11,000.00 its bots hold as cash" in ev["message"]
+
+
+def test_only_dip_bots_share_symbols_on_a_real_account(api, monkeypatch):
+    c, _, _ = api
+    monkeypatch.setattr(main, "catalog", lambda: [{**b, "available": True} for b in real_catalog()])
+    one = c.post("/bots/dip", json={**BODY, "broker": "alpaca-paper"})
+    two = c.post("/bots/dip", json={**BODY, "broker": "alpaca-paper", "symbols": ["a", "c"]})
+    assert one.status_code == 201 and two.status_code == 201, two.text
+    assert c.post(f"/bots/{one.json()['id']}/watchlist", json={"symbols": ["C"]}).status_code == 200
+    r = c.post("/bots/rotation", json={"universe": ["A", "B", "C"], "top_n": 2, "allocated_cash": 10_000, "broker": "alpaca-paper"})
+    assert r.status_code == 409 and "only dip bots share symbols" in r.text
+    r = c.post("/bots", json={"symbol": "A", "broker": "alpaca-paper"})
+    assert r.status_code == 409 and "already trades A" in r.text and "rejects buys" in r.text
+    assert c.post("/bots/rotation", json={"universe": ["D", "E"], "top_n": 1, "allocated_cash": 10_000,
+                                          "broker": "alpaca-paper"}).status_code in (201, 422)  # no clash (D, E: no prices here)
