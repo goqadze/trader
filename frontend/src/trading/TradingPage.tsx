@@ -8,13 +8,12 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { tradingApi } from "./api";
 import BotForm, { type BotFormInitial } from "./BotForm";
 import { useConfirm } from "./confirm";
-import RotationBotForm, { type RotationBotInitial } from "./RotationBotForm";
 import { dipRules } from "../dip/DipParts";
 import { strategyName } from "../strategies";
 import {
   STATUS_COLOR, botTitle, checkTimes, holdsMany, isDip, isRotation, localTime, nyTime, pct, pnlColor, relative, rotationRules, slotTimes, usd,
 } from "./format";
-import type { Bot, BotCreate, RotationBotCreate, TradingEvent, TradingStatus } from "./types";
+import type { Bot, BotCreate, TradingEvent, TradingStatus } from "./types";
 import { usePolling } from "./usePolling";
 
 /** Market clock + scheduler heartbeat, shown on both trading pages. Given a bot, shows that bot's next decision. */
@@ -189,8 +188,6 @@ export default function TradingPage() {
   const [showArchived, setShowArchived] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
   const [initial, setInitial] = useState<BotFormInitial>({});
-  const [rotationOpen, setRotationOpen] = useState(false);
-  const [rotationInitial, setRotationInitial] = useState<RotationBotInitial>({});
   const [brokerPick, setBrokerPick] = useState(rememberedBroker);
 
   const bots = usePolling(() => tradingApi.listBots(showArchived), 15_000, [showArchived]);
@@ -209,16 +206,12 @@ export default function TradingPage() {
   const phone = Grid.useBreakpoint().sm === false; // undefined before the first measure: the desktop control
   const events = usePolling(() => tradingApi.allEvents(broker === "all" ? undefined : broker), 15_000, [broker]);
 
-  // Arriving from the backtest page's "Trade this strategy" (or the rotation page's "Paper trade this"): open the form pre-filled
+  // Arriving from the backtest page's "Trade this strategy": open the form pre-filled
   useEffect(() => {
-    const state = location.state as { prefill?: BotFormInitial; rotationPrefill?: RotationBotInitial } | null;
-    if (state?.prefill) {
-      setInitial(state.prefill);
-      setFormOpen(true);
-    } else if (state?.rotationPrefill) {
-      setRotationInitial(state.rotationPrefill);
-      setRotationOpen(true);
-    } else return;
+    const state = location.state as { prefill?: BotFormInitial } | null;
+    if (!state?.prefill) return;
+    setInitial(state.prefill);
+    setFormOpen(true);
     navigate(location.pathname, { replace: true, state: null }); // don't reopen on refresh
   }, [location, navigate]);
 
@@ -236,13 +229,6 @@ export default function TradingPage() {
     const bot = await tradingApi.createBot(body as BotCreate);
     message.success(`Bot created: ${bot.name}`);
     setFormOpen(false);
-    navigate(`/trading/${bot.id}`);
-  };
-
-  const createRotation = async (body: RotationBotCreate) => {
-    const bot = await tradingApi.createRotationBot(body);
-    message.success(`Bot created: ${bot.name}`);
-    setRotationOpen(false);
     navigate(`/trading/${bot.id}`);
   };
 
@@ -292,8 +278,8 @@ export default function TradingPage() {
                 New dip bot
               </Button>
             </Tooltip>
-            <Tooltip title="Holds the strongest few of a group of symbols, rebalanced at each month's end (see the Rotation page)">
-              <Button icon={<RetweetOutlined />} onClick={() => { setRotationInitial({}); setRotationOpen(true); }}>
+            <Tooltip title="Holds the strongest few of a group of symbols, rebalanced at each month's end (see the Momentum Rotation page)">
+              <Button icon={<RetweetOutlined />} onClick={() => navigate("/rotation", { state: { newRotationBot: true } })}>
                 New rotation bot
               </Button>
             </Tooltip>
@@ -373,13 +359,6 @@ export default function TradingPage() {
         times={slotTimes(status.data)}
         onCancel={() => setFormOpen(false)}
         onSubmit={create}
-      />
-      <RotationBotForm
-        open={rotationOpen}
-        initial={rotationInitial}
-        brokers={status.data?.brokers ?? [{ name: "paper", label: "Paper (built-in simulator)", live: false, available: true, reason: "" }]}
-        onCancel={() => setRotationOpen(false)}
-        onSubmit={createRotation}
       />
     </>
   );

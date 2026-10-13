@@ -252,6 +252,60 @@ class DipPresetConfig(DipRules):
         return self
 
 
+class RotationPresetConfig(BaseModel):
+    """What a saved momentum rotation setup keeps: the backtest's rules (backtest-service RotationConfig, the names of
+    RotationBotCreate) and its universe, capital and periods. Nothing else: a dip buyer's setup is refused."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    symbols: list[str] = Field(..., min_length=2, max_length=60)  # the universe
+    top_n: int = Field(3, ge=1, le=20)  # hold the strongest this many, in equal parts
+    lookback_months: int = Field(12, ge=1, le=24)  # momentum = the return over this many months ...
+    skip_months: int = Field(1, ge=0, le=3)  # ... leaving out the latest ones
+    abs_filter: bool = True  # only hold symbols that rose: a slot without one waits in cash
+    fractional: bool = True
+    initial_cash: float | None = Field(None, ge=100, le=10_000_000)
+    practice: tuple[date, date] | None = None
+    exam: tuple[date, date] | None = None  # None: no exam
+    period_months: int | None = Field(None, ge=1, le=240)  # "the last n months": the dashboard recounts from today
+
+    @field_validator("symbols")
+    @classmethod
+    def _clean(cls, v: list[str]) -> list[str]:
+        out = _tickers(v)
+        if len(out) < 2:
+            raise ValueError("pick at least 2 symbols")
+        return out
+
+    @model_validator(mode="after")
+    def _fits(self):
+        if self.top_n > len(self.symbols):
+            raise ValueError("hold no more symbols than the universe has")
+        for period in (self.practice, self.exam):
+            if period and period[1] <= period[0]:
+                raise ValueError("a period must end after it starts")
+        return self
+
+
+StudyStrategy = Literal["dip", "rotation"]  # what a study's tests (and a saved setup) are: models.DipStudy.strategy
+PRESET_CONFIGS: dict[str, type[BaseModel]] = {"dip": DipPresetConfig, "rotation": RotationPresetConfig}
+
+
+class RotationPresetIn(BaseModel):
+    """Save a momentum rotation setup under a name (unique across dip and rotation setups)."""
+
+    name: str = Field(..., max_length=60)
+    config: RotationPresetConfig
+
+    @field_validator("name")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = " ".join(v.split())
+        if not v:
+            raise ValueError("give it a name")
+        return v
+
+
 class DipPresetIn(BaseModel):
     """Save a dip buyer setup under a name; a name that exists (ignoring case) is replaced."""
 
@@ -272,7 +326,8 @@ class DipPresetOut(BaseModel):
 
     id: int
     name: str
-    config: dict  # as saved: DipPresetConfig (the dashboard fills any rule added since with its default)
+    strategy: str = "dip"
+    config: dict  # as saved: DipPresetConfig or RotationPresetConfig (the dashboard fills any rule added since with its default)
     created_at: datetime
     updated_at: datetime
 
@@ -283,7 +338,7 @@ class DipTestIn(BaseModel):
     code: str = Field(..., min_length=1, max_length=20)
     name: str = Field(..., min_length=1, max_length=60)
     watchlist: str = Field("", max_length=60)
-    config: DipPresetConfig
+    config: dict  # the study's strategy's setup: checked as PRESET_CONFIGS[study.strategy] when added
     results: dict[str, dict]  # period -> the grid's numbers
     detail: dict[str, dict] = {}  # period -> {"curve": [[date, equity, buy & hold], ...], "by_symbol": [...], ...}
     score: float | None = None
@@ -298,6 +353,7 @@ class DipStudyIn(BaseModel):
     tests; add the tests with POST /dip/studies/{id}/tests, in as many batches as you like."""
 
     name: str = Field(..., max_length=80)
+    strategy: StudyStrategy = "dip"  # its tests' setups: dip buyer or momentum rotation
     description: str = Field("", max_length=20_000)
     periods: dict[str, tuple[date, date]] = Field(..., min_length=1)  # in the grid's order
 
@@ -315,6 +371,7 @@ class DipStudyOut(BaseModel):
 
     id: int
     name: str
+    strategy: str = "dip"
     description: str
     periods: dict
     created_at: datetime

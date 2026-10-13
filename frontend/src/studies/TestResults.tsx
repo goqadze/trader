@@ -1,6 +1,7 @@
-// The dip buyer's test batches (parameter sweeps): every tested setup under its name, its rules and how it did in each
-// window, as a sortable grid. Any of them can be saved as a setup or loaded into the backtest form.
-// trading-service keeps them (/dip/studies, /dip/tests); a sweep script fills them in.
+// A strategy's test batches (parameter sweeps): every tested setup under its name, its rules and how it did in each
+// window, as a sortable grid. Any of them can be saved as a setup or loaded into the backtest form. The dip buyer's and
+// the momentum rotation's (each strategy's rules and words come from its kit: dip/kit.tsx, rotation/kit.tsx).
+// trading-service keeps them (/dip/studies?strategy=, /dip/tests); a sweep script fills them in.
 
 import { ExperimentOutlined, SaveOutlined, StarFilled } from "@ant-design/icons";
 import { Alert, App as AntApp, Button, Card, Col, Empty, Grid, Input, Modal, Row, Select, Space, Spin, Switch, Table, Tag, Tooltip, Typography } from "antd";
@@ -9,17 +10,14 @@ import dayjs from "dayjs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { tradingApi } from "../trading/api";
-import {
-  type DipPresetConfig, type DipStudy, type DipStudySummary, type DipTest, type DipTestDetail, type DipTestNumbers, type DipTestQuery, fallText,
-  pickRules, sellText,
-} from "./types";
+import type { RuleColumn, StrategyKit } from "./kit";
+import type { Study, StudySummary, StudyTest, StudyTestDetail, TestNumbers, TestQuery } from "./types";
 
 const MUTED = "#8b98b5";
 const GREEN = "#33c088";
 const RED = "#ef5b6b";
 const color = (v: number | null | undefined) => (v == null || Math.abs(v) < 0.005 ? undefined : v > 0 ? GREEN : RED);
 const signed = (v: number | null | undefined, d = 1) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(d)}%`);
-const pctOf = (f: number) => `${+(f * 100).toFixed(2)}%`;
 
 const PERIOD_LABEL: Record<string, string> = {
   practice: "Practice", exam: "Exam", stress: "Stress check", early: "Early check", practice4: "Practice", exam4: "Exam",
@@ -40,24 +38,9 @@ const PARTIAL_PERIODS = new Set(["bear"]);
 /** "Practice · 9 mo": a window's name and its length */
 const periodLabel = (k: string, p?: [string, string]) =>
   `${PERIOD_LABEL[k] ?? k.charAt(0).toUpperCase() + k.slice(1)}${p ? ` · ${months(p)} mo` : ""}`;
-const periodTip = (k: string, p?: [string, string]) => PERIOD_TIP[k]?.(months(p)) ?? "";
+const periodTip = (k: string, p?: [string, string], tips?: Record<string, (n: number) => string>) =>
+  (tips?.[k] ?? PERIOD_TIP[k])?.(months(p)) ?? "";
 const span = (p?: [string, string]) => (p ? `${p[0]} → ${p[1]}` : "");
-
-/** The rules that differ between the tests of a sweep, as grid columns. */
-const RULES: { key: string; title: string; tip: string; value: (c: DipPresetConfig) => number; text: (c: DipPresetConfig) => string }[] = [
-  { key: "drop", title: "Fall", tip: "Buy after a fall of this much (or this many times the symbol's usual daily move) ...",
-    value: (c) => (c.drop_mode === "volatility" ? 10 + c.drop_atr : c.drop_pct),
-    text: (c) => (c.drop_mode === "volatility" ? `${+c.drop_atr.toFixed(2)}× move` : pctOf(c.drop_pct)) },
-  { key: "lookback", title: "In", tip: "... under the highest close of the last this many trading days", value: (c) => c.lookback, text: (c) => `${c.lookback}d` },
-  { key: "turn", title: "Turn", tip: "Wait for the turn: buy once it is back up this much from its low (off: buy at once)", value: (c) => (c.rebound ? c.rebound_pct : 0), text: (c) => (c.rebound ? pctOf(c.rebound_pct) : "off") },
-  { key: "rise", title: "Sell", tip: "Sell when it is up this much from the buy", value: (c) => (c.target_mode === "percent" ? c.rise_pct : 0), text: (c) => (c.target_mode === "percent" ? `+${pctOf(c.rise_pct)}` : "back") },
-  { key: "stop", title: "Stop", tip: "Stop-loss under the buy: sold and blacklisted", value: (c) => c.stop_pct, text: (c) => pctOf(c.stop_pct) },
-  { key: "reenable", title: "Blacklist", tip: "A stopped-out symbol is blacklisted this many trading days", value: (c) => c.reenable_days ?? 0, text: (c) => `${c.reenable_days ?? 0}d` },
-  { key: "hold", title: "Max hold", tip: "Sell anyway after this many trading days (— = never)", value: (c) => c.max_hold_days ?? 0, text: (c) => (c.max_hold_days ? `${c.max_hold_days}d` : "—") },
-  { key: "trend", title: "Trend", tip: "Only buy dips of symbols in an uptrend (50-day average above the 200-day)", value: (c) => (c.trend_filter ? 1 : 0), text: (c) => (c.trend_filter ? "up only" : "—") },
-  { key: "slots", title: "Slots", tip: "Positions at once: each buy gets 1/slots of the equity", value: (c) => c.max_positions, text: (c) => `${c.max_positions}` },
-  { key: "cash", title: "Capital", tip: "Starting capital (fractional shares on)", value: (c) => c.initial_cash ?? 0, text: (c) => `$${c.initial_cash ?? "—"}` },
-];
 
 /** The grid's sorting and filters, done by the server: each column says how it is sorted and filtered right now. */
 interface Controls {
@@ -65,7 +48,7 @@ interface Controls {
   filtered: (key: string) => (string | number)[] | null;
 }
 
-function ruleColumn(r: (typeof RULES)[number], choices: { value: number; text: string }[], c: Controls): ColumnType<DipTest> {
+function ruleColumn<C>(r: RuleColumn<C>, choices: { value: number; text: string }[], c: Controls): ColumnType<StudyTest<C>> {
   return {
     key: r.key,
     title: <Tooltip title={r.tip}>{r.title}</Tooltip>,
@@ -79,11 +62,11 @@ function ruleColumn(r: (typeof RULES)[number], choices: { value: number; text: s
   };
 }
 
-function periodColumns(period: string, range: [string, string] | undefined, c: Controls): ColumnGroupType<DipTest> {
-  const n = (t: DipTest): DipTestNumbers | undefined => t.results[period];
+function periodColumns<C>(period: string, range: [string, string] | undefined, c: Controls, tip: string): ColumnGroupType<StudyTest<C>> {
+  const n = (t: StudyTest<C>): TestNumbers | undefined => t.results[period];
   return {
     key: period,
-    title: <Tooltip title={`${periodTip(period, range)} ${span(range)}`}>{periodLabel(period, range)}</Tooltip>,
+    title: <Tooltip title={`${tip} ${span(range)}`}>{periodLabel(period, range)}</Tooltip>,
     children: [
       {
         key: `${period}-ret`,
@@ -92,7 +75,7 @@ function periodColumns(period: string, range: [string, string] | undefined, c: C
         align: "right",
         sorter: true,
         sortOrder: c.sortOrder(`${period}-ret`),
-        render: (_: unknown, t: DipTest) => {
+        render: (_: unknown, t: StudyTest<C>) => {
           const x = n(t);
           if (!x) return "—";
           if (x.error) return <Tooltip title={x.error}><Tag color="red">error</Tag></Tooltip>;
@@ -111,7 +94,7 @@ function periodColumns(period: string, range: [string, string] | undefined, c: C
         align: "right",
         sorter: true,
         sortOrder: c.sortOrder(`${period}-dd`),
-        render: (_: unknown, t: DipTest) => (n(t) && !n(t)?.error ? <span style={{ color: (n(t)?.max_drawdown_pct ?? 0) < -15 ? RED : undefined }}>{signed(n(t)?.max_drawdown_pct)}</span> : "—"),
+        render: (_: unknown, t: StudyTest<C>) => (n(t) && !n(t)?.error ? <span style={{ color: (n(t)?.max_drawdown_pct ?? 0) < -15 ? RED : undefined }}>{signed(n(t)?.max_drawdown_pct)}</span> : "—"),
       },
       {
         key: `${period}-trades`,
@@ -120,7 +103,7 @@ function periodColumns(period: string, range: [string, string] | undefined, c: C
         align: "right",
         sorter: true,
         sortOrder: c.sortOrder(`${period}-trades`),
-        render: (_: unknown, t: DipTest) => {
+        render: (_: unknown, t: StudyTest<C>) => {
           const x = n(t);
           if (!x || x.error) return "—";
           return (
@@ -138,21 +121,18 @@ function periodColumns(period: string, range: [string, string] | undefined, c: C
 }
 
 /** One test opened up: the rules in words, then per window its equity against holding, and each symbol's trades. */
-function TestDetailView({ test, periods }: { test: DipTest; periods: Record<string, [string, string]> }) {
-  const [detail, setDetail] = useState<DipTestDetail | null>(null);
+function TestDetailView<C extends { symbols: string[] }>({ test, periods, kit }: {
+  test: StudyTest<C>; periods: Record<string, [string, string]>; kit: StrategyKit<C>;
+}) {
+  const [detail, setDetail] = useState<StudyTestDetail<C> | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    tradingApi.dipTest(test.id).then(setDetail, (e) => setError(e instanceof Error ? e.message : String(e)));
+    tradingApi.studyTest<C>(test.id).then(setDetail, (e) => setError(e instanceof Error ? e.message : String(e)));
   }, [test.id]);
   const c = test.config;
-  const r = pickRules(c);
   return (
     <div style={{ padding: "4px 8px" }}>
-      <Typography.Paragraph style={{ marginBottom: 6 }}>
-        Every {r.interval === "1d" ? "day" : r.interval}: buy {fallText(r)}; sell {sellText(r)}; stop-loss {pctOf(r.stop_pct)} under the buy, then the
-        symbol is blacklisted for {c.reenable_days ?? 0} trading days. {r.max_positions} positions at once, each 1/{r.max_positions} of the equity
-        {c.initial_cash ? ` (about $${Math.round(c.initial_cash / r.max_positions)} each at the start)` : ""}, {r.fractional ? "fractional shares" : "whole shares"}.
-      </Typography.Paragraph>
+      <Typography.Paragraph style={{ marginBottom: 6 }}>{kit.describe(c)}</Typography.Paragraph>
       <div style={{ marginBottom: 8 }}>
         {c.symbols.map((s) => <Tag key={s}>{s}</Tag>)}
       </div>
@@ -204,7 +184,7 @@ function TestDetailView({ test, periods }: { test: DipTest; periods: Record<stri
                       { title: "Symbol", dataIndex: "symbol", width: 70 },
                       { title: "Trades", dataIndex: "trades", align: "right", sorter: (a, b) => a.trades - b.trades },
                       { title: "Won", dataIndex: "wins", align: "right" },
-                      { title: "Stops", dataIndex: "stops", align: "right", render: (v: number) => (v ? <span style={{ color: RED }}>{v}</span> : 0) },
+                      ...(kit.stops ? [{ title: "Stops", dataIndex: "stops", align: "right" as const, render: (v: number) => (v ? <span style={{ color: RED }}>{v}</span> : 0) }] : []),
                       { title: "P&L", dataIndex: "pnl", align: "right", sorter: (a, b) => a.pnl - b.pnl, defaultSortOrder: "ascend",
                         render: (v: number) => <span style={{ color: color(v) }}>{v >= 0 ? "+" : "-"}${Math.abs(v).toFixed(2)}</span> },
                     ]}
@@ -222,18 +202,18 @@ function TestDetailView({ test, periods }: { test: DipTest; periods: Record<stri
 /** Each rule's values and how they change the score, like for like (worked out by the server over the whole batch):
  *  among tests that are the same in every other rule (watchlist included), how far each value's score sits from the
  *  average of that group. Comparing plain medians would flatter values that were only tried around the best setups. */
-function RuleEffects({ effects }: { effects: DipStudySummary["effects"] }) {
+function RuleEffects<C>({ effects, rules, listWord }: { effects: StudySummary["effects"]; rules: RuleColumn<C>[]; listWord: string }) {
   const named: Record<string, { title: string; tip: string }> = {
-    watchlist: { title: "Watchlist", tip: "" },
+    watchlist: { title: listWord.charAt(0).toUpperCase() + listWord.slice(1), tip: "" },
     extra: { title: "Filter", tip: "A filter tested on top of the rules" },
-    ...Object.fromEntries(RULES.map((r) => [r.key, { title: r.title, tip: r.tip }])),
+    ...Object.fromEntries(rules.map((r) => [r.key, { title: r.title, tip: r.tip }])),
   };
   if (!effects.length) return null;
   return (
     <Card
       size="small"
       title={
-        <Tooltip title="Like for like: among tests that differ only in this rule, how many points each value's score sits above (+) or below (−) their average. The score is a test's weaker return of practice and exam. A rule whose values are all near 0 hardly matters.">
+        <Tooltip title={`Like for like: among tests that differ only in this rule (the ${listWord} too), how many points each value's score sits above (+) or below (−) their average. The score is a test's weaker return of practice and exam. A rule whose values are all near 0 hardly matters.`}>
           What matters: each rule's effect on the score
         </Tooltip>
       }
@@ -256,7 +236,7 @@ function RuleEffects({ effects }: { effects: DipStudySummary["effects"] }) {
 }
 
 /** Every window back to back: what $1 grew to, minus 1, in % (null when a window is missing). */
-function allWindows(t: DipTest, periods: string[]): number | null {
+function allWindows(t: StudyTest<unknown>, periods: string[]): number | null {
   let g = 1;
   for (const p of periods) {
     const x = t.results[p];
@@ -267,30 +247,31 @@ function allWindows(t: DipTest, periods: string[]): number | null {
 }
 
 /** Return per 1% of the worst drop, the weaker of practice and exam (null without both). */
-function calm(t: DipTest): number | null {
+function calm(t: StudyTest<unknown>): number | null {
   const xs = ["practice", "exam"].map((p) => t.results[p]).filter((x) => x && !x.error);
   if (xs.length < 2) return null;
   return Math.min(...xs.map((x) => x.total_return_pct / Math.max(1, -x.max_drawdown_pct)));
 }
 
-interface Props {
+interface Props<C extends { symbols: string[] }> {
+  kit: StrategyKit<C>;
   /** Fill the backtest form with this setup (the page switches to the Backtest tab). */
-  onLoad: (c: DipPresetConfig) => void;
+  onLoad: (c: C) => void;
 }
 
 const PAGE_SIZES = [25, 50, 100, 200];
 const DEFAULT_SORT = { key: "pick", order: "asc" as const }; // the picks first, then the best score
 
-export default function TestResults({ onLoad }: Props) {
+export default function TestResults<C extends { symbols: string[] }>({ kit, onLoad }: Props<C>) {
   const { message } = AntApp.useApp();
-  const [studies, setStudies] = useState<DipStudy[] | null>(null);
+  const [studies, setStudies] = useState<Study[] | null>(null);
   const [studyId, setStudyId] = useState<number | null>(null);
-  const [summary, setSummary] = useState<DipStudySummary | null>(null);
-  const [rows, setRows] = useState<{ total: number; items: DipTest[] } | null>(null);
+  const [summary, setSummary] = useState<StudySummary | null>(null);
+  const [rows, setRows] = useState<{ total: number; items: StudyTest<C>[] } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<Set<string>>(new Set());
-  const [saving, setSaving] = useState<{ test: DipTest; name: string } | null>(null);
+  const [saving, setSaving] = useState<{ test: StudyTest<C>; name: string } | null>(null);
   const [busy, setBusy] = useState(false);
   // What the server is asked for: the page, the sort, the filters (the switches, the search, each column's choices)
   const [page, setPage] = useState({ current: 1, size: 50 });
@@ -306,16 +287,16 @@ export default function TestResults({ onLoad }: Props) {
   const pin = !!Grid.useBreakpoint().md; // on a phone, pinned columns would fill the screen
 
   const loadPresets = useCallback(() => {
-    tradingApi.dipPresets().then((list) => setSaved(new Set(list.map((p) => p.name.toLowerCase()))), () => undefined);
-  }, []);
+    kit.presets.list().then((list) => setSaved(new Set(list.map((p) => p.name.toLowerCase()))), () => undefined);
+  }, [kit]);
 
   useEffect(() => {
-    tradingApi.dipStudies().then((list) => {
+    tradingApi.studies(kit.strategy).then((list) => {
       setStudies(list);
       setStudyId((id) => id ?? list[0]?.id ?? null);
     }, (e) => setError(e instanceof Error ? e.message : String(e)));
     loadPresets();
-  }, [loadPresets]);
+  }, [kit, loadPresets]);
 
   // Another batch: its own frame, and the grid from the top with nothing filtered
   useEffect(() => {
@@ -325,7 +306,7 @@ export default function TestResults({ onLoad }: Props) {
     setPage((p) => ({ ...p, current: 1 }));
     setSort(DEFAULT_SORT);
     setFilters({});
-    tradingApi.dipStudySummary(studyId).then(setSummary, (e) => setError(e instanceof Error ? e.message : String(e)));
+    tradingApi.studySummary(studyId).then(setSummary, (e) => setError(e instanceof Error ? e.message : String(e)));
   }, [studyId]);
 
   // Typing in the search box asks once it pauses
@@ -341,13 +322,13 @@ export default function TestResults({ onLoad }: Props) {
 
   useEffect(() => {
     if (studyId == null) return;
-    const ask: DipTestQuery = {
+    const ask: TestQuery = {
       offset: (page.current - 1) * page.size, limit: page.size, sort: sort.key, order: sort.order, q: query,
       picks: onlyPicks, profit_both: bothPositive, beat_both: beatHold, filters,
     };
     const n = ++asked.current;
     setLoading(true);
-    tradingApi.dipTests(studyId, ask).then(
+    tradingApi.studyTests<C>(studyId, ask).then(
       (r) => { if (n === asked.current) setRows(r); },
       (e) => { if (n === asked.current) message.error(e instanceof Error ? e.message : String(e)); },
     ).finally(() => { if (n === asked.current) setLoading(false); });
@@ -369,7 +350,7 @@ export default function TestResults({ onLoad }: Props) {
     if (!saving) return;
     setBusy(true);
     try {
-      await tradingApi.saveDipPreset(saving.name.trim(), saving.test.config);
+      await kit.presets.save(saving.name.trim(), kit.complete(saving.test.config));
       message.success(`Saved as “${saving.name.trim()}”: pick it under Saved setups`);
       setSaving(null);
       loadPresets();
@@ -384,7 +365,7 @@ export default function TestResults({ onLoad }: Props) {
   // "All" chains the windows back to back: only when none of them overlap
   const chained = [...full].sort((a, b) => periods[a][0].localeCompare(periods[b][0]));
   const disjoint = chained.every((p, i) => i === 0 || periods[p][0] > periods[chained[i - 1]][1]);
-  const columns: ColumnsType<DipTest> = [
+  const columns: ColumnsType<StudyTest<C>> = [
     {
       key: "pick",
       title: <Tooltip title="The batch's recommendations, best first: how they were picked is in the description above">Pick</Tooltip>,
@@ -411,7 +392,7 @@ export default function TestResults({ onLoad }: Props) {
     },
     {
       key: "watchlist",
-      title: "Watchlist",
+      title: kit.listWord.charAt(0).toUpperCase() + kit.listWord.slice(1),
       width: 130,
       filters: (summary?.watchlists ?? []).map((w) => ({ text: w, value: w })),
       filteredValue: controls.filtered("watchlist"),
@@ -448,7 +429,7 @@ export default function TestResults({ onLoad }: Props) {
           align: "right" as const,
           sorter: true,
           sortOrder: controls.sortOrder("all"),
-          render: (_: unknown, t: DipTest) => {
+          render: (_: unknown, t: StudyTest<C>) => {
             const v = allWindows(t, full);
             return <b style={{ color: color(v) }}>{signed(v, 0)}</b>;
           },
@@ -457,16 +438,16 @@ export default function TestResults({ onLoad }: Props) {
     ...(summary?.has_quarters
       ? [{
           key: "quarters",
-          title: <Tooltip title="Twelve separate 3-month tests, Oct 2023 to Oct 2026: how many made money, and the worst one. Run for the best setups only">Quarters</Tooltip>,
+          title: <Tooltip title={kit.quarters.tip}>{kit.quarters.title}</Tooltip>,
           width: 92,
           align: "right" as const,
           sorter: true,
           sortOrder: controls.sortOrder("quarters"),
-          render: (_: unknown, t: DipTest) => {
+          render: (_: unknown, t: StudyTest<C>) => {
             const q = t.quarters;
             if (!q) return <span style={{ color: MUTED }}>—</span>;
             return (
-              <Tooltip title={q.returns.map((r, i) => `Q${i + 1} ${signed(r)}`).join(" · ")}>
+              <Tooltip title={q.returns.map((r, i) => `${kit.quarters.short}${i + 1} ${signed(r)}`).join(" · ")}>
                 <div style={{ lineHeight: 1.25 }}>
                   <b style={{ color: q.won >= q.of * 0.75 ? GREEN : q.won < q.of / 2 ? RED : undefined }}>{q.won}/{q.of}</b>
                   <div style={{ fontSize: 11, color: MUTED }}>worst {signed(q.worst)}</div>
@@ -476,7 +457,7 @@ export default function TestResults({ onLoad }: Props) {
           },
         }]
       : []),
-    ...Object.keys(periods).map((p) => periodColumns(p, periods[p], controls)),
+    ...Object.keys(periods).map((p) => periodColumns<C>(p, periods[p], controls, periodTip(p, periods[p], kit.periodTips))),
     ...(summary?.extras.length
       ? [{
           key: "extra",
@@ -484,11 +465,11 @@ export default function TestResults({ onLoad }: Props) {
           width: 150,
           filters: summary.extras.map((v) => ({ text: v, value: v })),
           filteredValue: controls.filtered("extra"),
-          render: (_: unknown, t: DipTest) => (t.extra ? <Tag color="purple" style={{ whiteSpace: "normal" }}>{t.extra}</Tag> : <span style={{ color: MUTED }}>—</span>),
+          render: (_: unknown, t: StudyTest<C>) => (t.extra ? <Tag color="purple" style={{ whiteSpace: "normal" }}>{t.extra}</Tag> : <span style={{ color: MUTED }}>—</span>),
         }]
       : []),
     // Only the rules this batch varied
-    ...RULES.filter((r) => summary?.rules[r.key]).map((r) => ruleColumn(r, summary!.rules[r.key], controls)),
+    ...kit.rules.filter((r) => summary?.rules[r.key]).map((r) => ruleColumn(r, summary!.rules[r.key], controls)),
     {
       key: "actions",
       title: "",
@@ -496,11 +477,11 @@ export default function TestResults({ onLoad }: Props) {
       fixed: pin ? "right" : undefined,
       render: (_, t) => (
         <Space size={2}>
-          <Tooltip title="Save as a setup (then pick it under Saved setups: backtest, new bot, a bot's rules)">
+          <Tooltip title="Save as a setup (then pick it under Saved setups: the backtest, a new bot)">
             <Button size="small" type="text" icon={<SaveOutlined />} onClick={() => setSaving({ test: t, name: t.name })} />
           </Tooltip>
           <Tooltip title="Load into the backtest form">
-            <Button size="small" type="text" icon={<ExperimentOutlined />} onClick={() => onLoad({ ...t.config, ...pickRules(t.config) })} />
+            <Button size="small" type="text" icon={<ExperimentOutlined />} onClick={() => onLoad(kit.complete(t.config))} />
           </Tooltip>
         </Space>
       ),
@@ -525,7 +506,7 @@ export default function TestResults({ onLoad }: Props) {
         )}
         <Space wrap size={[8, 6]} style={{ marginBottom: 8 }}>
           {Object.entries(periods).map(([k, v]) => (
-            <Tooltip key={k} title={periodTip(k, v)}>
+            <Tooltip key={k} title={periodTip(k, v, kit.periodTips)}>
               <Tag style={{ whiteSpace: "normal", marginInlineEnd: 0 }}>{periodLabel(k, v)}: {span(v)}</Tag>
             </Tooltip>
           ))}
@@ -547,7 +528,7 @@ export default function TestResults({ onLoad }: Props) {
               </Typography.Text>
             </Col>
           </Row>
-          <RuleEffects effects={summary.effects} />
+          <RuleEffects effects={summary.effects} rules={kit.rules} listWord={kit.listWord} />
           <Space wrap style={{ marginBottom: 8 }}>
             <Input.Search allowClear placeholder="Find a setup or symbol" value={typed} onChange={(e) => setTyped(e.target.value)} style={{ width: 220 }} />
             <span><Switch size="small" checked={onlyPicks} onChange={toggle(setOnlyPicks)} /> Picks only</span>
@@ -557,7 +538,7 @@ export default function TestResults({ onLoad }: Props) {
           </Space>
         </>
       )}
-      <Table<DipTest>
+      <Table<StudyTest<C>>
         size="small"
         rowKey="id"
         loading={loading || !rows}
@@ -577,7 +558,7 @@ export default function TestResults({ onLoad }: Props) {
           setFilters(Object.fromEntries(Object.entries(f).filter(([, v]) => v?.length)) as Record<string, (string | number)[]>);
           setPage((old) => ({ ...old, current: 1 }));
         }}
-        expandable={{ expandedRowRender: (t) => <TestDetailView test={t} periods={periods} /> }}
+        expandable={{ expandedRowRender: (t) => <TestDetailView test={t} periods={periods} kit={kit} /> }}
       />
       <Modal
         open={!!saving}
@@ -590,7 +571,7 @@ export default function TestResults({ onLoad }: Props) {
       >
         <Input value={saving?.name} maxLength={60} onChange={(e) => saving && setSaving({ ...saving, name: e.target.value })} onPressEnter={save} />
         <Typography.Paragraph style={{ color: MUTED, fontSize: 12, marginTop: 8, marginBottom: 0 }}>
-          Its rules, watchlist, capital, blacklist days and “the last 9 months” periods. Pick it under Saved setups in the backtest, a new dip bot or a bot's rules.
+          Keeps {kit.keeps}. Pick it under Saved setups in the backtest or a new bot.
           {saving && saved.has(saving.name.trim().toLowerCase()) && " A setup with this name exists: saving replaces it."}
           {saving?.test.extra && ` Not its filter (${saving.test.extra}): the bots and the backtest form don't have it yet.`}
         </Typography.Paragraph>

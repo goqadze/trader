@@ -79,7 +79,7 @@ function Header() {
     { key: "backtest", label: <Link to="/">Backtest</Link> },
     { key: "compare", label: <Link to="/compare">Compare strategies</Link> },
     { key: "scan", label: <Link to="/scan">Scan</Link> },
-    { key: "rotation", label: <Link to="/rotation">Rotation</Link> },
+    { key: "rotation", label: <Link to="/rotation">Momentum Rotation</Link> },
     { key: "dip", label: <Link to="/dip">Dip buyer</Link> },
     { key: "trading", label: <Link to="/trading">Live trading</Link> },
     ...(admin ? [{ key: "users", label: <Link to="/admin/users"><UsersNavLabel /></Link> }] : []),

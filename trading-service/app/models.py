@@ -255,34 +255,42 @@ class Signal(Base):
 
 
 class DipPreset(Base):
-    """A dip buyer setup you saved under a name: schemas.DipPresetConfig as JSON. The dashboard loads it into the
-    backtest form or a new (or running) dip bot's rules."""
+    """A setup you saved under a name, of a dip buyer (schemas.DipPresetConfig as JSON) or a momentum rotation
+    (schemas.RotationPresetConfig). The dashboard loads it into the backtest form or a new (or running) bot's rules.
+    Names are unique across both."""
 
     __tablename__ = "dip_presets"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(60), unique=True)
+    # "dip" or "rotation" (schemas.StudyStrategy). server_default: the setups saved before were all dip setups
+    strategy: Mapped[str] = mapped_column(String(16), default="dip", server_default="dip")
     config: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
 class DipStudy(Base):
-    """A batch of dip buyer backtests run together (a parameter sweep): what was varied, over which windows, and what
-    came out of it. Its tests are DipTest rows; the dashboard's Test results tab shows them as a grid."""
+    """A batch of backtests run together (a parameter sweep) of a dip buyer or a momentum rotation: what was varied,
+    over which windows, and what came out of it. Its tests are DipTest rows; the dashboard's Test results tab shows
+    them as a grid (each strategy's on its own page)."""
 
     __tablename__ = "dip_studies"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(80), unique=True)
+    # "dip" or "rotation": what its tests' configs are (schemas.DipPresetConfig / RotationPresetConfig). server_default:
+    # the batches before were all dip buyer batches
+    strategy: Mapped[str] = mapped_column(String(16), default="dip", server_default="dip")
     description: Mapped[str] = mapped_column(Text, default="")  # what was varied, and the findings in words
     periods: Mapped[dict] = mapped_column(JSON)  # {"practice": [start, end], "exam": [...], ...}, in the grid's order
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
 class DipTest(Base):
-    """One tested setup of a study: its name, the setup as a saved setup keeps it (schemas.DipPresetConfig, so it can
-    be saved or loaded into the backtest form as is), and how it did in each of the study's windows."""
+    """One tested setup of a study: its name, the setup as a saved setup keeps it (schemas.DipPresetConfig or
+    RotationPresetConfig, so it can be saved or loaded into the backtest form as is), and how it did in each of the
+    study's windows."""
 
     __tablename__ = "dip_tests"
 
@@ -291,7 +299,7 @@ class DipTest(Base):
     code: Mapped[str] = mapped_column(String(20))  # short id within the study: "T0123"
     name: Mapped[str] = mapped_column(String(60))  # the name it gets when saved as a setup
     watchlist: Mapped[str] = mapped_column(String(60), default="")  # the watchlist's name
-    config: Mapped[dict] = mapped_column(JSON)
+    config: Mapped[dict] = mapped_column(JSON)  # the study's strategy's setup (see DipStudy.strategy)
     results: Mapped[dict] = mapped_column(JSON)  # period -> the grid's numbers (return, buy & hold, drawdown, trades ...)
     detail: Mapped[dict] = mapped_column(JSON, default=dict)  # period -> its equity curve and per-symbol rows
     score: Mapped[float | None] = mapped_column(Float, nullable=True)  # the study's ranking number (higher = better)

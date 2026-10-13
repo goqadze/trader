@@ -35,3 +35,18 @@ export interface RotationRun {
   result: RotationResult | null;
   error?: string;
 }
+
+/** What a saved rotation setup keeps (trading-service RotationPresetConfig): the rules, the universe, the capital and
+ *  the periods. Also each tested setup of a rotation test batch. */
+export interface RotationPresetConfig {
+  symbols: string[];
+  top_n: number;
+  lookback_months: number;
+  skip_months: number;
+  abs_filter: boolean;
+  fractional: boolean;
+  initial_cash?: number | null;
+  practice?: [string, string] | null;
+  exam?: [string, string] | null; // null: no exam
+  period_months?: number | null; // "the last n months": loaded counting back from today, not the dates above
+}

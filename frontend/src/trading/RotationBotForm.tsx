@@ -1,6 +1,9 @@
 import { Alert, Checkbox, Col, Divider, Form, Input, InputNumber, Modal, Row, Select, Switch, Tooltip, Typography } from "antd";
 import { useEffect, useRef, useState } from "react";
+import { ROTATION_KIT } from "../rotation/kit";
+import type { RotationPresetConfig } from "../rotation/types";
 import UniverseField, { SECTORS } from "../rotation/UniverseField";
+import SetupPicker from "../studies/SetupPicker";
 import type { BrokerInfo, RotationBotCreate } from "./types";
 
 const MUTED = "#8b98b5";
@@ -96,6 +99,13 @@ export default function RotationBotForm({ open, initial, brokers, onCancel, onSu
     }
   };
 
+  /** A saved setup: its rules, universe and capital (the broker, name and safety settings stay). */
+  const load = (c: RotationPresetConfig) =>
+    form.setFieldsValue({
+      universe: c.symbols, top_n: c.top_n, lookback_months: c.lookback_months, skip_month: c.skip_months > 0, abs_filter: c.abs_filter,
+      fractional: c.fractional, ...(c.initial_cash && { allocated_cash: c.initial_cash }),
+    });
+
   const pctInput = (min: number, max: number, step: number) => <InputNumber min={min} max={max} step={step} addonAfter="%" style={{ width: "100%" }} />;
 
   return (
@@ -129,6 +139,9 @@ export default function RotationBotForm({ open, initial, brokers, onCancel, onSu
         </Form.Item>
 
         <Divider orientation="left" plain>Rotation</Divider>
+        <Form.Item label="Saved setups" tooltip="Fill the rules, the universe and the capital from a setup saved on the Momentum Rotation page">
+          <SetupPicker kit={ROTATION_KIT} onLoad={load} />
+        </Form.Item>
         <UniverseField name="universe" noCrypto />
         <Row gutter={12}>
           <Col span={12}>

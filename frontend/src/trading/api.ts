@@ -1,10 +1,10 @@
 // Typed client for trading-service. nginx (docker) or the Vite dev proxy forwards /api/trading/* to
 // trading-service with the prefix stripped.
 
-import type {
-  DipBotCreate, DipBotUpdate, DipPreset, DipPresetConfig, DipSignal, DipStudy, DipStudySummary, DipTestDetail, DipTestPage, DipTestQuery,
-} from "../dip/types";
+import type { DipBotCreate, DipBotUpdate, DipPreset, DipPresetConfig, DipSignal } from "../dip/types";
 import { request as http } from "../http";
+import type { RotationPresetConfig } from "../rotation/types";
+import type { SavedSetup, Study, StudyStrategy, StudySummary, StudyTestDetail, StudyTestPage, TestQuery } from "../studies/types";
 import type {
   Bot, BotCreate, BotUpdate, CapitalAdd, Decision, EmailAlert, EmailAlerts, EmailAlertsSave, Order, RotationBotCreate, RotationBotUpdate, Snapshot,
   TradingEvent, TradingStatus,
@@ -48,17 +48,22 @@ export const tradingApi = {
   dipPresets: () => request<DipPreset[]>("GET", "/dip/presets"),
   saveDipPreset: (name: string, config: DipPresetConfig) => request<DipPreset>("POST", "/dip/presets", { name, config }),
   deleteDipPreset: (id: number) => request<void>("DELETE", `/dip/presets/${id}`),
-  // Dip buyer test batches (parameter sweeps) and each setup they tested
-  dipStudies: () => request<DipStudy[]>("GET", "/dip/studies"),
-  dipTests: (studyId: number, query: DipTestQuery) => {
+  // Saved momentum rotation setups (the same names can't be a dip buyer's)
+  rotationPresets: () => request<SavedSetup<RotationPresetConfig>[]>("GET", "/rotation/presets"),
+  saveRotationPreset: (name: string, config: RotationPresetConfig) =>
+    request<SavedSetup<RotationPresetConfig>>("POST", "/rotation/presets", { name, config }),
+  deleteRotationPreset: (id: number) => request<void>("DELETE", `/rotation/presets/${id}`),
+  // Test batches (parameter sweeps) of a strategy, and each setup they tested (C = the strategy's setup)
+  studies: (strategy: StudyStrategy) => request<Study[]>("GET", `/dip/studies?strategy=${strategy}`),
+  studyTests: <C>(studyId: number, query: TestQuery) => {
     const params = new URLSearchParams({ offset: String(query.offset), limit: String(query.limit), sort: query.sort, order: query.order });
     if (query.q) params.set("q", query.q);
     for (const flag of ["picks", "profit_both", "beat_both"] as const) if (query[flag]) params.set(flag, "true");
     if (query.filters && Object.keys(query.filters).length) params.set("filters", JSON.stringify(query.filters));
-    return request<DipTestPage>("GET", `/dip/studies/${studyId}/tests?${params}`);
+    return request<StudyTestPage<C>>("GET", `/dip/studies/${studyId}/tests?${params}`);
   },
-  dipStudySummary: (studyId: number) => request<DipStudySummary>("GET", `/dip/studies/${studyId}/summary`),
-  dipTest: (id: number) => request<DipTestDetail>("GET", `/dip/tests/${id}`),
+  studySummary: (studyId: number) => request<StudySummary>("GET", `/dip/studies/${studyId}/summary`),
+  studyTest: <C>(id: number) => request<StudyTestDetail<C>>("GET", `/dip/tests/${id}`),
   // Email alerts: who gets them and about what; the mail server itself is set in trading-service/.env
   emailAlerts: () => request<EmailAlerts>("GET", "/email-alerts"),
   saveEmailAlerts: (body: EmailAlertsSave) => request<EmailAlerts>("PUT", "/email-alerts", body),

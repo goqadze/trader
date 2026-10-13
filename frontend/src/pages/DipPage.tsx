@@ -6,9 +6,10 @@ import DipBacktestForm from "../dip/DipBacktestForm";
 import DipBotForm, { type DipBotInitial } from "../dip/DipBotForm";
 import { SignalsList, dipRules } from "../dip/DipParts";
 import DipResultView from "../dip/DipResultView";
-import TestResults from "../dip/TestResults";
+import { DIP_KIT } from "../dip/kit";
 import { type DipBotCreate, type DipPresetConfig, pickRules } from "../dip/types";
 import { useDip } from "../dip/useDip";
+import TestResults from "../studies/TestResults";
 import { isListedEtf } from "../symbols";
 import { tradingApi } from "../trading/api";
 import { STATUS_COLOR, isDip, nyTime, pct, pnlColor, usd } from "../trading/format";
@@ -209,7 +210,7 @@ export default function DipPage() {
         items={[
           { key: "bots", label: `Bots & signals${dipBots.length ? ` (${dipBots.length})` : ""}`, children: live },
           { key: "backtest", label: "Backtest", children: backtest },
-          { key: "tests", label: "Test results", children: <TestResults onLoad={loadTest} /> },
+          { key: "tests", label: "Test results", children: <TestResults kit={DIP_KIT} onLoad={loadTest} /> },
         ]}
       />
       <DipBotForm

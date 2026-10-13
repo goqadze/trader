@@ -17,6 +17,7 @@ from typing import Literal
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session, defer
 
@@ -30,7 +31,8 @@ from .models import (DIP, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPrese
 from .schemas import (BotCreate, BotOut, BotUpdate, CapitalAdd, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn, DipPresetOut,
                       DipStudyIn, DipStudyOut, DipStudySummaryOut, DipTestDetailOut, DipTestIn, DipTestPageOut,
                       EmailAlertsIn, EmailAlertsOut, EventOut, HoldingOut, NotificationOut, NotifyCategoryOut, OrderOut,
-                      RotationBotCreate, SignalOut, SnapshotOut, StatusOut, WatchItemOut, WatchSymbols, check_window)
+                      PRESET_CONFIGS, RotationBotCreate, RotationPresetIn, SignalOut, SnapshotOut, StatusOut, StudyStrategy,
+                      WatchItemOut, WatchSymbols, check_window)
 from .trader import (add_capital, benchmark_value, bot_equity, bot_lock, capital, close_position, evaluate, holdings,
                      log_event, open_orders, resting_stop)
 
@@ -740,33 +742,68 @@ def list_signals(limit: int = Query(100, le=1000), after_id: int = 0, session: S
     return list(session.scalars(q))
 
 
+STRATEGY_WORDS = {"dip": "dip buyer", "rotation": "momentum rotation"}
+
+
+def _presets(session: Session, strategy: str) -> list[DipPreset]:
+    return list(session.scalars(select(DipPreset).where(DipPreset.strategy == strategy).order_by(func.lower(DipPreset.name))))
+
+
+def _save_preset(session: Session, name: str, config: dict, strategy: str) -> DipPreset:
+    """Save a setup under a name; a name that exists (ignoring case) is replaced, unless it is the other strategy's."""
+    preset = session.scalar(select(DipPreset).where(func.lower(DipPreset.name) == name.lower()))
+    if preset is None:
+        preset = DipPreset(name=name, strategy=strategy, config=config)
+        session.add(preset)
+    elif preset.strategy != strategy:
+        raise HTTPException(409, f"a {STRATEGY_WORDS.get(preset.strategy, preset.strategy)} setup is called “{preset.name}”: "
+                                 "pick another name")
+    else:
+        preset.name, preset.config, preset.updated_at = name, config, utcnow()
+    session.commit()
+    return preset
+
+
+def _delete_preset(session: Session, preset_id: int, strategy: str) -> None:
+    preset = session.get(DipPreset, preset_id)
+    if preset is None or preset.strategy != strategy:
+        raise HTTPException(404, "saved setup not found")
+    session.delete(preset)
+    session.commit()
+
+
 @app.get("/dip/presets", response_model=list[DipPresetOut])
 def list_dip_presets(session: Session = Depends(get_session)):
     """The dip buyer setups you saved, by name."""
-    return list(session.scalars(select(DipPreset).order_by(func.lower(DipPreset.name))))
+    return _presets(session, "dip")
 
 
 @app.post("/dip/presets", response_model=DipPresetOut)
 def save_dip_preset(body: DipPresetIn, session: Session = Depends(get_session)):
     """Save a dip buyer setup under a name. Saving under a name that exists (ignoring case) replaces that setup."""
-    config = body.config.model_dump(mode="json")
-    preset = session.scalar(select(DipPreset).where(func.lower(DipPreset.name) == body.name.lower()))
-    if preset is None:
-        preset = DipPreset(name=body.name, config=config)
-        session.add(preset)
-    else:
-        preset.name, preset.config, preset.updated_at = body.name, config, utcnow()
-    session.commit()
-    return preset
+    return _save_preset(session, body.name, body.config.model_dump(mode="json"), "dip")
 
 
 @app.delete("/dip/presets/{preset_id}", status_code=204)
 def delete_dip_preset(preset_id: int, session: Session = Depends(get_session)):
-    preset = session.get(DipPreset, preset_id)
-    if preset is None:
-        raise HTTPException(404, "saved setup not found")
-    session.delete(preset)
-    session.commit()
+    _delete_preset(session, preset_id, "dip")
+
+
+@app.get("/rotation/presets", response_model=list[DipPresetOut])
+def list_rotation_presets(session: Session = Depends(get_session)):
+    """The momentum rotation setups you saved, by name."""
+    return _presets(session, "rotation")
+
+
+@app.post("/rotation/presets", response_model=DipPresetOut)
+def save_rotation_preset(body: RotationPresetIn, session: Session = Depends(get_session)):
+    """Save a momentum rotation setup under a name. Saving under a name that exists (ignoring case) replaces it."""
+    return _save_preset(session, body.name, body.config.model_dump(mode="json"), "rotation")
+
+
+@app.delete("/rotation/presets/{preset_id}", status_code=204)
+def delete_rotation_preset(preset_id: int, session: Session = Depends(get_session)):
+    _delete_preset(session, preset_id, "rotation")
 
 
 def _study_out(session: Session, study: DipStudy) -> DipStudyOut:
@@ -775,9 +812,11 @@ def _study_out(session: Session, study: DipStudy) -> DipStudyOut:
 
 
 @app.get("/dip/studies", response_model=list[DipStudyOut])
-def list_dip_studies(session: Session = Depends(get_session)):
-    """The dip buyer test batches (parameter sweeps), newest first, each with how many setups it tested."""
-    return [_study_out(session, s) for s in session.scalars(select(DipStudy).order_by(DipStudy.id.desc()))]
+def list_dip_studies(strategy: StudyStrategy = "dip", session: Session = Depends(get_session)):
+    """The test batches (parameter sweeps) of the dip buyer, or with strategy=rotation the momentum rotation's, newest
+    first, each with how many setups it tested."""
+    q = select(DipStudy).where(DipStudy.strategy == strategy).order_by(DipStudy.id.desc())
+    return [_study_out(session, s) for s in session.scalars(q)]
 
 
 @app.put("/dip/studies", response_model=DipStudyOut)
@@ -786,11 +825,12 @@ def save_dip_study(body: DipStudyIn, session: Session = Depends(get_session)):
     periods = {k: [v[0].isoformat(), v[1].isoformat()] for k, v in body.periods.items()}
     study = session.scalar(select(DipStudy).where(func.lower(DipStudy.name) == body.name.lower()))
     if study is None:
-        study = DipStudy(name=body.name, description=body.description, periods=periods)
+        study = DipStudy(name=body.name, strategy=body.strategy, description=body.description, periods=periods)
         session.add(study)
     else:
         session.execute(delete(DipTest).where(DipTest.study_id == study.id))
-        study.name, study.description, study.periods, study.created_at = body.name, body.description, periods, utcnow()
+        study.name, study.strategy, study.description, study.periods, study.created_at = (
+            body.name, body.strategy, body.description, periods, utcnow())
     session.commit()
     studies.forget(study.id)
     return _study_out(session, study)
@@ -805,13 +845,22 @@ def _get_study(session: Session, study_id: int) -> DipStudy:
 
 @app.post("/dip/studies/{study_id}/tests", response_model=DipStudyOut)
 def add_dip_tests(study_id: int, body: list[DipTestIn], session: Session = Depends(get_session)):
-    """Add tested setups to a study (a code it already has is replaced)."""
+    """Add tested setups to a study (a code it already has is replaced). Each setup must be one of the study's
+    strategy (a dip buyer's or a momentum rotation's, as a saved setup keeps it)."""
     study = _get_study(session, study_id)
     codes = [t.code for t in body]
     if len(set(codes)) != len(codes):
         raise HTTPException(422, "each test needs its own code")
+    kind = PRESET_CONFIGS[study.strategy]
+    rows = []
+    for t in body:
+        try:
+            config = kind.model_validate(t.config).model_dump(mode="json")
+        except ValidationError as e:
+            raise HTTPException(422, f"{t.code}: not a {STRATEGY_WORDS[study.strategy]} setup: {e.errors()[0]['msg']}")
+        rows.append(DipTest(study_id=study_id, **(t.model_dump(mode="json") | {"config": config})))
     session.execute(delete(DipTest).where(DipTest.study_id == study_id, DipTest.code.in_(codes)))
-    session.add_all(DipTest(study_id=study_id, **t.model_dump(mode="json")) for t in body)
+    session.add_all(rows)
     session.commit()
     studies.forget(study_id)
     return _study_out(session, study)
@@ -827,7 +876,7 @@ def list_dip_tests(study_id: int, offset: int = Query(0, ge=0), limit: int = Que
     "extra": [filters], "<rule>": [values]} (the values GET /dip/studies/{id}/summary lists); missing numbers sort
     last either way."""
     study = _get_study(session, study_id)
-    if sort not in studies.sort_keys(list(study.periods)):
+    if sort not in studies.sort_keys(list(study.periods), study.strategy):
         raise HTTPException(422, f"can't sort by {sort!r}")
     try:
         chosen = json.loads(filters)

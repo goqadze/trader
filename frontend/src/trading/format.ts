@@ -52,8 +52,8 @@ export const isDip = (b: Pick<Bot, "strategy">) => b.strategy === DIP;
 /** Bots that hold several symbols at once (their positions are `holdings`). */
 export const holdsMany = (b: Pick<Bot, "strategy">) => isRotation(b) || isDip(b);
 
-/** How a bot is named in headers and lists: its symbol, or "Rotation" / "Dip buyer" (whose symbol column is a placeholder). */
-export const botTitle = (b: Pick<Bot, "strategy" | "symbol">) => (isRotation(b) ? "Rotation" : isDip(b) ? "Dip buyer" : b.symbol);
+/** How a bot is named in headers and lists: its symbol, or "Momentum Rotation" / "Dip buyer" (whose symbol column is a placeholder). */
+export const botTitle = (b: Pick<Bot, "strategy" | "symbol">) => (isRotation(b) ? "Momentum Rotation" : isDip(b) ? "Dip buyer" : b.symbol);
 
 /** "Top 3 of 11 · 12-1 momentum": a rotation bot's rules in a few words. */
 export const rotationRules = (b: Pick<Bot, "top_n" | "universe" | "lookback_months" | "skip_months">) =>

@@ -1,8 +1,11 @@
 import { Button, Card, Checkbox, DatePicker, Divider, Form, InputNumber, Select, Switch, Typography } from "antd";
-import type { Dayjs } from "dayjs";
+import dayjs, { type Dayjs } from "dayjs";
+import { useEffect } from "react";
 import { MONTHS, lastMonths, periodExtra, periodOptions } from "../periods";
+import SetupPicker from "../studies/SetupPicker";
+import { ROTATION_KIT } from "./kit";
 import type { Period } from "./useRotation";
-import type { RotationConfig } from "./types";
+import type { RotationConfig, RotationPresetConfig } from "./types";
 import UniverseField, { SECTORS } from "./UniverseField";
 
 const MUTED = "#8b98b5";
@@ -34,12 +37,50 @@ function toConfigs(v: FormValues): Partial<Record<Period, RotationConfig>> {
   };
 }
 
+/** The form as a setup to save. Also run on half-filled values (to compare with a loaded setup), so nothing is assumed. */
+function toPreset(v: Partial<FormValues>): RotationPresetConfig {
+  const range = (r?: [Dayjs, Dayjs] | null) => (r?.[0] && r[1] ? ([fmt(r[0]), fmt(r[1])] as [string, string]) : null);
+  return {
+    symbols: v.symbols ?? [], top_n: v.top_n ?? 3, lookback_months: v.lookback_months ?? 12, skip_months: v.skip_month === false ? 0 : 1,
+    abs_filter: v.abs_filter !== false, fractional: v.fractional !== false, initial_cash: v.initial_cash ?? null,
+    practice: range(v.practice), exam: v.exam_on === false ? null : range(v.exam), period_months: v.period_months || null,
+  };
+}
+
+interface Props {
+  onRun: (c: Partial<Record<Period, RotationConfig>>) => void;
+  starting: boolean;
+  /** A setup to fill the form with (the Test results tab's "Load into the backtest form"); a new seq loads it again. */
+  loadRequest?: { config: RotationPresetConfig; seq: number } | null;
+}
+
 /** Left-hand panel of the rotation: the universe, how many to hold, the momentum, and the two windows. */
-export default function RotationForm({ onRun, starting }: { onRun: (c: Partial<Record<Period, RotationConfig>>) => void; starting: boolean }) {
+export default function RotationForm({ onRun, starting, loadRequest }: Props) {
   const [form] = Form.useForm<FormValues>();
   const v = Form.useWatch([], form) as Partial<FormValues> | undefined;
   const examOn = v?.exam_on !== false;
   const part = v?.initial_cash && v?.top_n ? Math.floor(v.initial_cash / v.top_n) : null;
+
+  const load = (c: RotationPresetConfig) =>
+    form.setFieldsValue({
+      symbols: c.symbols, top_n: c.top_n, lookback_months: c.lookback_months, skip_month: c.skip_months > 0, abs_filter: c.abs_filter,
+      fractional: c.fractional,
+      ...(c.initial_cash && { initial_cash: c.initial_cash }),
+      // "The last n months" counts back from today, whenever it was saved; otherwise the dates as saved
+      ...(c.period_months
+        ? { period_months: c.period_months, exam_on: !!c.exam, ...lastMonths(c.period_months, !!c.exam) }
+        : c.practice && {
+            period_months: 0,
+            practice: [dayjs(c.practice[0]), dayjs(c.practice[1])] as [Dayjs, Dayjs],
+            exam_on: !!c.exam,
+            ...(c.exam && { exam: [dayjs(c.exam[0]), dayjs(c.exam[1])] as [Dayjs, Dayjs] }),
+          }),
+    });
+
+  useEffect(() => {
+    if (loadRequest) load(loadRequest.config);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only a new request loads
+  }, [loadRequest?.seq]);
 
   /** Picking "the last n months" (or the exam on/off with it) sets the dates; changing a date by hand makes them custom. */
   const onValuesChange = (changed: Partial<FormValues>, all: FormValues) => {
@@ -50,7 +91,7 @@ export default function RotationForm({ onRun, starting }: { onRun: (c: Partial<R
     }
   };
   return (
-    <Card title="Momentum rotation" size="small">
+    <Card title="Momentum Rotation" size="small">
       <Typography.Paragraph style={{ fontSize: 12, color: MUTED }}>
         Each month, hold the strongest few of a group of symbols (by their return over the past year, skipping the latest
         month) in equal parts, and sell the rest. Judged against holding the whole group in equal parts.
@@ -73,6 +114,9 @@ export default function RotationForm({ onRun, starting }: { onRun: (c: Partial<R
           exam_on: true,
         }}
       >
+        <Form.Item label="Saved setups" tooltip="Liked a result? Save these settings under a name, then pick the name here any time to fill them all back in. Also offered when you create a rotation bot.">
+          <SetupPicker kit={ROTATION_KIT} onLoad={load} values={v ? toPreset(v) : null} validate={async () => toPreset(await form.validateFields())} />
+        </Form.Item>
         <UniverseField name="symbols" />
         <Form.Item
           name="top_n"

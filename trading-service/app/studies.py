@@ -5,7 +5,7 @@ column's filter choices, and "what matters": each rule's like-for-like effect on
 Both come from a per-study index kept in memory: every test's sort and filter keys, built once from the database. The
 endpoints that change a study's tests drop it (forget), and as a second guard it is built again when the tests' count or
 newest id moves (SQLite reuses a deleted row's id, so that alone can miss a replaced test). A page then only reads its
-own rows."""
+own rows. A study's strategy (dip buyer or momentum rotation) decides which rules its grid has: RULES."""
 
 import json
 import math
@@ -37,8 +37,8 @@ class Rule:
     text: Callable[[dict], str]
 
 
-# The same rules, values and words as the grid's columns (frontend dip/TestResults.tsx RULES)
-RULES = (
+# The same rules, values and words as the grid's columns (frontend dip/TestResults.tsx DIP_RULES)
+DIP_RULES = (
     Rule("drop", lambda c: 10 + c["drop_atr"] if c.get("drop_mode") == "volatility" else c["drop_pct"],
          lambda c: f"{round(c['drop_atr'], 2):g}× move" if c.get("drop_mode") == "volatility" else _pct(c["drop_pct"])),
     Rule("lookback", lambda c: c["lookback"], lambda c: f"{c['lookback']}d"),
@@ -52,7 +52,15 @@ RULES = (
     Rule("slots", lambda c: c["max_positions"], lambda c: str(c["max_positions"])),
     Rule("cash", lambda c: c.get("initial_cash") or 0, lambda c: f"${c['initial_cash']:g}" if c.get("initial_cash") else "$—"),
 )
-RULE_KEYS = {r.key for r in RULES}
+# A momentum rotation's (frontend rotation/kit.tsx ROTATION_RULES)
+ROTATION_RULES = (
+    Rule("top", lambda c: c["top_n"], lambda c: str(c["top_n"])),
+    Rule("months", lambda c: c["lookback_months"], lambda c: f"{c['lookback_months']} mo"),
+    Rule("skip", lambda c: c.get("skip_months") or 0, lambda c: f"{c['skip_months']} mo" if c.get("skip_months") else "—"),
+    Rule("rising", lambda c: 1 if c.get("abs_filter") else 0, lambda c: "rising only" if c.get("abs_filter") else "any"),
+    Rule("cash", lambda c: c.get("initial_cash") or 0, lambda c: f"${c['initial_cash']:g}" if c.get("initial_cash") else "$—"),
+)
+RULES = {"dip": DIP_RULES, "rotation": ROTATION_RULES}  # by DipStudy.strategy
 NO_EXTRA = "—"  # the Filter column's value for a test without an extra filter
 
 
@@ -78,6 +86,7 @@ class Row:
 class Index:
     version: tuple
     rows: list[Row]
+    rule_keys: set[str] = field(default_factory=set)  # its strategy's rules
     summary: dict = field(default_factory=dict)
 
 
@@ -92,7 +101,7 @@ def _num(x: dict | None, key: str) -> float | None:
     return float(v) if isinstance(v, (int, float)) else None
 
 
-def _row(t: DipTest, periods: list[str]) -> Row:
+def _row(t: DipTest, periods: list[str], rules: tuple[Rule, ...]) -> Row:
     c, res = t.config, t.results or {}
     numbers: dict[str, float | None] = {}
     for p in periods:
@@ -113,20 +122,20 @@ def _row(t: DipTest, periods: list[str]) -> Row:
     return Row(
         id=t.id, pick=t.pick, code=t.code, name=t.name, watchlist=t.watchlist, extra=t.extra or NO_EXTRA, score=t.score,
         haystack=f"{t.code} {t.name} {t.watchlist} {' '.join(c.get('symbols', []))}".lower(),
-        rules={r.key: r.value(c) for r in RULES}, numbers=numbers,
+        rules={r.key: r.value(c) for r in rules}, numbers=numbers,
         profit_both=all((x.get("total_return_pct") or -1) > 0 for x in main),
         beat_both=all((x.get("alpha_vs_buy_hold_pct") or -1) > 0 for x in main),
     )
 
 
-def _effects(tests: list[DipTest]) -> list[dict]:
+def _effects(tests: list[DipTest], rule_set: tuple[Rule, ...]) -> list[dict]:
     """Each rule's values and how they change the score, like for like: among tests the same in every other rule
     (watchlist and filter included), how far each value's score sits from that group's average; the median of those
     gaps per value. Plain medians would flatter values that were only tried around the best setups."""
     rules: list[tuple[str, Callable[[DipTest], object], Callable[[DipTest], str]]] = [
         ("watchlist", lambda t: t.watchlist, lambda t: t.watchlist),
         ("extra", lambda t: t.extra or "none", lambda t: t.extra or "none"),
-        *[(r.key, (lambda t, r=r: r.value(t.config)), (lambda t, r=r: r.text(t.config))) for r in RULES],
+        *[(r.key, (lambda t, r=r: r.value(t.config)), (lambda t, r=r: r.text(t.config))) for r in rule_set],
     ]
     scored = [t for t in tests if t.score is not None]
     values = [[v(t) for _, v, _ in rules] for t in scored]
@@ -150,9 +159,9 @@ def _effects(tests: list[DipTest]) -> list[dict]:
     return out
 
 
-def _summary(tests: list[DipTest], rows: list[Row]) -> dict:
+def _summary(tests: list[DipTest], rows: list[Row], rules: tuple[Rule, ...]) -> dict:
     varying = {}
-    for r in RULES:
+    for r in rules:
         seen = {}
         for t in tests:
             seen.setdefault(r.value(t.config), r.text(t.config))
@@ -166,7 +175,7 @@ def _summary(tests: list[DipTest], rows: list[Row]) -> dict:
         "extras": sorted({r.extra for r in rows}) if any(r.extra != NO_EXTRA for r in rows) else [],
         "rules": varying,
         "has_quarters": any(r.numbers["quarters"] is not None for r in rows),
-        "effects": _effects(tests),
+        "effects": _effects(tests, rules),
     }
 
 
@@ -183,9 +192,9 @@ def index(session: Session, study: DipStudy) -> Index:
             return cached
         tests = list(session.scalars(select(DipTest).where(DipTest.study_id == study.id)
                                      .options(defer(DipTest.detail)).order_by(DipTest.id)))
-        periods = list(study.periods)
-        rows = [_row(t, periods) for t in tests]
-        built = Index(version=version, rows=rows, summary=_summary(tests, rows))
+        periods, rules = list(study.periods), RULES[study.strategy]
+        rows = [_row(t, periods, rules) for t in tests]
+        built = Index(version=version, rows=rows, rule_keys={r.key for r in rules}, summary=_summary(tests, rows, rules))
         _cache[study.id] = built
         return built
 
@@ -194,9 +203,9 @@ def forget(study_id: int) -> None:
     _cache.pop(study_id, None)
 
 
-def sort_keys(periods: list[str]) -> set[str]:
+def sort_keys(periods: list[str], strategy: str = "dip") -> set[str]:
     """The columns a page can be sorted by."""
-    return ({"pick", "name", "watchlist", "score", "calm", "all", "quarters"} | RULE_KEYS
+    return ({"pick", "name", "watchlist", "score", "calm", "all", "quarters"} | {r.key for r in RULES[strategy]}
             | {f"{p}-{n}" for p in periods for n in ("ret", "dd", "trades")})
 
 
@@ -205,7 +214,7 @@ def page(idx: Index, offset: int, limit: int, sort: str = "pick", order: str = "
     """The ids of one page of the grid, and how many tests the filters leave."""
     q, filters = q.strip().lower(), filters or {}
     watchlists, extras = set(filters.get("watchlist") or []), set(filters.get("extra") or [])
-    rule_filters = {k: {float(v) for v in vs} for k, vs in filters.items() if k in RULE_KEYS and vs}
+    rule_filters = {k: {float(v) for v in vs} for k, vs in filters.items() if k in idx.rule_keys and vs}
 
     def keep(r: Row) -> bool:
         return ((not picks or r.pick is not None) and (not profit_both or r.profit_both) and (not beat_both or r.beat_both)
@@ -221,7 +230,7 @@ def page(idx: Index, offset: int, limit: int, sort: str = "pick", order: str = "
     if sort != "pick" or order != "asc":
         value: Callable[[Row], object] = {
             "pick": lambda r: r.pick, "name": lambda r: r.code, "watchlist": lambda r: r.watchlist, "score": lambda r: r.score,
-        }.get(sort) or ((lambda r: r.rules[sort]) if sort in RULE_KEYS else (lambda r: r.numbers.get(sort)))
+        }.get(sort) or ((lambda r: r.rules[sort]) if sort in idx.rule_keys else (lambda r: r.numbers.get(sort)))
         present = [r for r in rows if value(r) is not None]
         missing = [r for r in rows if value(r) is None]  # always last, whichever way
         present.sort(key=value, reverse=order == "desc")
