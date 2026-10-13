@@ -1,7 +1,9 @@
 // Typed client for trading-service. nginx (docker) or the Vite dev proxy forwards /api/trading/* to
 // trading-service with the prefix stripped.
 
-import type { DipBotCreate, DipBotUpdate, DipPreset, DipPresetConfig, DipSignal, DipStudy, DipTest, DipTestDetail } from "../dip/types";
+import type {
+  DipBotCreate, DipBotUpdate, DipPreset, DipPresetConfig, DipSignal, DipStudy, DipStudySummary, DipTestDetail, DipTestPage, DipTestQuery,
+} from "../dip/types";
 import { request as http } from "../http";
 import type {
   Bot, BotCreate, BotUpdate, CapitalAdd, Decision, EmailAlert, EmailAlerts, EmailAlertsSave, Order, RotationBotCreate, RotationBotUpdate, Snapshot,
@@ -48,7 +50,14 @@ export const tradingApi = {
   deleteDipPreset: (id: number) => request<void>("DELETE", `/dip/presets/${id}`),
   // Dip buyer test batches (parameter sweeps) and each setup they tested
   dipStudies: () => request<DipStudy[]>("GET", "/dip/studies"),
-  dipTests: (studyId: number) => request<DipTest[]>("GET", `/dip/studies/${studyId}/tests`),
+  dipTests: (studyId: number, query: DipTestQuery) => {
+    const params = new URLSearchParams({ offset: String(query.offset), limit: String(query.limit), sort: query.sort, order: query.order });
+    if (query.q) params.set("q", query.q);
+    for (const flag of ["picks", "profit_both", "beat_both"] as const) if (query[flag]) params.set(flag, "true");
+    if (query.filters && Object.keys(query.filters).length) params.set("filters", JSON.stringify(query.filters));
+    return request<DipTestPage>("GET", `/dip/studies/${studyId}/tests?${params}`);
+  },
+  dipStudySummary: (studyId: number) => request<DipStudySummary>("GET", `/dip/studies/${studyId}/summary`),
   dipTest: (id: number) => request<DipTestDetail>("GET", `/dip/tests/${id}`),
   // Email alerts: who gets them and about what; the mail server itself is set in trading-service/.env
   emailAlerts: () => request<EmailAlerts>("GET", "/email-alerts"),

@@ -328,6 +328,37 @@ export interface DipTest {
   quarters?: DipTestQuarters | null; // twelve separate 3-month tests (the best setups only)
 }
 
+/** One page of a study's grid (the server filters, sorts and pages it), and how many tests the filters leave. */
+export interface DipTestPage {
+  total: number;
+  items: DipTest[];
+}
+
+/** What a page of the grid is asked with: GET /dip/studies/{id}/tests. */
+export interface DipTestQuery {
+  offset: number;
+  limit: number;
+  sort: string; // "pick", "score", "calm", "all", "quarters", "name", "watchlist", "<period>-ret|dd|trades" or a rule key
+  order: "asc" | "desc";
+  q?: string;
+  picks?: boolean;
+  profit_both?: boolean;
+  beat_both?: boolean;
+  filters?: Record<string, (string | number)[]>; // "watchlist", "extra" (— = none) or a rule key -> the values kept
+}
+
+/** The grid's frame: counts, each column's filter choices, and each rule's like-for-like effect on the score. */
+export interface DipStudySummary {
+  tests: number;
+  made_money_both: number;
+  beat_hold_both: number;
+  watchlists: string[];
+  extras: string[]; // the Filter column's values ("—" = none); empty when no test has one
+  rules: Record<string, { value: number; text: string }[]>; // only the rules the tests differ in
+  has_quarters: boolean;
+  effects: { key: string; cells: { label: string; median: number; n: number }[] }[];
+}
+
 /** Twelve 3-month tests back to back: how many made money, the worst, each one's return. */
 export interface DipTestQuarters {
   won: number;

@@ -4,12 +4,15 @@
 
 import { ExperimentOutlined, SaveOutlined, StarFilled } from "@ant-design/icons";
 import { Alert, App as AntApp, Button, Card, Col, Empty, Grid, Input, Modal, Row, Select, Space, Spin, Switch, Table, Tag, Tooltip, Typography } from "antd";
-import type { ColumnGroupType, ColumnsType, ColumnType } from "antd/es/table";
+import type { ColumnGroupType, ColumnsType, ColumnType, SortOrder } from "antd/es/table/interface";
 import dayjs from "dayjs";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { tradingApi } from "../trading/api";
-import { type DipPresetConfig, type DipStudy, type DipTest, type DipTestDetail, type DipTestNumbers, fallText, pickRules, sellText } from "./types";
+import {
+  type DipPresetConfig, type DipStudy, type DipStudySummary, type DipTest, type DipTestDetail, type DipTestNumbers, type DipTestQuery, fallText,
+  pickRules, sellText,
+} from "./types";
 
 const MUTED = "#8b98b5";
 const GREEN = "#33c088";
@@ -17,12 +20,6 @@ const RED = "#ef5b6b";
 const color = (v: number | null | undefined) => (v == null || Math.abs(v) < 0.005 ? undefined : v > 0 ? GREEN : RED);
 const signed = (v: number | null | undefined, d = 1) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(d)}%`);
 const pctOf = (f: number) => `${+(f * 100).toFixed(2)}%`;
-const median = (xs: number[]) => {
-  if (!xs.length) return null;
-  const s = [...xs].sort((a, b) => a - b);
-  const m = Math.floor(s.length / 2);
-  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-};
 
 const PERIOD_LABEL: Record<string, string> = {
   practice: "Practice", exam: "Exam", stress: "Stress check", early: "Early check", practice4: "Practice", exam4: "Exam",
@@ -62,27 +59,28 @@ const RULES: { key: string; title: string; tip: string; value: (c: DipPresetConf
   { key: "cash", title: "Capital", tip: "Starting capital (fractional shares on)", value: (c) => c.initial_cash ?? 0, text: (c) => `$${c.initial_cash ?? "—"}` },
 ];
 
-function ruleColumn(r: (typeof RULES)[number], tests: DipTest[]): ColumnType<DipTest> {
-  const values = [...new Set(tests.map((t) => r.value(t.config)))].sort((a, b) => a - b);
-  const sample = new Map(tests.map((t) => [r.value(t.config), r.text(t.config)]));
+/** The grid's sorting and filters, done by the server: each column says how it is sorted and filtered right now. */
+interface Controls {
+  sortOrder: (key: string) => SortOrder;
+  filtered: (key: string) => (string | number)[] | null;
+}
+
+function ruleColumn(r: (typeof RULES)[number], choices: { value: number; text: string }[], c: Controls): ColumnType<DipTest> {
   return {
     key: r.key,
     title: <Tooltip title={r.tip}>{r.title}</Tooltip>,
     width: r.key === "reenable" ? 76 : 66,
     align: "center",
-    sorter: (a, b) => r.value(a.config) - r.value(b.config),
-    ...(values.length > 1 && {
-      filters: values.map((v) => ({ text: sample.get(v), value: v })),
-      onFilter: (v, t) => r.value(t.config) === v,
-    }),
+    sorter: true,
+    sortOrder: c.sortOrder(r.key),
+    filters: choices.map((v) => ({ text: v.text, value: v.value })),
+    filteredValue: c.filtered(r.key),
     render: (_, t) => r.text(t.config),
   };
 }
 
-function periodColumns(period: string, range?: [string, string]): ColumnGroupType<DipTest> {
+function periodColumns(period: string, range: [string, string] | undefined, c: Controls): ColumnGroupType<DipTest> {
   const n = (t: DipTest): DipTestNumbers | undefined => t.results[period];
-  const by = (f: (x: DipTestNumbers) => number | null | undefined) => (a: DipTest, b: DipTest) =>
-    (f(n(a) ?? ({} as DipTestNumbers)) ?? -1e9) - (f(n(b) ?? ({} as DipTestNumbers)) ?? -1e9);
   return {
     key: period,
     title: <Tooltip title={`${periodTip(period, range)} ${span(range)}`}>{periodLabel(period, range)}</Tooltip>,
@@ -92,7 +90,8 @@ function periodColumns(period: string, range?: [string, string]): ColumnGroupTyp
         title: <Tooltip title="Its return, and holding all the symbols in equal parts under it">Return</Tooltip>,
         width: 92,
         align: "right",
-        sorter: by((x) => x.total_return_pct),
+        sorter: true,
+        sortOrder: c.sortOrder(`${period}-ret`),
         render: (_: unknown, t: DipTest) => {
           const x = n(t);
           if (!x) return "—";
@@ -110,7 +109,8 @@ function periodColumns(period: string, range?: [string, string]): ColumnGroupTyp
         title: <Tooltip title="The worst fall of its equity from a peak">Max DD</Tooltip>,
         width: 72,
         align: "right",
-        sorter: by((x) => x.max_drawdown_pct),
+        sorter: true,
+        sortOrder: c.sortOrder(`${period}-dd`),
         render: (_: unknown, t: DipTest) => (n(t) && !n(t)?.error ? <span style={{ color: (n(t)?.max_drawdown_pct ?? 0) < -15 ? RED : undefined }}>{signed(n(t)?.max_drawdown_pct)}</span> : "—"),
       },
       {
@@ -118,7 +118,8 @@ function periodColumns(period: string, range?: [string, string]): ColumnGroupTyp
         title: <Tooltip title="Round trips closed, the share that made money, and how many were stop-losses">Trades</Tooltip>,
         width: 84,
         align: "right",
-        sorter: by((x) => x.num_trades),
+        sorter: true,
+        sortOrder: c.sortOrder(`${period}-trades`),
         render: (_: unknown, t: DipTest) => {
           const x = n(t);
           if (!x || x.error) return "—";
@@ -218,44 +219,16 @@ function TestDetailView({ test, periods }: { test: DipTest; periods: Record<stri
   );
 }
 
-/** Each rule's values and how they change the score, like for like: among tests that are the same in every other rule
- *  (watchlist included), how far each value's score sits from the average of that group. Comparing plain medians would
- *  flatter values that were only tried around the best setups. */
-function RuleEffects({ tests }: { tests: DipTest[] }) {
-  const rows = useMemo(() => {
-    const scored = tests.filter((t) => t.score != null);
-    const rules = [
-      { key: "watchlist", title: "Watchlist", tip: "", value: (t: DipTest) => t.watchlist as string | number, text: (t: DipTest) => t.watchlist },
-      { key: "extra", title: "Filter", tip: "A filter tested on top of the rules", value: (t: DipTest) => (t.extra ?? "none") as string | number, text: (t: DipTest) => t.extra ?? "none" },
-      ...RULES.map((r) => ({ key: r.key, title: r.title, tip: r.tip, value: (t: DipTest) => r.value(t.config) as string | number, text: (t: DipTest) => r.text(t.config) })),
-    ];
-    const groups: { title: string; tip: string; cells: { label: string; med: number | null; n: number }[] }[] = [];
-    for (const r of rules) {
-      const others = rules.filter((o) => o.key !== r.key);
-      const contexts = new Map<string, DipTest[]>();
-      for (const t of scored) {
-        const k = JSON.stringify(others.map((o) => o.value(t)));
-        contexts.set(k, [...(contexts.get(k) ?? []), t]);
-      }
-      const devs = new Map<string | number, { label: string; d: number[] }>();
-      for (const ts of contexts.values()) {
-        if (new Set(ts.map(r.value)).size < 2) continue;
-        const mean = ts.reduce((a, t) => a + t.score!, 0) / ts.length;
-        for (const t of ts) {
-          const v = r.value(t);
-          if (!devs.has(v)) devs.set(v, { label: r.text(t), d: [] });
-          devs.get(v)!.d.push(t.score! - mean);
-        }
-      }
-      if (devs.size < 2) continue;
-      const cells = [...devs.entries()]
-        .sort((a, b) => (typeof a[0] === "number" && typeof b[0] === "number" ? a[0] - b[0] : String(a[0]).localeCompare(String(b[0]))))
-        .map(([, v]) => ({ label: v.label, med: median(v.d), n: v.d.length }));
-      groups.push({ title: r.title, tip: r.tip, cells });
-    }
-    return groups;
-  }, [tests]);
-  if (!rows.length) return null;
+/** Each rule's values and how they change the score, like for like (worked out by the server over the whole batch):
+ *  among tests that are the same in every other rule (watchlist included), how far each value's score sits from the
+ *  average of that group. Comparing plain medians would flatter values that were only tried around the best setups. */
+function RuleEffects({ effects }: { effects: DipStudySummary["effects"] }) {
+  const named: Record<string, { title: string; tip: string }> = {
+    watchlist: { title: "Watchlist", tip: "" },
+    extra: { title: "Filter", tip: "A filter tested on top of the rules" },
+    ...Object.fromEntries(RULES.map((r) => [r.key, { title: r.title, tip: r.tip }])),
+  };
+  if (!effects.length) return null;
   return (
     <Card
       size="small"
@@ -266,13 +239,13 @@ function RuleEffects({ tests }: { tests: DipTest[] }) {
       }
       style={{ marginBottom: 12 }}
     >
-      {rows.map((g) => (
-        <div key={g.title} style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap", marginBottom: 4 }}>
-          <Tooltip title={g.tip}><span style={{ width: 80, color: MUTED, fontSize: 12, flex: "none" }}>{g.title}</span></Tooltip>
+      {effects.map((g) => (
+        <div key={g.key} style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap", marginBottom: 4 }}>
+          <Tooltip title={named[g.key]?.tip}><span style={{ width: 80, color: MUTED, fontSize: 12, flex: "none" }}>{named[g.key]?.title ?? g.key}</span></Tooltip>
           {g.cells.map((c) => (
             <Tooltip key={c.label} title={`${c.n} tests compared`}>
               <Tag style={{ marginInlineEnd: 0 }}>
-                {c.label} <b style={{ color: color(c.med) }}>{signed(c.med)}</b>
+                {c.label} <b style={{ color: color(c.median) }}>{signed(c.median)}</b>
               </Tag>
             </Tooltip>
           ))}
@@ -305,20 +278,31 @@ interface Props {
   onLoad: (c: DipPresetConfig) => void;
 }
 
+const PAGE_SIZES = [25, 50, 100, 200];
+const DEFAULT_SORT = { key: "pick", order: "asc" as const }; // the picks first, then the best score
+
 export default function TestResults({ onLoad }: Props) {
   const { message } = AntApp.useApp();
   const [studies, setStudies] = useState<DipStudy[] | null>(null);
   const [studyId, setStudyId] = useState<number | null>(null);
-  const [tests, setTests] = useState<DipTest[] | null>(null);
+  const [summary, setSummary] = useState<DipStudySummary | null>(null);
+  const [rows, setRows] = useState<{ total: number; items: DipTest[] } | null>(null);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState<{ test: DipTest; name: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  // What the server is asked for: the page, the sort, the filters (the switches, the search, each column's choices)
+  const [page, setPage] = useState({ current: 1, size: 50 });
+  const [sort, setSort] = useState<{ key: string; order: "asc" | "desc" }>(DEFAULT_SORT);
+  const [filters, setFilters] = useState<Record<string, (string | number)[]>>({});
   const [onlyPicks, setOnlyPicks] = useState(false);
   const [bothPositive, setBothPositive] = useState(false);
   const [beatHold, setBeatHold] = useState(false);
+  const [typed, setTyped] = useState("");
   const [query, setQuery] = useState("");
   const [more, setMore] = useState(false);
+  const asked = useRef(0); // only the latest request's answer is shown
   const pin = !!Grid.useBreakpoint().md; // on a phone, pinned columns would fill the screen
 
   const loadPresets = useCallback(() => {
@@ -333,33 +317,53 @@ export default function TestResults({ onLoad }: Props) {
     loadPresets();
   }, [loadPresets]);
 
+  // Another batch: its own frame, and the grid from the top with nothing filtered
   useEffect(() => {
     if (studyId == null) return;
-    setTests(null);
-    tradingApi.dipTests(studyId).then(setTests, (e) => setError(e instanceof Error ? e.message : String(e)));
+    setSummary(null);
+    setRows(null);
+    setPage((p) => ({ ...p, current: 1 }));
+    setSort(DEFAULT_SORT);
+    setFilters({});
+    tradingApi.dipStudySummary(studyId).then(setSummary, (e) => setError(e instanceof Error ? e.message : String(e)));
   }, [studyId]);
+
+  // Typing in the search box asks once it pauses
+  useEffect(() => {
+    const q = typed.trim();
+    if (q === query) return;
+    const t = setTimeout(() => {
+      setQuery(q);
+      setPage((p) => ({ ...p, current: 1 }));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [typed, query]);
+
+  useEffect(() => {
+    if (studyId == null) return;
+    const ask: DipTestQuery = {
+      offset: (page.current - 1) * page.size, limit: page.size, sort: sort.key, order: sort.order, q: query,
+      picks: onlyPicks, profit_both: bothPositive, beat_both: beatHold, filters,
+    };
+    const n = ++asked.current;
+    setLoading(true);
+    tradingApi.dipTests(studyId, ask).then(
+      (r) => { if (n === asked.current) setRows(r); },
+      (e) => { if (n === asked.current) message.error(e instanceof Error ? e.message : String(e)); },
+    ).finally(() => { if (n === asked.current) setLoading(false); });
+  }, [studyId, page, sort, filters, query, onlyPicks, bothPositive, beatHold, message]);
+
+  const toggle = (set: (v: boolean) => void) => (v: boolean) => {
+    set(v);
+    setPage((p) => ({ ...p, current: 1 }));
+  };
 
   const study = studies?.find((s) => s.id === studyId) ?? null;
   const periods = study?.periods ?? {};
-  const main = useMemo(() => ["practice", "exam"].filter((p) => p in (study?.periods ?? {})), [study]);
-
-  const shown = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return (tests ?? []).filter((t) => {
-      if (onlyPicks && t.pick == null) return false;
-      if (bothPositive && !main.every((p) => (t.results[p]?.total_return_pct ?? -1) > 0)) return false;
-      if (beatHold && !main.every((p) => (t.results[p]?.alpha_vs_buy_hold_pct ?? -1) > 0)) return false;
-      if (q && !`${t.code} ${t.name} ${t.watchlist} ${t.config.symbols.join(" ")}`.toLowerCase().includes(q)) return false;
-      return true;
-    });
-  }, [tests, onlyPicks, bothPositive, beatHold, query, main]);
-
-  const stats = useMemo(() => {
-    const all = tests ?? [];
-    const ok = all.filter((t) => main.every((p) => (t.results[p]?.total_return_pct ?? -1) > 0)).length;
-    const beat = all.filter((t) => main.every((p) => (t.results[p]?.alpha_vs_buy_hold_pct ?? -1) > 0)).length;
-    return { n: all.length, ok, beat };
-  }, [tests, main]);
+  const controls: Controls = {
+    sortOrder: (key) => (sort.key === key ? (sort.order === "asc" ? "ascend" : "descend") : null),
+    filtered: (key) => filters[key] ?? null,
+  };
 
   const save = async () => {
     if (!saving) return;
@@ -376,7 +380,6 @@ export default function TestResults({ onLoad }: Props) {
     }
   };
 
-  const watchlists = [...new Set((tests ?? []).map((t) => t.watchlist))].sort();
   const full = Object.keys(periods).filter((p) => !PARTIAL_PERIODS.has(p)); // the windows every test has
   // "All" chains the windows back to back: only when none of them overlap
   const chained = [...full].sort((a, b) => periods[a][0].localeCompare(periods[b][0]));
@@ -388,8 +391,8 @@ export default function TestResults({ onLoad }: Props) {
       width: 58,
       fixed: pin ? "left" : undefined,
       align: "center",
-      defaultSortOrder: "ascend",
-      sorter: (a, b) => (a.pick ?? 1e9) - (b.pick ?? 1e9), // the picks first, then the rest best score first
+      sorter: true,
+      sortOrder: controls.sortOrder("pick"),
       render: (_, t) => (t.pick ? <Tag color="gold" icon={<StarFilled />} style={{ marginInlineEnd: 0 }}>{t.pick}</Tag> : null),
     },
     {
@@ -397,7 +400,8 @@ export default function TestResults({ onLoad }: Props) {
       title: "Setup",
       width: pin ? 300 : 200,
       fixed: pin ? "left" : undefined,
-      sorter: (a, b) => a.code.localeCompare(b.code),
+      sorter: true,
+      sortOrder: controls.sortOrder("name"),
       render: (_, t) => (
         <span>
           {t.name}
@@ -409,9 +413,10 @@ export default function TestResults({ onLoad }: Props) {
       key: "watchlist",
       title: "Watchlist",
       width: 130,
-      filters: watchlists.map((w) => ({ text: w, value: w })),
-      onFilter: (v, t) => t.watchlist === v,
-      sorter: (a, b) => a.watchlist.localeCompare(b.watchlist),
+      filters: (summary?.watchlists ?? []).map((w) => ({ text: w, value: w })),
+      filteredValue: controls.filtered("watchlist"),
+      sorter: true,
+      sortOrder: controls.sortOrder("watchlist"),
       render: (_, t) => <Tooltip title={t.config.symbols.join(" ")}>{t.watchlist} <span style={{ color: MUTED }}>({t.config.symbols.length})</span></Tooltip>,
     },
     {
@@ -419,7 +424,8 @@ export default function TestResults({ onLoad }: Props) {
       title: <Tooltip title="The weaker of its practice and exam returns: a setup is only as good as its worse window">Score</Tooltip>,
       width: 74,
       align: "right",
-      sorter: (a, b) => (a.score ?? -1e9) - (b.score ?? -1e9),
+      sorter: true,
+      sortOrder: controls.sortOrder("score"),
       render: (_, t) => <b style={{ color: color(t.score) }}>{signed(t.score)}</b>,
     },
     {
@@ -427,7 +433,8 @@ export default function TestResults({ onLoad }: Props) {
       title: <Tooltip title="Steadiness: its return per 1% of its worst drop, the weaker of practice and exam. Higher = more return for the bumps along the way (2 = it made twice its worst drop)">Ret/DD</Tooltip>,
       width: 70,
       align: "right",
-      sorter: (a, b) => (calm(a) ?? -1e9) - (calm(b) ?? -1e9),
+      sorter: true,
+      sortOrder: controls.sortOrder("calm"),
       render: (_, t) => {
         const c = calm(t);
         return c == null ? "—" : <span style={{ color: c >= 1 ? GREEN : c < 0 ? RED : undefined }}>{c.toFixed(2)}</span>;
@@ -439,20 +446,22 @@ export default function TestResults({ onLoad }: Props) {
           title: <Tooltip title={`All ${full.length} windows back to back (${full.reduce((n, p) => n + months(periods[p]), 0)} months): what it grew to`}>All</Tooltip>,
           width: 78,
           align: "right" as const,
-          sorter: (a: DipTest, b: DipTest) => (allWindows(a, full) ?? -1e9) - (allWindows(b, full) ?? -1e9),
+          sorter: true,
+          sortOrder: controls.sortOrder("all"),
           render: (_: unknown, t: DipTest) => {
             const v = allWindows(t, full);
             return <b style={{ color: color(v) }}>{signed(v, 0)}</b>;
           },
         }]
       : []),
-    ...((tests ?? []).some((t) => t.quarters)
+    ...(summary?.has_quarters
       ? [{
           key: "quarters",
           title: <Tooltip title="Twelve separate 3-month tests, Oct 2023 to Oct 2026: how many made money, and the worst one. Run for the best setups only">Quarters</Tooltip>,
           width: 92,
           align: "right" as const,
-          sorter: (a: DipTest, b: DipTest) => (a.quarters ? a.quarters.won * 1000 + a.quarters.worst : -1e9) - (b.quarters ? b.quarters.won * 1000 + b.quarters.worst : -1e9),
+          sorter: true,
+          sortOrder: controls.sortOrder("quarters"),
           render: (_: unknown, t: DipTest) => {
             const q = t.quarters;
             if (!q) return <span style={{ color: MUTED }}>—</span>;
@@ -467,19 +476,19 @@ export default function TestResults({ onLoad }: Props) {
           },
         }]
       : []),
-    ...Object.keys(periods).map((p) => periodColumns(p, periods[p])),
-    ...((tests ?? []).some((t) => t.extra)
+    ...Object.keys(periods).map((p) => periodColumns(p, periods[p], controls)),
+    ...(summary?.extras.length
       ? [{
           key: "extra",
           title: <Tooltip title="A filter tested on top of the rules. The bots don't have it yet: a saved setup keeps the rules only">Filter</Tooltip>,
           width: 150,
-          filters: [...new Set((tests ?? []).map((t) => t.extra ?? "—"))].map((v) => ({ text: v, value: v })),
-          onFilter: (v: unknown, t: DipTest) => (t.extra ?? "—") === v,
+          filters: summary.extras.map((v) => ({ text: v, value: v })),
+          filteredValue: controls.filtered("extra"),
           render: (_: unknown, t: DipTest) => (t.extra ? <Tag color="purple" style={{ whiteSpace: "normal" }}>{t.extra}</Tag> : <span style={{ color: MUTED }}>—</span>),
         }]
       : []),
     // Only the rules this batch varied
-    ...RULES.filter((r) => new Set((tests ?? []).map((t) => r.value(t.config))).size > 1).map((r) => ruleColumn(r, tests ?? [])),
+    ...RULES.filter((r) => summary?.rules[r.key]).map((r) => ruleColumn(r, summary!.rules[r.key], controls)),
     {
       key: "actions",
       title: "",
@@ -528,34 +537,46 @@ export default function TestResults({ onLoad }: Props) {
           </Typography.Paragraph>
         )}
       </Card>
-      {tests && (
+      {summary && (
         <>
           <Row gutter={12} style={{ marginBottom: 4 }}>
             <Col>
               <Typography.Text style={{ color: MUTED, fontSize: 12 }}>
-                {stats.n} setups tested · {stats.ok} made money in both practice and exam · {stats.beat} also beat buy & hold in both
+                {summary.tests} setups tested · {summary.made_money_both} made money in both practice and exam · {summary.beat_hold_both} also beat
+                buy & hold in both
               </Typography.Text>
             </Col>
           </Row>
-          <RuleEffects tests={tests} />
+          <RuleEffects effects={summary.effects} />
           <Space wrap style={{ marginBottom: 8 }}>
-            <Input.Search allowClear placeholder="Find a setup or symbol" onChange={(e) => setQuery(e.target.value)} style={{ width: 220 }} />
-            <span><Switch size="small" checked={onlyPicks} onChange={setOnlyPicks} /> Picks only</span>
-            <span><Switch size="small" checked={bothPositive} onChange={setBothPositive} /> Made money in practice and exam</span>
-            <span><Switch size="small" checked={beatHold} onChange={setBeatHold} /> Beat buy & hold in both</span>
-            <span style={{ color: MUTED, fontSize: 12 }}>{shown.length} shown</span>
+            <Input.Search allowClear placeholder="Find a setup or symbol" value={typed} onChange={(e) => setTyped(e.target.value)} style={{ width: 220 }} />
+            <span><Switch size="small" checked={onlyPicks} onChange={toggle(setOnlyPicks)} /> Picks only</span>
+            <span><Switch size="small" checked={bothPositive} onChange={toggle(setBothPositive)} /> Made money in practice and exam</span>
+            <span><Switch size="small" checked={beatHold} onChange={toggle(setBeatHold)} /> Beat buy & hold in both</span>
+            <span style={{ color: MUTED, fontSize: 12 }}>{rows ? `${rows.total} shown` : ""}</span>
           </Space>
         </>
       )}
       <Table<DipTest>
         size="small"
         rowKey="id"
-        loading={!tests}
-        dataSource={shown}
+        loading={loading || !rows}
+        dataSource={rows?.items ?? []}
         columns={columns}
         scroll={{ x: "max-content" }}
         sticky
-        pagination={{ defaultPageSize: 50, pageSizeOptions: [25, 50, 100, 200], showSizeChanger: true }}
+        pagination={{ current: page.current, pageSize: page.size, total: rows?.total ?? 0, pageSizeOptions: PAGE_SIZES, showSizeChanger: true }}
+        onChange={(p, f, sorter, { action }) => {
+          // One request for whatever changed; a new sort or filter starts from the first page
+          if (action === "paginate") {
+            setPage({ current: p.current ?? 1, size: p.pageSize ?? page.size });
+            return;
+          }
+          const s = Array.isArray(sorter) ? sorter[0] : sorter;
+          setSort(s?.order ? { key: String(s.columnKey), order: s.order === "ascend" ? "asc" : "desc" } : DEFAULT_SORT);
+          setFilters(Object.fromEntries(Object.entries(f).filter(([, v]) => v?.length)) as Record<string, (string | number)[]>);
+          setPage((old) => ({ ...old, current: 1 }));
+        }}
         expandable={{ expandedRowRender: (t) => <TestDetailView test={t} periods={periods} /> }}
       />
       <Modal

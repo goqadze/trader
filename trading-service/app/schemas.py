@@ -344,6 +344,42 @@ class DipTestDetailOut(DipTestOut):
     detail: dict
 
 
+class DipTestPageOut(BaseModel):
+    """One page of a study's grid, and how many tests the filters leave."""
+
+    total: int
+    items: list[DipTestOut]
+
+
+class RuleValueOut(BaseModel):
+    value: float
+    text: str  # "3%", "+2%", "back", "5d" ...
+
+
+class EffectCellOut(BaseModel):
+    label: str
+    median: float  # points of score above (+) or below (-) the like-for-like average
+    n: int  # tests compared
+
+
+class EffectOut(BaseModel):
+    key: str  # "watchlist", "extra" or a rule (studies.RULES)
+    cells: list[EffectCellOut]
+
+
+class DipStudySummaryOut(BaseModel):
+    """What the Test results grid needs besides its rows."""
+
+    tests: int
+    made_money_both: int  # in practice and exam
+    beat_hold_both: int
+    watchlists: list[str]
+    extras: list[str]  # the Filter column's choices ("—" = none); empty when no test has one
+    rules: dict[str, list[RuleValueOut]]  # the rules the tests differ in: their columns, and the filter choices
+    has_quarters: bool
+    effects: list[EffectOut]
+
+
 NotifyCategory = Literal["trades", "risk", "problems", "signals"]  # models.NOTIFY_CATEGORIES
 EMAIL = r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$"
 

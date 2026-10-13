@@ -7,10 +7,12 @@ Interactive docs: http://localhost:8002/docs
 """
 
 import asyncio
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.gzip import GZipMiddleware
@@ -18,7 +20,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session, defer
 
-from . import auth, dip, notify, rotation, scheduler
+from . import auth, dip, notify, rotation, scheduler, studies
 from .brokers import SHARED_ACCOUNT_BROKERS, BrokerError, catalog, get_broker
 from .config import settings
 from .db import get_session, init_db, utcnow
@@ -26,7 +28,7 @@ from .market import is_open, next_decision_time, ny_date, session_bounds
 from .models import (DIP, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPreset, DipStudy, DipTest, EquitySnapshot, Event,
                      Notification, Order, Signal, WatchItem)
 from .schemas import (BotCreate, BotOut, BotUpdate, CapitalAdd, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn, DipPresetOut,
-                      DipStudyIn, DipStudyOut, DipTestDetailOut, DipTestIn, DipTestOut,
+                      DipStudyIn, DipStudyOut, DipStudySummaryOut, DipTestDetailOut, DipTestIn, DipTestPageOut,
                       EmailAlertsIn, EmailAlertsOut, EventOut, HoldingOut, NotificationOut, NotifyCategoryOut, OrderOut,
                       RotationBotCreate, SignalOut, SnapshotOut, StatusOut, WatchItemOut, WatchSymbols, check_window)
 from .trader import (add_capital, benchmark_value, bot_equity, bot_lock, capital, close_position, evaluate, holdings,
@@ -790,6 +792,7 @@ def save_dip_study(body: DipStudyIn, session: Session = Depends(get_session)):
         session.execute(delete(DipTest).where(DipTest.study_id == study.id))
         study.name, study.description, study.periods, study.created_at = body.name, body.description, periods, utcnow()
     session.commit()
+    studies.forget(study.id)
     return _study_out(session, study)
 
 
@@ -810,16 +813,38 @@ def add_dip_tests(study_id: int, body: list[DipTestIn], session: Session = Depen
     session.execute(delete(DipTest).where(DipTest.study_id == study_id, DipTest.code.in_(codes)))
     session.add_all(DipTest(study_id=study_id, **t.model_dump(mode="json")) for t in body)
     session.commit()
+    studies.forget(study_id)
     return _study_out(session, study)
 
 
-@app.get("/dip/studies/{study_id}/tests", response_model=list[DipTestOut])
-def list_dip_tests(study_id: int, session: Session = Depends(get_session)):
-    """A study's tested setups, best score first (without their curves: GET /dip/tests/{id})."""
-    _get_study(session, study_id)
-    q = (select(DipTest).where(DipTest.study_id == study_id).options(defer(DipTest.detail))  # the curves: MBs, not shown here
-         .order_by(DipTest.score.desc().nulls_last(), DipTest.id))
-    return list(session.scalars(q))
+@app.get("/dip/studies/{study_id}/tests", response_model=DipTestPageOut)
+def list_dip_tests(study_id: int, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200),
+                   sort: str = "pick", order: Literal["asc", "desc"] = "asc", q: str = Query("", max_length=100),
+                   picks: bool = False, profit_both: bool = False, beat_both: bool = False, filters: str = "{}",
+                   session: Session = Depends(get_session)):
+    """One page of a study's tested setups (without their curves: GET /dip/tests/{id}), filtered and sorted by any
+    column of the grid; by default the picks first, then the best score. `filters`: JSON {"watchlist": [names],
+    "extra": [filters], "<rule>": [values]} (the values GET /dip/studies/{id}/summary lists); missing numbers sort
+    last either way."""
+    study = _get_study(session, study_id)
+    if sort not in studies.sort_keys(list(study.periods)):
+        raise HTTPException(422, f"can't sort by {sort!r}")
+    try:
+        chosen = json.loads(filters)
+        if not isinstance(chosen, dict) or not all(isinstance(v, list) for v in chosen.values()):
+            raise ValueError
+    except ValueError:
+        raise HTTPException(422, 'filters: JSON like {"watchlist": ["ETFs"], "stop": [0.2]}')
+    total, ids = studies.page(studies.index(session, study), offset, limit, sort, order, q, picks, profit_both, beat_both, chosen)
+    found = {t.id: t for t in session.scalars(select(DipTest).where(DipTest.id.in_(ids)).options(defer(DipTest.detail)))}
+    return DipTestPageOut(total=total, items=[found[i] for i in ids if i in found])
+
+
+@app.get("/dip/studies/{study_id}/summary", response_model=DipStudySummaryOut)
+def dip_study_summary(study_id: int, session: Session = Depends(get_session)):
+    """The grid's frame for a study: the counts, each column's filter choices (the rules its tests differ in) and what
+    matters: each rule's like-for-like effect on the score."""
+    return studies.index(session, _get_study(session, study_id)).summary
 
 
 @app.get("/dip/tests/{test_id}", response_model=DipTestDetailOut)
@@ -837,6 +862,7 @@ def delete_dip_study(study_id: int, session: Session = Depends(get_session)):
     session.execute(delete(DipTest).where(DipTest.study_id == study_id))  # SQLite doesn't cascade by itself
     session.delete(study)
     session.commit()
+    studies.forget(study_id)
 
 
 def _email_alerts_out(cfg: dict) -> EmailAlertsOut:

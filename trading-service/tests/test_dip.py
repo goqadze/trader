@@ -3,6 +3,7 @@
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
+from urllib.parse import quote
 
 import pandas as pd
 import pytest
@@ -1192,8 +1193,9 @@ def test_a_study_keeps_its_tests_best_first_and_their_curves_on_demand(api):
                                                                                      quarters={"won": 9, "of": 12, "worst": -4.2, "returns": [1.0] * 12})])
     assert r.status_code == 200, r.text
     assert r.json()["tests"] == 3
-    tests = c.get(f"/dip/studies/{study['id']}/tests").json()
-    assert [t["code"] for t in tests] == ["T3", "T1", "T2"]  # best score first, none last
+    grid = c.get(f"/dip/studies/{study['id']}/tests").json()
+    tests = grid["items"]
+    assert grid["total"] == 3 and [t["code"] for t in tests] == ["T3", "T1", "T2"]  # the pick, then best score, none last
     assert tests[0]["pick"] == 1 and tests[0]["config"]["symbols"] == ["XLK", "XLF"] and "detail" not in tests[0]
     assert (tests[0]["extra"], tests[1]["extra"]) == ("skip dips after earnings", None)
     assert (tests[0]["quarters"]["won"], tests[1]["quarters"]) == (9, None)
@@ -1203,13 +1205,91 @@ def test_a_study_keeps_its_tests_best_first_and_their_curves_on_demand(api):
 
     # The same code again replaces that test; a study saved again under its name starts over
     c.post(f"/dip/studies/{study['id']}/tests", json=[one_setup("T1", 9.0)])
-    assert [t["code"] for t in c.get(f"/dip/studies/{study['id']}/tests").json()] == ["T1", "T3", "T2"]
+    assert [t["code"] for t in c.get(f"/dip/studies/{study['id']}/tests?sort=score&order=desc").json()["items"]] == ["T1", "T3", "T2"]
     again = c.put("/dip/studies", json={**STUDY, "name": "sweep 1", "description": "again"}).json()
     assert (again["id"], again["tests"], again["description"]) == (study["id"], 0, "again")
     assert [s["name"] for s in c.get("/dip/studies").json()] == ["sweep 1"]
 
     assert c.delete(f"/dip/studies/{study['id']}").status_code == 204
     assert c.get("/dip/studies").json() == [] and c.get(f"/dip/studies/{study['id']}/tests").status_code == 404
+
+
+def grid_test(code: str, watchlist: str, drop: float, stop: float, score: float | None, practice: dict, exam: dict,
+              stress: dict, **kw) -> dict:
+    window = lambda x: {"max_drawdown_pct": -5.0, "num_trades": 10, **x}  # noqa: E731
+    return {"code": code, "name": f"{code} {watchlist}", "watchlist": watchlist, "score": score,
+            "config": {**SETUP, "drop_pct": drop, "stop_pct": stop, **kw.pop("config", {})},
+            "results": {"practice": window(practice), "exam": window(exam), "stress": window(stress)}, **kw}
+
+
+GRID = [  # five tests of a study with three windows; A and C are its picks
+    grid_test("A", "ETFs", 0.03, 0.2, 5.0, {"total_return_pct": 10, "alpha_vs_buy_hold_pct": 2},
+              {"total_return_pct": 5, "alpha_vs_buy_hold_pct": 1}, {"total_return_pct": -3}, pick=2),
+    grid_test("B", "ETFs", 0.03, 0.1, 7.0, {"total_return_pct": 8, "alpha_vs_buy_hold_pct": -1},
+              {"total_return_pct": 7, "alpha_vs_buy_hold_pct": 3}, {"total_return_pct": 1}),
+    grid_test("C", "Chips", 0.05, 0.2, -2.0, {"total_return_pct": -2}, {"total_return_pct": 12}, {"total_return_pct": 0},
+              pick=1, config={"symbols": ["NVDA", "AMD"]}),
+    grid_test("D", "Chips", 0.05, 0.1, None, {"total_return_pct": 4}, {"error": "no prices"}, {"total_return_pct": 2}),
+    grid_test("E", "ETFs", 0.05, 0.2, 1.0, {"total_return_pct": 1}, {"total_return_pct": 2}, {"total_return_pct": 2},
+              quarters={"won": 9, "of": 12, "worst": -4.2, "returns": [1.0] * 12}),
+]
+
+
+def test_the_grid_is_filtered_sorted_and_paged_by_the_server(api):
+    c, _, _ = api
+    study = c.put("/dip/studies", json={**STUDY, "periods": {**STUDY["periods"], "stress": ["2024-07-09", "2025-04-08"]}}).json()
+    assert c.post(f"/dip/studies/{study['id']}/tests", json=GRID).status_code == 200
+    url = f"/dip/studies/{study['id']}/tests"
+
+    def codes(query: str = "", total: int | None = None) -> list[str]:
+        r = c.get(f"{url}?{query}")
+        assert r.status_code == 200, r.text
+        if total is not None:
+            assert r.json()["total"] == total
+        return [t["code"] for t in r.json()["items"]]
+
+    assert codes(total=5) == ["C", "A", "B", "E", "D"]  # the picks in order, then the best score, no score last
+    assert codes("offset=1&limit=2", total=5) == ["A", "B"]
+    assert codes("sort=score&order=desc") == ["B", "A", "E", "C", "D"]
+    assert codes("sort=score&order=asc") == ["C", "E", "A", "B", "D"]  # a missing number is last either way
+    assert codes("sort=exam-ret&order=desc") == ["C", "B", "A", "E", "D"]  # D's exam failed
+    assert codes("sort=calm&order=desc") == ["B", "A", "E", "C", "D"]  # the weaker of practice, exam per 1% of drop
+    assert codes("sort=all&order=desc") == ["B", "A", "C", "E", "D"]  # the three windows back to back
+    assert codes("sort=quarters&order=desc") == ["E", "C", "A", "B", "D"]  # only E has them: the rest keep their order
+    assert codes("sort=stop&order=asc") == ["B", "D", "C", "A", "E"]  # ties keep the default order
+    assert codes("sort=pick&order=desc") == ["A", "C", "B", "E", "D"]
+    assert codes("sort=name&order=desc") == ["E", "D", "C", "B", "A"]
+
+    assert codes("picks=true", total=2) == ["C", "A"]
+    assert codes("profit_both=true") == ["A", "B", "E"]  # practice and exam both up
+    assert codes("beat_both=true") == ["A"]  # and beat buy & hold in both
+    assert codes("q=nvda") == ["C"] and codes("q=chips") == ["C", "D"]
+    assert codes("filters=" + quote('{"watchlist": ["Chips"]}')) == ["C", "D"]
+    assert codes("filters=" + quote('{"stop": [0.1]}')) == ["B", "D"]
+    assert codes("filters=" + quote('{"watchlist": ["ETFs"], "stop": [0.2]}') + "&sort=score&order=desc", total=2) == ["A", "E"]
+
+    assert c.get(f"{url}?sort=bear-ret").status_code == 422  # no such window
+    assert c.get(f"{url}?filters=nope").status_code == 422
+    assert c.get(f"{url}?limit=500").status_code == 422
+    assert c.get("/dip/studies/999/tests").status_code == 404
+
+    s = c.get(f"/dip/studies/{study['id']}/summary").json()
+    assert (s["tests"], s["made_money_both"], s["beat_hold_both"], s["has_quarters"]) == (5, 3, 1, True)
+    assert (s["watchlists"], s["extras"]) == (["Chips", "ETFs"], [])
+    assert s["rules"] == {"drop": [{"value": 0.03, "text": "3%"}, {"value": 0.05, "text": "5%"}],
+                          "stop": [{"value": 0.1, "text": "10%"}, {"value": 0.2, "text": "20%"}]}  # only what differs
+    # Like for like: A and B differ only in the stop (7 vs 5 around 6), A and E only in the fall (5 vs 1 around 3), C and
+    # E only in the watchlist (-2 vs 1 around -0.5); D has no score
+    assert s["effects"] == [
+        {"key": "watchlist", "cells": [{"label": "Chips", "median": -1.5, "n": 1}, {"label": "ETFs", "median": 1.5, "n": 1}]},
+        {"key": "drop", "cells": [{"label": "3%", "median": 2.0, "n": 1}, {"label": "5%", "median": -2.0, "n": 1}]},
+        {"key": "stop", "cells": [{"label": "10%", "median": 1.0, "n": 1}, {"label": "20%", "median": -1.0, "n": 1}]},
+    ]
+
+    # New results for a test: the next page and summary see them
+    c.post(f"/dip/studies/{study['id']}/tests", json=[{**GRID[4], "score": 50.0}])
+    assert codes("sort=score&order=desc")[0] == "E"
+    assert c.get(f"/dip/studies/{study['id']}/summary").json()["effects"][1]["cells"][1]["median"] == 22.5  # 5% fall: E 50 vs A 5
 
 
 def test_a_study_and_its_tests_are_checked(api):
