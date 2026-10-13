@@ -3,7 +3,7 @@ import { Alert, App as AntApp, Button, Card, Checkbox, Col, Form, Row, Select, S
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { tradingApi } from "../trading/api";
-import { localTime } from "../trading/format";
+import { accountLabel, localTime } from "../trading/format";
 import type { EmailAlert, EmailAlerts, EmailAlertsSave } from "../trading/types";
 import { usePolling } from "../trading/usePolling";
 
@@ -177,7 +177,11 @@ export default function EmailAlertsPage() {
                   render: (s: string, n) => (
                     <>
                       <Tag color={CATEGORY_COLOR[n.category]}>{n.category}</Tag>
+                      {n.broker && (
+                        <Tag color={n.broker === "alpaca-live" ? "red" : "blue"}>{accountLabel({ live: n.broker === "alpaca-live", broker: n.broker })}</Tag>
+                      )}
                       {n.bot_id ? <Link to={`/trading/${n.bot_id}`}>{s}</Link> : s}
+                      {n.bot_name && <div style={{ color: MUTED, fontSize: 12 }}>{n.bot_name}</div>}
                     </>
                   ),
                 },

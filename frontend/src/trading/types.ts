@@ -255,4 +255,6 @@ export interface EmailAlert {
   next_attempt_at: string | null;
   sent_at: string | null;
   error: string | null;
+  bot_name: string | null; // whose alert it is (null: not about one bot)
+  broker: string | null; // its account: "alpaca-live" = real money
 }

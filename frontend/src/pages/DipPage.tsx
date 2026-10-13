@@ -76,10 +76,11 @@ export default function DipPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [initial, setInitial] = useState<DipBotInitial>({});
   const [loadRequest, setLoadRequest] = useState<{ config: DipPresetConfig; seq: number } | null>(null);
-  const bots = usePolling(() => tradingApi.listBots(false), 15_000);
+  const bots = usePolling(() => tradingApi.listBots(true), 15_000); // archived too: their old signals keep their names
   const status = usePolling(tradingApi.status, 60_000);
   const signals = usePolling(() => tradingApi.signals(0, 300), 15_000);
-  const dipBots = (bots.data ?? []).filter(isDip);
+  const allDipBots = (bots.data ?? []).filter(isDip);
+  const dipBots = allDipBots.filter((b) => b.status !== "archived");
 
   // The trading page's "New dip bot" lands here with the form open
   useEffect(() => {
@@ -193,7 +194,7 @@ export default function DipPage() {
       </Col>
       <Col xs={24} lg={10}>
         <Card size="small" title="Signals (recommendations)">
-          <SignalsList signals={signals.data ?? []} />
+          <SignalsList signals={signals.data ?? []} bots={allDipBots} />
         </Card>
       </Col>
     </Row>

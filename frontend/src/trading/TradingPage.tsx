@@ -1,12 +1,13 @@
 import { FallOutlined, PlusOutlined, RetweetOutlined, StopOutlined } from "@ant-design/icons";
 import {
-  Alert, App as AntApp, Badge, Button, Card, Col, Grid, List, Popconfirm, Row, Segmented, Select, Space, Statistic, Switch, Table, Tag, Tooltip, Typography,
+  Alert, App as AntApp, Badge, Button, Card, Col, Grid, List, Row, Segmented, Select, Space, Statistic, Switch, Table, Tag, Tooltip, Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { tradingApi } from "./api";
 import BotForm, { type BotFormInitial } from "./BotForm";
+import { useConfirm } from "./confirm";
 import RotationBotForm, { type RotationBotInitial } from "./RotationBotForm";
 import { dipRules } from "../dip/DipParts";
 import { strategyName } from "../strategies";
@@ -245,6 +246,25 @@ export default function TradingPage() {
     navigate(`/trading/${bot.id}`);
   };
 
+  const confirm = useConfirm();
+  const haltAll = () => {
+    const active = list.filter((b) => b.status === "active");
+    const live = active.filter((b) => b.live).length;
+    confirm({
+      title: "Pause ALL bots?",
+      content: (
+        <>
+          {`Pauses ${active.length} active bot${active.length === 1 ? "" : "s"} on every account`}
+          {live > 0 && <> (<Tag color="red" style={{ marginInline: 0 }}>{live} LIVE — real money</Tag>)</>}
+          {": no new decisions or buys until you resume each one. Stop-loss and targets keep protecting open positions."}
+        </>
+      ),
+      okText: "Pause all",
+      danger: true,
+      onOk: halt,
+    });
+  };
+
   const halt = async () => {
     try {
       const r = await tradingApi.halt();
@@ -266,15 +286,7 @@ export default function TradingPage() {
         </Col>
         <Col flex="0 1 auto">
           <Space wrap>
-            <Popconfirm
-              title="Pause ALL bots?"
-              description="No new decisions until you resume each bot. Stop-loss/target keep protecting open positions."
-              okText="Pause all"
-              okButtonProps={{ danger: true }}
-              onConfirm={halt}
-            >
-              <Button danger icon={<StopOutlined />} disabled={!list.some((b) => b.status === "active")}>Halt all</Button>
-            </Popconfirm>
+            <Button danger icon={<StopOutlined />} disabled={!list.some((b) => b.status === "active")} onClick={haltAll}>Halt all</Button>
             <Tooltip title="Watches a list of symbols, buys the ones that just fell and sells them once they're back (see the Dip buyer page)">
               <Button icon={<FallOutlined />} onClick={() => navigate("/dip", { state: { newDipBot: true } })}>
                 New dip bot

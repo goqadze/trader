@@ -128,6 +128,50 @@ def test_what_piled_up_goes_out_in_one_email_and_a_failed_send_is_retried(sessio
     assert {(n.status, n.attempts, n.error) for n in _queued(session)} == {("sent", 2, None)}
 
 
+def test_real_money_alerts_go_out_on_their_own_marked_live(session, smtp):
+    _on(session)
+    paper = make_bot(session, name="mirror", broker="paper")
+    live = make_bot(session, name="commodity ETFs", broker="alpaca-live")
+    practice = make_bot(session, name="practice", broker="alpaca-paper")
+    for bot in (paper, live, practice):
+        submit_order(session, bot, FakeBroker(price=100.0, now=T), "BUY", 10, "signal", T)
+    log_event(session, None, "halt", "HALT ALL: paused 3 bot(s)", "warning", T)
+    session.commit()
+    assert [n.subject for n in _queued(session)] == ["BUY AAPL: 10 @ $100.00"] * 3 + ["HALT ALL: paused 3 bot(s)"]
+
+    sent = []
+
+    def live_refused(msg):
+        if "LIVE" in msg["Subject"]:
+            raise smtplib.SMTPDataError(451, b"try again later")
+        sent.append(msg)
+
+    assert notify.send_pending(T, live_refused) == 3  # the paper email still goes out
+    assert [(n.bot_id, n.status) for n in _queued(session)] == [(paper.id, "sent"), (live.id, "pending"),
+                                                                 (practice.id, "sent"), (None, "sent")]
+    (rest,) = sent
+    assert rest["Subject"] == "[Trading] 3 alerts: BUY AAPL: 10 @ $100.00 · BUY AAPL: 10 @ $100.00 · HALT ALL: paused 3 bot(s)"
+    html = rest.get_body(("html",)).get_content()
+    assert ">PAPER</span>BUY AAPL" in html and ">ALPACA PAPER</span>BUY AAPL" in html and "LIVE" not in html
+    assert "[PAPER] BUY AAPL: 10 @ $100.00\nMon Jun 02, 11:00 New York (15:00 UTC) · trades · mirror" in rest.get_body(("plain",)).get_content()
+
+    assert notify.send_pending(T + timedelta(minutes=1), sent.append) == 1  # the retry: the live alert alone
+    real = sent[-1]
+    assert real["Subject"] == "[Trading] 🔴 LIVE — real money · BUY AAPL: 10 @ $100.00"
+    html = real.get_body(("html",)).get_content()
+    assert "LIVE — real money<span" in html and "your Alpaca live account" in html  # the red banner on top
+    assert ">LIVE — real money</span>BUY AAPL" in html and "trades · commodity ETFs" in html
+    text = real.get_body(("plain",)).get_content()
+    assert text.startswith("LIVE — REAL MONEY: about your Alpaca live account.\n\n[LIVE — real money] BUY AAPL: 10 @ $100.00\n")
+
+    for bot in (paper, live):
+        submit_order(session, bot, FakeBroker(price=110.0, now=T), "SELL", 10, "target", T + timedelta(hours=1))
+    session.commit()
+    assert notify.send_pending(T + timedelta(hours=1), sent.append) == 2
+    assert [m["Subject"] for m in sent[-2:]] == ["[Trading] 🔴 LIVE — real money · SELL AAPL +$100.00 (+10.0%)",  # real money first
+                                                 "[Trading] SELL AAPL +$100.00 (+10.0%)"]
+
+
 def test_it_gives_up_after_the_retries_and_skips_alerts_turned_off_meanwhile(session, smtp):
     _on(session)
     bot = make_bot(session)
@@ -184,6 +228,17 @@ def test_the_settings_api(api, monkeypatch):
     r = c.post("/email-alerts/test")
     assert r.status_code == 502 and "Username and Password not accepted" in r.text
     assert [(n["kind"], n["status"]) for n in c.get("/email-alerts/history").json()] == [("test", "failed"), ("test", "sent")]
+
+
+def test_the_history_says_whose_alert_it_is(api, session):
+    _on(session)
+    live = make_bot(session, name="commodity ETFs", broker="alpaca-live")
+    submit_order(session, live, FakeBroker(price=100.0, now=T), "BUY", 10, "signal", T)
+    log_event(session, None, "halt", "HALT ALL: paused 1 bot(s)", "warning", T)
+    session.commit()
+    halt, buy = api.get("/email-alerts/history").json()
+    assert (buy["subject"], buy["bot_name"], buy["broker"]) == ("BUY AAPL: 10 @ $100.00", "commodity ETFs", "alpaca-live")
+    assert (halt["bot_name"], halt["broker"]) == (None, None)
 
 
 def test_a_test_email_needs_a_mail_server_and_an_address(api, monkeypatch):

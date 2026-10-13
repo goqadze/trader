@@ -2,8 +2,8 @@
 them) the dip buyer's signals, sent to the addresses set on the dashboard's Email alerts page.
 
 An outbox: the rest of the service only QUEUES an email (a Notification row, in the same transaction as the event it
-tells about), and run_forever() sends what is queued every few seconds, everything that piled up in one email, retrying
-a failed send later. So a slow or broken mail server never holds up or breaks trading, an event that was rolled back
+tells about), and run_forever() sends what is queued every few seconds, everything that piled up in one email (real-money
+alerts in one of their own, marked LIVE), retrying a failed send later. So a slow or broken mail server never holds up or breaks trading, an event that was rolled back
 never emails, and a restart loses nothing.
 
 Any SMTP server works (SMTP_* in .env). Gmail: smtp.gmail.com, port 587, your address and an App Password. Port 587
@@ -48,6 +48,11 @@ REASONS = {"dip": "bought the dip", "signal": "buy signal", "target": "back at i
            "time": "held too long", "manual": "you asked", "rebalance": "rebalance", "top-up": "topped up with added money"}
 SIGNAL_HEADS = {"down": "in the buy zone", "rebound": "turned up from its low", "up": "is back up", "stop": "hit its stop",
                 "time": "held too long", "news": "bearish news, not bought"}
+# Each alert's account as a badge, like the dashboard's tags; real money in red. A live alert never shares an email with
+# paper ones: it goes out on its own with LIVE_MARK at the front of the subject.
+BADGES = {"alpaca-live": ("LIVE — real money", "#cf1322"), "alpaca-paper": ("ALPACA PAPER", "#4f8cff"),
+          "paper": ("PAPER", "#4f8cff")}
+LIVE_MARK = "🔴 LIVE — real money · "
 
 
 # ---------------------------------------------------------------------------
@@ -123,16 +128,12 @@ def _bot_line(bot: Bot) -> str:
     return f"Bot: {bot.name}, {where} · cash ${bot.cash:,.2f}"
 
 
-def _live(bot: Bot | None) -> str:
-    return "[LIVE] " if bot is not None and bot.broker == "alpaca-live" else ""
-
-
 def trade(session: Session, bot: Bot, order: Order, now: datetime) -> None:
     """A filled order (trader.apply_broker_state). A stop-loss sale counts as risk, every other fill as a trade."""
     symbol, qty, price = order.symbol or bot.symbol, order.filled_qty, order.avg_price
     why = REASONS.get(order.reason, order.reason)
     if order.side == "BUY":
-        subject = f"{_live(bot)}BUY {symbol}: {fmt_qty(qty)} @ ${price:,.2f}"
+        subject = f"BUY {symbol}: {fmt_qty(qty)} @ ${price:,.2f}"
         lines = [f"Bought {fmt_qty(qty)} {symbol} at ${price:,.2f} (${qty * price:,.2f}{f' + ${order.fee:,.2f} fee' if order.fee else ''}; {why})."]
         if bot.strategy == DIP:
             h = session.scalar(select(Holding).where(Holding.bot_id == bot.id, Holding.symbol == symbol))
@@ -147,7 +148,7 @@ def trade(session: Session, bot: Bot, order: Order, now: datetime) -> None:
         basis = qty * price - order.fee - pnl if pnl is not None else 0.0
         result = (f" {_money(pnl)}" + (f" ({pnl / basis:+.1%})" if basis else "")) if pnl is not None else ""
         label = "STOP-LOSS" if order.reason == "stop-loss" else "SELL"
-        subject = f"{_live(bot)}{label} {symbol}{result}"
+        subject = f"{label} {symbol}{result}"
         lines = [f"Sold {fmt_qty(qty)} {symbol} at ${price:,.2f} ({why})."]
         if pnl is not None:
             lines.append(f"Profit/loss {_money(pnl)}" + (f" ({pnl / basis:+.1%} on ${basis:,.2f})" if basis else "")
@@ -167,7 +168,7 @@ def from_event(session: Session, bot_id: int | None, kind: str, message: str, le
         return
     bot = session.get(Bot, bot_id) if bot_id else None
     head = re.split(r"(?<=[a-z0-9)])\. ", message, maxsplit=1)[0].rstrip(".")
-    subject = f"{_live(bot)}{bot.name + ': ' if bot else ''}{head}"
+    subject = f"{bot.name + ': ' if bot else ''}{head}"
     body = message + ("\n" + _bot_line(bot) if bot else "")
     enqueue(session, category, kind, subject, body, bot_id, now)
 
@@ -175,7 +176,7 @@ def from_event(session: Session, bot_id: int | None, kind: str, message: str, le
 def dip_signal(session: Session, bot: Bot, s: Signal) -> None:
     """dip.signal: a recommendation, for those who want every one of them."""
     change = f" ({s.change_pct:+.1f}%)" if s.change_pct is not None else ""
-    subject = f"{_live(bot)}{s.symbol} {SIGNAL_HEADS.get(s.kind, s.kind)}{change}"
+    subject = f"{s.symbol} {SIGNAL_HEADS.get(s.kind, s.kind)}{change}"
     body = "\n".join(x for x in (s.message, s.outcome, _bot_line(bot)) if x)
     enqueue(session, "signals", f"signal-{s.kind}", subject, body, bot.id, s.created_at)
 
@@ -192,28 +193,64 @@ def _link(n: Notification) -> str:
     return f"{settings.dashboard_url}/trading/{n.bot_id}" if n.bot_id else settings.dashboard_url
 
 
-def compose(rows: list[Notification], recipients: list[str]) -> EmailMessage:
-    """One email for everything that piled up: a plain-text and an HTML version."""
+def is_live(bot: Bot | None) -> bool:
+    return bot is not None and bot.broker == "alpaca-live"
+
+
+def _badge(bot: Bot | None) -> tuple[str, str] | None:
+    """(label, color) of the alert's account, None when it isn't about one bot (HALT ALL, a test)."""
+    return None if bot is None else BADGES.get(bot.broker, (bot.broker.upper(), "#4f8cff"))
+
+
+def compose(rows: list[Notification], recipients: list[str], bots: dict[int, Bot] | None = None) -> EmailMessage:
+    """One email for everything that piled up: a plain-text and an HTML version. `bots` (by id): each alert's bot, for
+    its account badge; any real-money one makes it a LIVE email (send_pending sends those on their own)."""
+    bots = bots or {}
+
+    def bot_of(r: Notification) -> Bot | None:
+        return bots.get(r.bot_id) if r.bot_id else None
+
+    live = any(is_live(bot_of(r)) for r in rows)
     if len(rows) == 1:
         subject = rows[0].subject
     else:
         subject = f"{len(rows)} alerts: " + " · ".join(r.subject for r in rows[:3]) + (" …" if len(rows) > 3 else "")
     msg = EmailMessage()
-    msg["Subject"] = f"[Trading] {subject}"[:250]
+    msg["Subject"] = f"[Trading] {LIVE_MARK if live else ''}{subject}"[:250]
     msg["From"] = sender()
     msg["To"] = ", ".join(recipients)
-    text = "\n\n----------\n\n".join(f"{r.subject}\n{_when(r.created_at)}\n\n{r.body}\n\n{_link(r)}" for r in rows)
-    msg.set_content(text + "\n\n--\nTrading dashboard email alerts. Choose what you get under Email alerts on the dashboard.")
+
+    def head(r: Notification) -> str:
+        badge = _badge(bot_of(r))
+        return f"[{badge[0]}] {r.subject}" if badge else r.subject
+
+    def meta(r: Notification) -> str:
+        bot = bot_of(r)
+        return " · ".join(x for x in (_when(r.created_at), r.category, bot.name if bot else "") if x)
+
+    banner = "LIVE — REAL MONEY: about your Alpaca live account.\n\n" if live else ""
+    text = "\n\n----------\n\n".join(f"{head(r)}\n{meta(r)}\n\n{r.body}\n\n{_link(r)}" for r in rows)
+    msg.set_content(banner + text + "\n\n--\nTrading dashboard email alerts. Choose what you get under Email alerts on the dashboard.")
+
+    def pill(r: Notification) -> str:
+        badge = _badge(bot_of(r))
+        return (f'<span style="display:inline-block;background:{badge[1]};color:#ffffff;font-size:11px;font-weight:700;'
+                f'letter-spacing:.3px;padding:2px 7px;border-radius:4px;margin-right:6px;vertical-align:2px">'
+                f'{escape(badge[0])}</span>') if badge else ""
+
+    top = ('<div style="background:#cf1322;color:#ffffff;font-size:15px;font-weight:700;padding:10px 14px;'
+           'border-radius:6px;margin:0 0 14px">LIVE — real money<span style="font-weight:400"> · your Alpaca live '
+           'account</span></div>') if live else ""
     blocks = "".join(
         f'<div style="border-left:4px solid {COLORS.get(r.category, "#888")};padding:8px 12px;margin:0 0 14px">'
-        f'<div style="font-size:15px;font-weight:600">{escape(r.subject)}</div>'
-        f'<div style="color:#777;font-size:12px;margin:2px 0 8px">{escape(_when(r.created_at))} · {escape(r.category)}</div>'
+        f'<div style="font-size:15px;font-weight:600">{pill(r)}{escape(r.subject)}</div>'
+        f'<div style="color:#777;font-size:12px;margin:2px 0 8px">{escape(meta(r))}</div>'
         f'<div style="white-space:pre-wrap;font-size:14px">{escape(r.body)}</div>'
         f'<div style="margin-top:8px"><a href="{escape(_link(r))}">Open in the dashboard</a></div></div>'
         for r in rows)
     msg.add_alternative(
         f'<!doctype html><html><head><meta charset="utf-8"></head><body>'
-        f'<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:640px">{blocks}'
+        f'<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:640px">{top}{blocks}'
         f'<div style="color:#999;font-size:11px">Trading dashboard email alerts. Choose what you get under Email alerts '
         f'on the dashboard.</div></div></body></html>', subtype="html")
     return msg
@@ -235,8 +272,8 @@ def deliver(msg: EmailMessage) -> None:
 
 
 def send_pending(now: datetime | None = None, send: Callable[[EmailMessage], None] | None = None) -> int:
-    """Send what is queued, in one email; a failure is retried after RETRY_AFTER, then given up. Returns how many alerts
-    went out."""
+    """Send what is queued: the real-money alerts in one email (first, marked LIVE), the rest in another. A failure is
+    retried after RETRY_AFTER, then given up. Returns how many alerts went out."""
     now, send = now or utcnow(), send or deliver
     with SessionLocal() as session:
         rows = list(session.scalars(
@@ -251,25 +288,34 @@ def send_pending(now: datetime | None = None, send: Callable[[EmailMessage], Non
                 r.status, r.error = "skipped", "email alerts were turned off before it went out"
             session.commit()
             return 0
-        try:
-            send(compose(rows, cfg["recipients"]))
-        except Exception as e:
-            error = f"{type(e).__name__}: {e}"[:500]
-            for r in rows:
-                r.attempts += 1
-                r.error = error
-                if r.attempts > len(RETRY_AFTER):
-                    r.status = "failed"
-                else:
-                    r.next_attempt_at = now + RETRY_AFTER[r.attempts - 1]
-            session.commit()
-            logger.warning("email alert not sent (%d alerts): %s", len(rows), error)
-            return 0
+        ids = {r.bot_id for r in rows if r.bot_id}
+        bots = {b.id: b for b in session.scalars(select(Bot).where(Bot.id.in_(ids)))} if ids else {}
+        groups: dict[bool, list[Notification]] = {}
         for r in rows:
-            r.attempts += 1
-            r.status, r.sent_at, r.error = "sent", now, None
-        session.commit()
-        return len(rows)
+            groups.setdefault(is_live(bots.get(r.bot_id)), []).append(r)
+        sent = 0
+        for live in sorted(groups, reverse=True):
+            batch = groups[live]
+            try:
+                send(compose(batch, cfg["recipients"], bots))
+            except Exception as e:
+                error = f"{type(e).__name__}: {e}"[:500]
+                for r in batch:
+                    r.attempts += 1
+                    r.error = error
+                    if r.attempts > len(RETRY_AFTER):
+                        r.status = "failed"
+                    else:
+                        r.next_attempt_at = now + RETRY_AFTER[r.attempts - 1]
+                session.commit()
+                logger.warning("email alert not sent (%d alerts): %s", len(batch), error)
+                continue
+            for r in batch:
+                r.attempts += 1
+                r.status, r.sent_at, r.error = "sent", now, None
+            session.commit()
+            sent += len(batch)
+        return sent
 
 
 def send_test(session: Session, recipients: list[str], now: datetime,

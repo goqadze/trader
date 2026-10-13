@@ -3,12 +3,13 @@
 
 import { DeleteOutlined, PlusOutlined, StopOutlined, UndoOutlined } from "@ant-design/icons";
 import {
-  Alert, App as AntApp, Button, Card, Col, Descriptions, Form, Input, InputNumber, Modal, Popconfirm, Progress, Row, Select, Space, Switch,
+  Alert, App as AntApp, Button, Card, Col, Descriptions, Form, Input, InputNumber, Modal, Pagination, Progress, Row, Select, Space, Switch,
   Table, Tag, Tooltip,
 } from "antd";
 import { useEffect, useRef, useState } from "react";
 import { BOT_GROUPS, symbolOptions } from "../symbols";
 import { tradingApi } from "../trading/api";
+import { type Ask, AccountTag, useConfirm } from "../trading/confirm";
 import { frac, localTime, nyTime, pct, pnlColor, usd } from "../trading/format";
 import type { Bot, Holding } from "../trading/types";
 import PresetPicker from "./PresetPicker";
@@ -53,6 +54,12 @@ function useAct(onChanged: () => void) {
   return { busy, act };
 }
 
+/** Ask before a change to this bot (see trading/confirm). */
+function useBotConfirm(bot: Bot) {
+  const ask = useConfirm();
+  return (a: Omit<Ask, "bot">) => ask({ ...a, bot });
+}
+
 // ---------------------------------------------------------------------------
 // Holdings
 // ---------------------------------------------------------------------------
@@ -70,6 +77,14 @@ function Progressbar({ h }: { h: Holding }) {
 
 export function DipHoldingsCard({ bot, marketOpen, onChanged }: { bot: Bot; marketOpen: boolean; onChanged: () => void }) {
   const { busy, act } = useAct(onChanged);
+  const confirm = useBotConfirm(bot);
+  const sell = (h: Holding) => confirm({
+    title: `Sell all ${h.shares} ${h.symbol} at market now?`,
+    content: "It stays on the watchlist (not blacklisted): it can be bought again from tomorrow.",
+    okText: "Sell now",
+    danger: true,
+    onOk: () => act(`sell-${h.symbol}`, () => tradingApi.sellHolding(bot.id, h.symbol), "Sell order sent"),
+  });
   const dist = (level: number | null, last: number | null) => (level != null && last ? pct(((level - last) / last) * 100, 1) : "—");
   return (
     <Card title="Holdings" size="small" style={{ height: "100%" }} extra={<span style={{ color: MUTED, fontSize: 12 }}>{bot.holdings.length} of {bot.max_positions} slots · cash {usd(bot.cash, 0)}</span>}>
@@ -116,18 +131,9 @@ export function DipHoldingsCard({ bot, marketOpen, onChanged }: { bot: Bot; mark
             {
               title: "", key: "sell",
               render: (_, h) => (
-                <Popconfirm
-                  title={`Sell all ${h.shares} ${h.symbol} at market now?`}
-                  description="It stays on the watchlist (not blacklisted): it can be bought again from tomorrow."
-                  okText="Sell now"
-                  okButtonProps={{ danger: true }}
-                  disabled={!marketOpen}
-                  onConfirm={() => act(`sell-${h.symbol}`, () => tradingApi.sellHolding(bot.id, h.symbol), "Sell order sent")}
-                >
-                  <Tooltip title={marketOpen ? "" : "Orders only during market hours"}>
-                    <Button size="small" danger disabled={!marketOpen} loading={busy === `sell-${h.symbol}`}>Sell</Button>
-                  </Tooltip>
-                </Popconfirm>
+                <Tooltip title={marketOpen ? "" : "Orders only during market hours"}>
+                  <Button size="small" danger disabled={!marketOpen} loading={busy === `sell-${h.symbol}`} onClick={() => sell(h)}>Sell</Button>
+                </Tooltip>
               ),
             },
           ]}
@@ -163,7 +169,29 @@ function statusTag(w: WatchItem, bot: Bot) {
 
 export function WatchlistCard({ bot, onChanged }: { bot: Bot; onChanged: () => void }) {
   const { busy, act } = useAct(onChanged);
+  const confirm = useBotConfirm(bot);
   const [adding, setAdding] = useState<string[]>([]);
+  const stillHeld = (w: WatchItem) => (w.held ? " It's held: the position stays and still sells at its target or stop." : "");
+  const blacklist = (w: WatchItem) => confirm({
+    title: `Blacklist ${w.symbol}?`,
+    content: `No more buys of ${w.symbol} until you re-enable it.${stillHeld(w)}`,
+    okText: "Blacklist",
+    danger: true,
+    onOk: () => act(`bl-${w.symbol}`, () => tradingApi.blacklistSymbol(bot.id, w.symbol), `${w.symbol} blacklisted`),
+  });
+  const reenable = (w: WatchItem) => confirm({
+    title: `Re-enable ${w.symbol}?`,
+    content: `The bot may buy ${w.symbol} again from the next check.`,
+    okText: "Re-enable",
+    onOk: () => act(`en-${w.symbol}`, () => tradingApi.enableSymbol(bot.id, w.symbol), `${w.symbol} re-enabled`),
+  });
+  const remove = (w: WatchItem) => confirm({
+    title: `Stop watching ${w.symbol}?`,
+    content: `It comes off the watchlist and won't be bought again (you can add it back).${stillHeld(w)}`,
+    okText: "Remove",
+    danger: true,
+    onOk: () => act(`rm-${w.symbol}`, () => tradingApi.removeSymbol(bot.id, w.symbol), `${w.symbol} removed`),
+  });
   const add = () => act("add", async () => {
     await tradingApi.addSymbols(bot.id, adding);
     setAdding([]);
@@ -235,23 +263,18 @@ export function WatchlistCard({ bot, onChanged }: { bot: Bot; onChanged: () => v
               <Space size={4}>
                 {w.status === "blacklisted" ? (
                   <Tooltip title="Re-enable: it may be bought again from the next check">
-                    <Button size="small" icon={<UndoOutlined />} loading={busy === `en-${w.symbol}`} onClick={() => act(`en-${w.symbol}`, () => tradingApi.enableSymbol(bot.id, w.symbol), `${w.symbol} re-enabled`)}>
+                    <Button size="small" icon={<UndoOutlined />} loading={busy === `en-${w.symbol}`} onClick={() => reenable(w)}>
                       Re-enable
                     </Button>
                   </Tooltip>
                 ) : (
                   <Tooltip title="Blacklist: no more buys until you re-enable it">
-                    <Button size="small" icon={<StopOutlined />} loading={busy === `bl-${w.symbol}`} onClick={() => act(`bl-${w.symbol}`, () => tradingApi.blacklistSymbol(bot.id, w.symbol), `${w.symbol} blacklisted`)} />
+                    <Button size="small" icon={<StopOutlined />} loading={busy === `bl-${w.symbol}`} onClick={() => blacklist(w)} aria-label={`Blacklist ${w.symbol}`} />
                   </Tooltip>
                 )}
-                <Popconfirm
-                  title={`Stop watching ${w.symbol}?`}
-                  description={w.held ? "It's held: the position stays and still exits at its target or stop." : undefined}
-                  okText="Remove"
-                  onConfirm={() => act(`rm-${w.symbol}`, () => tradingApi.removeSymbol(bot.id, w.symbol), `${w.symbol} removed`)}
-                >
-                  <Button size="small" icon={<DeleteOutlined />} loading={busy === `rm-${w.symbol}`} />
-                </Popconfirm>
+                <Tooltip title="Remove from the watchlist">
+                  <Button size="small" icon={<DeleteOutlined />} loading={busy === `rm-${w.symbol}`} onClick={() => remove(w)} aria-label={`Remove ${w.symbol}`} />
+                </Tooltip>
               </Space>
             ),
           },
@@ -267,20 +290,35 @@ export function WatchlistCard({ bot, onChanged }: { bot: Bot; onChanged: () => v
 
 export function DipParamsCard({ bot, onEdit, onChanged }: { bot: Bot; onEdit: () => void; onChanged: () => void }) {
   const { busy, act } = useAct(onChanged);
+  const confirm = useBotConfirm(bot);
   const r = rulesOf(bot);
+  /** A switch asks first; the change goes through on OK (until then the switch stays as it was). */
+  const flip = (key: "rebound" | "fractional" | "news", on: boolean, title: string, content: string, done: string) => confirm({
+    title,
+    content: `From the next check: ${content}`,
+    okText: on ? "Turn on" : "Turn off",
+    onOk: () => act(key, () => tradingApi.updateDip(bot.id, { [key]: on }), done),
+  });
+  const rebound = (on: boolean) => (on
+    ? flip("rebound", on, "Wait for the turn?", `a symbol in the buy zone is bought only once it's back up ${frac(r.rebound_pct)} from its low, not as soon as it has fallen.`,
+      `Waiting for a ${frac(r.rebound_pct)} turn up before buying`)
+    : flip("rebound", on, "Stop waiting for the turn?", `it buys as soon as a symbol is in the buy zone (${fallText({ ...r, rebound: false })}), without waiting for it to turn up.`,
+      "Buying as soon as it has fallen"));
+  const fractional = (on: boolean) => (on
+    ? flip("fractional", on, "Buy fractions of a share?", "when a slot is smaller than one share's price, it buys part of a share.", "Buying fractions of a share")
+    : flip("fractional", on, "Whole shares only?", "it buys whole shares only: a slot smaller than one share's price buys nothing. Fractions it holds now still sell as usual.",
+      "Buying whole shares only"));
+  const news = (on: boolean) => (on
+    ? flip("news", on, "Turn the news check on?", "before each buy it reads the symbol's news; bearish news blocks buying it for the rest of the day.",
+      "News on: bearish news now blocks a buy")
+    : flip("news", on, "Turn the news check off?", "it buys on prices only, without reading the news.", "News off: prices only"));
   return (
     <Card title="Rules" size="small" style={{ height: "100%" }} extra={<Button size="small" type="link" onClick={onEdit} disabled={bot.status === "archived"}>Edit</Button>}>
       <Descriptions column={1} size="small">
         <Descriptions.Item label="Buys">{fallText(r)}</Descriptions.Item>
         <Descriptions.Item label="Wait for the turn">
           <Space>
-            <Switch
-              size="small"
-              checked={r.rebound}
-              loading={busy === "rebound"}
-              disabled={bot.status === "archived"}
-              onChange={(on) => act("rebound", () => tradingApi.updateDip(bot.id, { rebound: on }), on ? `Waiting for a ${frac(r.rebound_pct)} turn up before buying` : "Buying as soon as it has fallen")}
-            />
+            <Switch size="small" checked={r.rebound} loading={busy === "rebound"} disabled={bot.status === "archived"} onChange={rebound} />
             <span style={{ color: MUTED, fontSize: 12 }}>{r.rebound ? `buys once it's up ${frac(r.rebound_pct)} from its low` : "off: buys as soon as it has fallen"}</span>
           </Space>
         </Descriptions.Item>
@@ -292,25 +330,13 @@ export function DipParamsCard({ bot, onEdit, onChanged }: { bot: Bot; onEdit: ()
         <Descriptions.Item label="Positions">up to {r.max_positions} at once, {frac(1 / r.max_positions)} of the equity each</Descriptions.Item>
         <Descriptions.Item label="Fractional shares">
           <Space>
-            <Switch
-              size="small"
-              checked={r.fractional}
-              loading={busy === "fractional"}
-              disabled={bot.status === "archived"}
-              onChange={(on) => act("fractional", () => tradingApi.updateDip(bot.id, { fractional: on }), on ? "Buying fractions of a share" : "Buying whole shares only")}
-            />
+            <Switch size="small" checked={r.fractional} loading={busy === "fractional"} disabled={bot.status === "archived"} onChange={fractional} />
             <span style={{ color: MUTED, fontSize: 12 }}>{r.fractional ? "buys part of a share when a slot is smaller than its price" : "off: whole shares only"}</span>
           </Space>
         </Descriptions.Item>
         <Descriptions.Item label="News">
           <Space>
-            <Switch
-              size="small"
-              checked={r.news}
-              loading={busy === "news"}
-              disabled={bot.status === "archived"}
-              onChange={(on) => act("news", () => tradingApi.updateDip(bot.id, { news: on }), on ? "News on: bearish news now blocks a buy" : "News off: prices only")}
-            />
+            <Switch size="small" checked={r.news} loading={busy === "news"} disabled={bot.status === "archived"} onChange={news} />
             <span style={{ color: MUTED, fontSize: 12 }}>{r.news ? "bearish news blocks a buy for the day" : "off: prices only"}</span>
           </Space>
         </Descriptions.Item>
@@ -401,16 +427,32 @@ export function DipEditForm({ open, bot, onCancel, onSaved }: { open: boolean; b
 // Signals
 // ---------------------------------------------------------------------------
 
-export function SignalsList({ signals }: { signals: DipSignal[] }) {
+const PAGE_SIZES = [20, 50, 100];
+
+/** Signals, newest first: a page at a time in a box that scrolls. Given `bots` (the Dip buyer page's feed of all of them,
+ *  archived ones included for their names), each line says whose signal it is, live ones in red, and one bot can be picked. */
+export function SignalsList({ signals, bots }: { signals: DipSignal[]; bots?: Bot[] }) {
   const [kind, setKind] = useState<string>("all");
-  const shown = kind === "all" ? signals : signals.filter((s) => s.kind === kind);
+  const [botId, setBotId] = useState<number | "all">("all");
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(PAGE_SIZES[0]);
+  const box = useRef<HTMLDivElement>(null);
+  const byId = new Map((bots ?? []).map((b) => [b.id, b]));
+  const picks = (bots ?? []).filter((b) => signals.some((s) => s.bot_id === b.id));
+  const shown = signals.filter((s) => (kind === "all" || s.kind === kind) && (botId === "all" || s.bot_id === botId));
+  const current = Math.min(page, Math.max(1, Math.ceil(shown.length / size))); // a filter or a refresh left fewer pages
+  const turn = (p: number, n: number) => {
+    setPage(n === size ? p : 1);
+    setSize(n);
+    box.current?.scrollTo({ top: 0 });
+  };
   return (
     <>
       <Space style={{ marginBottom: 8 }} wrap>
         <Select
           size="small"
           value={kind}
-          onChange={setKind}
+          onChange={(v) => { setKind(v); setPage(1); }}
           style={{ width: 180 }}
           options={[
             { value: "all", label: "All signals" },
@@ -422,12 +464,43 @@ export function SignalsList({ signals }: { signals: DipSignal[] }) {
             { value: "news", label: "📰 Bearish news" },
           ]}
         />
+        {picks.length > 1 && (
+          <Select
+            size="small"
+            value={botId}
+            onChange={(v) => { setBotId(v); setPage(1); }}
+            style={{ width: 220 }}
+            options={[
+              { value: "all" as const, label: "All bots" },
+              ...picks.map((b) => ({ value: b.id, label: <span>{b.name} <AccountTag bot={b} /></span> })),
+            ]}
+          />
+        )}
         <span style={{ color: MUTED, fontSize: 12 }}>For your information, whatever the bot did. Turn on sound or read-aloud with the bell at the top.</span>
       </Space>
       {shown.length === 0 ? (
         <div style={{ color: MUTED, padding: 8 }}>No signals yet. One appears when a symbol falls into the buy zone or gets back up.</div>
       ) : (
-        shown.slice(0, 200).map((s) => <SignalLine key={s.id} s={s} />)
+        <>
+          <div ref={box} style={{ maxHeight: "70vh", overflowY: "auto", paddingRight: 4 }}>
+            {shown.slice((current - 1) * size, current * size).map((s) => (
+              <SignalLine key={s.id} s={s} bot={byId.get(s.bot_id)} />
+            ))}
+          </div>
+          <Pagination
+            size="small"
+            align="end"
+            style={{ marginTop: 8 }}
+            current={current}
+            pageSize={size}
+            total={shown.length}
+            onChange={turn}
+            showSizeChanger
+            pageSizeOptions={PAGE_SIZES}
+            hideOnSinglePage={shown.length <= PAGE_SIZES[0]}
+            showTotal={(total, [from, to]) => `${from}–${to} of ${total}`}
+          />
+        </>
       )}
     </>
   );

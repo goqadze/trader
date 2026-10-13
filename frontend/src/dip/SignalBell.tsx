@@ -1,9 +1,10 @@
 import { BellOutlined, SoundOutlined } from "@ant-design/icons";
-import { App as AntApp, Badge, Button, Divider, Empty, Popover, Space, Switch, Tooltip, Typography } from "antd";
+import { App as AntApp, Badge, Button, Divider, Empty, Popover, Space, Switch, Tag, Tooltip, Typography } from "antd";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { localTime } from "../trading/format";
+import { accountLabel, localTime } from "../trading/format";
 import { tradingApi } from "../trading/api";
+import type { Bot } from "../trading/types";
 import { type AlertPrefs, KIND_LOOK, announce, askNotifyPermission, loadPrefs, savePrefs, title, unlockSound } from "./alerts";
 import type { DipSignal } from "./types";
 
@@ -11,13 +12,22 @@ const MUTED = "#8b98b5";
 const POLL_MS = 30_000;
 const SHOWN = 3; // signals announced one by one per poll; more are summed up
 
-/** One signal in a list: what happened, what it means, what the bot did. */
-export function SignalLine({ s, showTime = true }: { s: DipSignal; showTime?: boolean }) {
+/** One signal in a list: what happened, what it means, what the bot did. With `bot` (a list of several bots' signals),
+ *  whose it is: its name and account, a live one in red. */
+export function SignalLine({ s, showTime = true, bot }: { s: DipSignal; showTime?: boolean; bot?: Pick<Bot, "id" | "name" | "live" | "broker"> }) {
   return (
     <div style={{ borderLeft: `3px solid ${KIND_LOOK[s.kind].color}`, paddingLeft: 8, marginBottom: 8 }}>
       <div>
         <b>{title(s)}</b>
-        {showTime && <span style={{ color: MUTED, fontSize: 12 }}> · {localTime(s.created_at)}</span>}
+        {showTime && <span style={{ color: MUTED, fontSize: 12, whiteSpace: "nowrap" }}> · {localTime(s.created_at)}</span>}
+        {bot && (
+          <span style={{ fontSize: 12 }}>
+            {" · "}<Link to={`/trading/${bot.id}`}>{bot.name}</Link>{" "}
+            <Tag color={bot.live ? "red" : "blue"} style={{ marginInlineEnd: 0, fontSize: 11, lineHeight: "16px", paddingInline: 4 }}>
+              {accountLabel(bot, true)}
+            </Tag>
+          </span>
+        )}
       </div>
       <div style={{ fontSize: 12 }}>{s.message}</div>
       {s.outcome && <div style={{ fontSize: 12, color: MUTED }}>{s.outcome}</div>}

@@ -2,7 +2,7 @@ import {
   ArrowLeftOutlined, CaretRightOutlined, DollarOutlined, EditOutlined, InboxOutlined, PauseOutlined, ThunderboltOutlined,
 } from "@ant-design/icons";
 import {
-  Alert, App as AntApp, Button, Card, Col, Descriptions, Empty, Popconfirm, Row, Space, Statistic, Table, Tabs, Tag, Tooltip, Typography,
+  Alert, App as AntApp, Button, Card, Col, Descriptions, Empty, Row, Space, Statistic, Table, Tabs, Tag, Tooltip, Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useMemo, useState } from "react";
@@ -11,6 +11,7 @@ import { CartesianGrid, Legend, Line, LineChart, ReferenceDot, ResponsiveContain
 import AddMoney from "./AddMoney";
 import { tradingApi } from "./api";
 import BotForm from "./BotForm";
+import { useConfirm } from "./confirm";
 import {
   ACTION_COLOR, ORDER_STATUS_COLOR, SENTIMENT_COLOR, STATUS_COLOR, botTitle, checkTimes, frac, holdsMany, isDip, isRotation, localTime, pct,
   pnlColor, slotTimes, usd,
@@ -160,6 +161,7 @@ function EquityCard({ bot, snapshots, orders }: { bot: Bot; snapshots: Snapshot[
 export default function BotPage() {
   const id = Number(useParams().id);
   const { message, modal } = AntApp.useApp();
+  const confirm = useConfirm();
   const [editOpen, setEditOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -230,6 +232,47 @@ export default function BotPage() {
     page.reload();
   };
 
+  const stopsWhat = rotation ? "rebalance" : dip ? "dip" : "decision";
+  const pause = () => confirm({
+    title: "Pause this bot?",
+    content: rotation
+      ? "No rebalances until you resume it. It keeps holding what it has (Close all positions sells it)."
+      : dip
+      ? "No buys until you resume it. Its holdings still sell at their target or stop at each check."
+      : "No new decisions until you resume it. Stop-loss and take-profit still protect an open position.",
+    okText: "Pause",
+    bot,
+    onOk: () => act("pause", () => tradingApi.pause(bot.id), "Paused"),
+  });
+  const resume = () => confirm({
+    title: "Resume this bot?",
+    content: `${rotation ? "It rebalances again at the next month end" : dip ? "It can buy again from its next check" : "It decides again at its next decision time and can trade on it"}. `
+      + "The drawdown breaker starts counting again from today's equity.",
+    okText: "Resume",
+    bot,
+    onOk: () => act("resume", () => tradingApi.resume(bot.id), "Resumed"),
+  });
+  const closeAll = () => confirm({
+    title: many && bot.holdings.length > 1
+      ? `Sell all ${bot.holdings.length} holdings at market now?`
+      : many ? `Sell all ${bot.holdings[0]?.shares} ${bot.holdings[0]?.symbol} at market now?` : `Sell all ${bot.shares} ${bot.symbol} at market now?`,
+    content: bot.status === "active"
+      ? `Sold at the going price. It may buy again at its next ${stopsWhat}: pause it first to stay in cash.`
+      : "Sold at the going price. It stays paused.",
+    okText: "Sell now",
+    danger: true,
+    bot,
+    onOk: () => act("close", () => tradingApi.closePosition(bot.id), many ? "Sell orders sent" : "Sell order sent"),
+  });
+  const archive = () => confirm({
+    title: "Archive this bot?",
+    content: "It stops for good and is hidden from the list. Its history is kept.",
+    okText: "Archive",
+    danger: true,
+    bot,
+    onOk: () => act("archive", () => tradingApi.archive(bot.id), "Archived"),
+  });
+
   const distance = (level: number | null) =>
     level != null && bot.last_price ? pct(((level - bot.last_price) / bot.last_price) * 100) : "—";
 
@@ -275,39 +318,22 @@ export default function BotPage() {
                 </Button>
               </Tooltip>
               {bot.status === "active" ? (
-                <Button icon={<PauseOutlined />} loading={busy === "pause"} onClick={() => act("pause", () => tradingApi.pause(bot.id), "Paused")}>Pause</Button>
+                <Button icon={<PauseOutlined />} loading={busy === "pause"} onClick={pause}>Pause</Button>
               ) : (
-                <Button type="primary" icon={<CaretRightOutlined />} loading={busy === "resume"} onClick={() => act("resume", () => tradingApi.resume(bot.id), "Resumed")}>Resume</Button>
+                <Button type="primary" icon={<CaretRightOutlined />} loading={busy === "resume"} onClick={resume}>Resume</Button>
               )}
               <Tooltip title={dip ? "More money for this bot: bigger slots, and a top-up of what it holds if you like" : "More money for this bot"}>
                 <Button icon={<DollarOutlined />} onClick={() => setAddOpen(true)}>Add money</Button>
               </Tooltip>
-              <Popconfirm
-                title={many ? `Sell all ${bot.holdings.length} holdings at market now?` : `Sell all ${bot.shares} ${bot.symbol} at market now?`}
-                description={many && bot.status === "active"
-                  ? `It buys again at its next ${rotation ? "rebalance" : "dip"}: pause it first to stay in cash.` : undefined}
-                okText="Sell now"
-                okButtonProps={{ danger: true }}
-                onConfirm={() => act("close", () => tradingApi.closePosition(bot.id), many ? "Sell orders sent" : "Sell order sent")}
-                disabled={!holding || !marketOpen || bot.pending_order}
-              >
-                <Tooltip title={!holding ? "No open position" : !marketOpen ? "Orders only during market hours" : ""}>
-                  <Button danger loading={busy === "close"} disabled={!holding || !marketOpen || bot.pending_order}>
-                    {many ? "Close all positions" : "Close position"}
-                  </Button>
-                </Tooltip>
-              </Popconfirm>
+              <Tooltip title={!holding ? "No open position" : !marketOpen ? "Orders only during market hours" : ""}>
+                <Button danger loading={busy === "close"} disabled={!holding || !marketOpen || bot.pending_order} onClick={closeAll}>
+                  {many ? "Close all positions" : "Close position"}
+                </Button>
+              </Tooltip>
               <Button icon={<EditOutlined />} onClick={() => setEditOpen(true)}>Edit</Button>
-              <Popconfirm
-                title="Archive this bot?"
-                description="It stops for good and is hidden from the list. Its history is kept."
-                onConfirm={() => act("archive", () => tradingApi.archive(bot.id), "Archived")}
-                disabled={holding || bot.pending_order}
-              >
-                <Tooltip title={holding ? "Close the position first" : ""}>
-                  <Button icon={<InboxOutlined />} disabled={holding || bot.pending_order}>Archive</Button>
-                </Tooltip>
-              </Popconfirm>
+              <Tooltip title={holding ? "Close the position first" : ""}>
+                <Button icon={<InboxOutlined />} loading={busy === "archive"} disabled={holding || bot.pending_order} onClick={archive}>Archive</Button>
+              </Tooltip>
             </Space>
           </Col>
         )}

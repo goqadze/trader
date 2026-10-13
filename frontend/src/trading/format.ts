@@ -59,6 +59,10 @@ export const botTitle = (b: Pick<Bot, "strategy" | "symbol">) => (isRotation(b) 
 export const rotationRules = (b: Pick<Bot, "top_n" | "universe" | "lookback_months" | "skip_months">) =>
   `Top ${b.top_n} of ${b.universe?.length ?? 0} · ${b.lookback_months}${b.skip_months ? `-${b.skip_months}` : "-month"} momentum`;
 
+/** A bot's account, as its tag says it: "LIVE — real money" ("LIVE" short), "PAPER" for the simulator, else the broker. */
+export const accountLabel = (b: Pick<Bot, "live" | "broker">, short = false) =>
+  b.live ? (short ? "LIVE" : "LIVE — real money") : b.broker === "paper" ? "PAPER" : b.broker;
+
 export const STATUS_COLOR: Record<string, string> = { active: "green", paused: "orange", archived: "default" };
 export const ACTION_COLOR: Record<string, string> = { BUY: "green", SELL: "red", HOLD: "default", ROTATE: "geekblue", TRADE: "purple" };
 export const SENTIMENT_COLOR: Record<string, string> = { bullish: "green", bearish: "red", neutral: "blue" };

@@ -408,6 +408,8 @@ class NotificationOut(BaseModel):
     next_attempt_at: datetime | None
     sent_at: datetime | None
     error: str | None
+    bot_name: str | None = None  # the history's: whose alert it is
+    broker: str | None = None  # its account (alpaca-live = real money); None: not about one bot
 
 
 class WatchItemOut(BaseModel):

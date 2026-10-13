@@ -874,8 +874,16 @@ def send_test_email(session: Session = Depends(get_session)):
 
 @app.get("/email-alerts/history", response_model=list[NotificationOut])
 def email_alert_history(limit: int = Query(50, le=500), session: Session = Depends(get_session)):
-    """The latest email alerts, newest first: sent, waiting (a retry), failed or skipped."""
-    return list(session.scalars(select(Notification).order_by(Notification.id.desc()).limit(limit)))
+    """The latest email alerts, newest first: sent, waiting (a retry), failed or skipped; each with its bot's name and
+    account, so a real-money one shows as such."""
+    rows = list(session.scalars(select(Notification).order_by(Notification.id.desc()).limit(limit)))
+    ids = {n.bot_id for n in rows if n.bot_id}
+    bots = {b.id: b for b in session.scalars(select(Bot).where(Bot.id.in_(ids)))} if ids else {}
+    out = []
+    for n in rows:
+        bot = bots.get(n.bot_id)
+        out.append(NotificationOut.model_validate(n).model_copy(update={"bot_name": bot.name, "broker": bot.broker} if bot else {}))
+    return out
 
 
 @app.get("/events", response_model=list[EventOut])
