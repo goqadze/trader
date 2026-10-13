@@ -168,7 +168,8 @@ export interface Order {
   symbol: string | null; // null on orders from before it was stored: the bot's symbol
   order_type: "market" | "stop"; // stop = the stop-loss resting at the broker until the price falls to it
   stop_price: number | null;
-  qty: number;
+  qty: number; // with notional: only the estimate at the quote (filled_qty is what it bought)
+  notional?: number | null; // a fractional BUY sent as dollars: the broker worked out the shares at the fill
   // rotation: in or out; rebalance: a trim or top-up; dip: a dip bot's buy; time: held its max days
   reason: "signal" | "stop-loss" | "target" | "manual" | "rotation" | "rebalance" | "dip" | "time";
   status: "new" | "submitted" | "filled" | "partially_filled" | "canceled" | "rejected" | "failed";

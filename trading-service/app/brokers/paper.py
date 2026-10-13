@@ -41,7 +41,8 @@ class PaperBroker(Broker):
     def quote(self, symbol: str) -> Quote:
         return self.price_source(symbol)
 
-    def submit(self, symbol: str, side: str, qty: float, client_order_id: str) -> BrokerOrder:
+    def submit(self, symbol: str, side: str, qty: float, client_order_id: str, notional: float | None = None) -> BrokerOrder:
+        # Fills at the price the bot sized the order with (its own slippage): no dollar amounts needed (supports_notional)
         q = self.quote(symbol)
         # Slippage always hurts: buys fill a touch above the price, sells a touch below (same as the backtest)
         fill = q.price * (1 + self.slippage_pct) if side == "BUY" else q.price * (1 - self.slippage_pct)

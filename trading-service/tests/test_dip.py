@@ -1,5 +1,6 @@
 """Dip buyer bots: when they check, what they buy and sell, the blacklist, the news switch, the signals, and the API."""
 
+import math
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
@@ -16,6 +17,7 @@ from app.brokers import BrokerError, BrokerOrder
 from app.brokers import catalog as real_catalog
 from app.db import SessionLocal
 from app.models import DIP, Bot, Decision, Event, Holding, Order, Signal, WatchItem
+from app.shares import dollars
 from app.trader import add_capital, holdings
 
 T = datetime(2025, 6, 2, 15, 0, 20, tzinfo=timezone.utc)  # Monday June 2 2025, 11:00:20 New York
@@ -205,6 +207,46 @@ def test_a_symbol_the_broker_cannot_split_is_bought_in_whole_shares(session):
     check(session, bot, broker)
     assert broker.sent == [("BUY", "A", 4)]
     assert session.scalar(select(Signal)).outcome.endswith("A can't be bought in fractions at fake.")
+
+
+def test_fractional_buys_go_out_as_dollars_so_a_fill_above_the_quote_never_overspends(session):
+    # LIVE bot #14, Oct 13 2026: one fill 0.46% over its quote, then the last slot bought the rest at its quote: cash -$0.14
+    both = bars(A=[110] * 5 + [103], B=[56] * 5 + [50])  # A and B both fell: the two slots buy, B (deeper) first
+    bot = make_dip(session, fractional=True, slippage_pct=0.0005)
+    broker = FakeBroker(now=T, prices=dict(QUOTES), slippage_pct=0.005, notional=True)  # every fill 0.5% over the quote
+    check(session, bot, broker, df=both)
+    assert broker.notionals == [4999.99, 4999.99]  # each slot as dollars: the shares at the quote with 0.05% slippage
+    assert [o.notional for o in session.scalars(select(Order).order_by(Order.id))] == [4999.99, 4999.99]
+    b = session.scalar(select(Holding).where(Holding.bot_id == bot.id, Holding.symbol == "B"))
+    assert b.shares == pytest.approx(4999.99 / 50.25, abs=1e-6) and b.entry_price == 50.25  # fewer shares, at the fill
+    assert b.stop_price == round(50.25 * 0.95, 2) and 0 <= bot.cash <= 0.03  # all spent, never more
+    broker.prices["B"], broker.now = 57.0, T15
+    check(session, bot, broker, now=T15, df=bars(A=[110] * 5 + [103, 103], B=[56] * 5 + [50, 57]))
+    assert broker.sent[-1][:2] == ("SELL", "B") and broker.notionals[-1] is None  # a sale is always shares
+
+    # The same by shares (a broker without dollar orders, as before): the second slot overspends
+    old = make_dip(session, fractional=True, slippage_pct=0.0005)
+    shares = FakeBroker(now=T, prices=dict(QUOTES), slippage_pct=0.005)
+    check(session, old, shares, df=both)
+    assert shares.notionals == [None, None] and old.cash < -40
+    # Whole shares go out as shares on any broker
+    whole = make_dip(session, slippage_pct=0.0005)
+    dollars = FakeBroker(now=T, prices=dict(QUOTES), slippage_pct=0.005, notional=True)
+    check(session, whole, dollars, df=both)
+    assert dollars.notionals == [None, None] and [q for _, _, q in dollars.sent] == [99, 48]
+
+
+def test_the_dollars_sent_are_cut_to_the_cent_with_the_fee_on_top():
+    assert dollars(99.950024, 50.025) == 4999.99  # 4,999.9989...: never rounded up
+    assert dollars(10, 10.1 * 1.01, fee_pct=0.01) == 101.0  # $101 of shares + the 1% fee = the $102.01 it sized
+
+
+def test_a_fractional_top_up_goes_out_as_dollars(session):
+    bot, broker = _topping(session, fractional=True)
+    broker.supports_notional = True
+    check(session, bot, broker, now=T15, df=AFTER)
+    qty = broker.sent[-1][2]
+    assert broker.notionals[-1] == math.floor(qty * 100 * 100 + 1e-6) / 100 and broker.notionals[-1] > 5000
 
 
 def test_a_fractional_buy_needs_a_dollar(session):

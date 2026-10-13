@@ -72,7 +72,15 @@ const orderColumns = (symbol: string): ColumnsType<Order> => [
       : "market"),
   },
   { title: "Reason", dataIndex: "reason", width: 100, render: (r: string) => <Tooltip title={REASON_TIP[r]}><Tag color={REASON_COLOR[r] ?? "default"}>{r}</Tag></Tooltip> },
-  { title: "Qty", key: "qty", width: 80, align: "right", render: (_, o) => (o.filled_qty && o.filled_qty !== o.qty ? `${o.filled_qty}/${o.qty}` : o.qty) },
+  {
+    title: "Qty", key: "qty", width: 80, align: "right",
+    render: (_, o) => (o.notional != null ? (
+      // Sent as dollars: the shares are what the dollars bought at the fill (none yet while it waits)
+      <Tooltip title={`Sent as $${o.notional.toFixed(2)}: the broker works the shares out at the fill, so it never costs more`}>
+        <div style={{ lineHeight: 1.25 }}>{o.filled_qty || "—"}<div style={{ fontSize: 11, color: MUTED }}>${o.notional.toFixed(2)}</div></div>
+      </Tooltip>
+    ) : o.filled_qty && o.filled_qty !== o.qty ? `${o.filled_qty}/${o.qty}` : o.qty),
+  },
   { title: "Fill price", dataIndex: "avg_price", width: 100, align: "right", render: (p: number | null) => usd(p) },
   { title: "Fee", dataIndex: "fee", width: 70, align: "right", render: (f: number) => usd(f) },
   { title: "P&L", dataIndex: "pnl", width: 100, align: "right", render: (p: number | null) => <span style={{ color: pnlColor(p) }}>{p == null ? "" : usd(p)}</span> },

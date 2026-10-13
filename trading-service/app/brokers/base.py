@@ -36,15 +36,19 @@ class Broker(ABC):
     # True = the stop-loss rests AT THE BROKER as a real stop order, so it fires even while this service
     # is down (see trader.protect). False = the service checks the stop itself every few minutes.
     supports_stop_orders: bool = False
+    # Takes a BUY as a dollar amount (submit's `notional`): the bots then send their fractional buys that way
+    supports_notional: bool = False
 
     @abstractmethod
     def quote(self, symbol: str) -> Quote:
         """Latest trade price. Raises BrokerError when unavailable."""
 
     @abstractmethod
-    def submit(self, symbol: str, side: str, qty: float, client_order_id: str) -> BrokerOrder:
-        """Send a market order (`qty` may be a fraction of a share where fractionable() says so). May return
-        'submitted' (not filled yet); the scheduler then polls lookup()."""
+    def submit(self, symbol: str, side: str, qty: float, client_order_id: str, notional: float | None = None) -> BrokerOrder:
+        """Send a market order (`qty` may be a fraction of a share where fractionable() says so). With `notional`
+        (brokers with supports_notional, a BUY of a fractionable symbol): buy that many dollars' worth instead, the
+        shares worked out at the fill; `qty` is only the estimate. May return 'submitted' (not filled yet); the scheduler
+        then polls lookup()."""
 
     @abstractmethod
     def lookup(self, client_order_id: str) -> BrokerOrder | None:

@@ -53,6 +53,24 @@ def test_submit_sends_a_day_market_order_with_our_client_id():
     assert (o.status, o.filled_qty, o.avg_price) == ("filled", 10, 101.5)
 
 
+def test_a_buy_by_dollars_sends_the_notional_and_a_sale_stays_shares():
+    import json
+
+    sent = []
+
+    def handler(req):
+        sent.append(json.loads(req.content))
+        return httpx.Response(200, json=_order("filled", "0.115094", "260.81"))
+
+    o = _broker(handler).submit("BE", "BUY", 0.115, "bot14-a", notional=30.0)
+    assert sent[0] == {"symbol": "BE", "notional": "30.00", "side": "buy", "type": "market", "time_in_force": "day",
+                       "client_order_id": "bot14-a"}  # no qty: Alpaca works the shares out at the fill
+    assert (o.filled_qty, o.avg_price) == (0.115094, 260.81)
+    _broker(handler).submit("BE", "SELL", 0.115094, "bot14-b", notional=30.0)
+    assert "notional" not in sent[1] and sent[1]["qty"] == "0.115094"
+    assert _broker(handler).supports_notional
+
+
 def test_a_fraction_of_a_share_is_sent_and_read_back_as_a_fraction():
     import json
 

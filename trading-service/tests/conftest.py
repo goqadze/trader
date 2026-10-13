@@ -65,8 +65,11 @@ class FakeBroker(Broker):
     name = "fake"
 
     def __init__(self, price: float = 100.0, now: datetime | None = None, quote_at: datetime | None = None,
-                 slippage_pct: float = 0.0, fee_pct: float = 0.0, stops: bool = False, prices: dict | None = None):
+                 slippage_pct: float = 0.0, fee_pct: float = 0.0, stops: bool = False, prices: dict | None = None,
+                 notional: bool = False):
         self.supports_stop_orders = stops
+        self.supports_notional = notional  # takes a BUY as dollars, like Alpaca: the shares worked out at the fill
+        self.notionals: list[float | None] = []  # each order's dollar amount (None = sent as shares)
         self.stop_mode = "rest"  # rest | reject | raise
         self.cancel_mode = "cancel"  # cancel | filled (the stop executed first) | pending (not confirmed) | raise
         self.stops: list[tuple[int, float]] = []  # (qty, stop_price) of every stop order received
@@ -92,9 +95,10 @@ class FakeBroker(Broker):
     def fractionable(self, symbol):
         return symbol not in self.whole_only
 
-    def submit(self, symbol, side, qty, client_order_id):
+    def submit(self, symbol, side, qty, client_order_id, notional=None):
         self.submitted.append((side, qty))
         self.sent.append((side, symbol, qty))
+        self.notionals.append(notional)
         if self.submit_mode == "raise":
             raise BrokerError("network down")
         if self.submit_mode == "reject":
@@ -105,6 +109,8 @@ class FakeBroker(Broker):
             return o
         price = self.prices.get(symbol, self.price)
         fill = price * (1 + self.slippage_pct if side == "BUY" else 1 - self.slippage_pct)
+        if notional is not None:
+            qty = round(notional / fill, 9)  # what the dollars buy at the fill
         o = BrokerOrder(status="filled", filled_qty=qty, avg_price=fill, fee=round(qty * fill * self.fee_pct, 2),
                         broker_order_id="b-" + client_order_id)
         self.orders[client_order_id] = o

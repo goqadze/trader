@@ -395,6 +395,9 @@ class Order(Base):
     # A dip bot's BUY: the price the fall started from, which becomes the holding's target once it fills
     reference_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     qty: Mapped[float] = mapped_column(Float)  # requested shares (fractions only from a dip or rotation bot with `fractional`)
+    # A BUY sent as a dollar amount (a dip bot's buy in fractions, where the broker takes those): the broker works out the
+    # shares at the fill, so the bot never spends more than its slot; `qty` is then only the estimate at the quote
+    notional: Mapped[float | None] = mapped_column(Float, nullable=True)
     reason: Mapped[str] = mapped_column(String(16))  # signal | stop-loss | target | manual | rotation | rebalance | dip | time
     status: Mapped[str] = mapped_column(String(20), default="new", index=True)
     # Our own unique id, sent to the broker. If the network drops mid-submit we can ask the broker

@@ -22,6 +22,12 @@ def affordable(budget: float, unit: float, fractional: bool = False) -> float:
     return qty if qty * unit >= MIN_FRACTIONAL_ORDER else 0
 
 
+def dollars(qty: float, unit: float, fee_pct: float = 0.0) -> float:
+    """A fractional buy of `qty` shares at `unit` dollars each (slippage and fee included) as the dollar amount to send
+    (trader.submit_order's notional): cut to the cent, without the fee, which comes on top. It never costs more."""
+    return math.floor(qty * unit / (1 + fee_pct) * 100 + 1e-6) / 100
+
+
 def tidy(qty: float) -> float:
     """A quantity after adding or subtracting fills, without float noise (0.1 + 0.2 = 0.30000000000000004)."""
     return round(qty, 9)

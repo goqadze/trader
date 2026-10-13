@@ -13,7 +13,9 @@ the end of each 5/15/30/60-minute bar from the open (9:45, 10:00 ... 15:45 for 1
      an unheld dip that is back at its reference is an "up" signal.
   3. Buys (active bots only): symbols in the buy zone that aren't held, blacklisted, sold today or blocked by news
      today, deepest fall first, while slots are free. A slot = 1/max_positions of the equity, in whole shares (with
-     `fractional`, fractions of one where the broker can split the symbol, $1 or more), never more than the cash.
+     `fractional`, fractions of one where the broker can split the symbol, $1 or more: sent as a dollar amount where
+     the broker takes one, so a fill above the quote buys a little less instead of spending more), never more than
+     the cash.
      With `news` on, bearish news blocks the buy for the rest of the day; with `trend_filter`, only symbols whose
      50-day average is above their 200-day one are bought.
      With `rebound` (wait for the turn) a fall into the buy zone isn't bought yet: the bot follows it -- the reference
@@ -52,7 +54,7 @@ from .market import NY, ny_date, session_bounds, sessions_after, sessions_since,
 from .models import Bot, Decision, Holding, Order, Signal, WatchItem
 from .rotation import MIN_TRADE_OF_SLOT, _quote, yahoo_closes
 from .schemas import DEFAULT_PRICE_TIERS
-from .shares import MIN_FRACTIONAL_ORDER, affordable, fmt_qty
+from .shares import MIN_FRACTIONAL_ORDER, affordable, dollars, fmt_qty
 from .trader import _describe, bot_equity, holdings, log_event, mark_to_market, open_orders, others_hold, submit_order
 
 logger = logging.getLogger("trading-service")
@@ -647,7 +649,8 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
             notes[s] = (f"a slot (${min(slot, budget):,.2f}) is under the $1 smallest fractional order" if split
                         else f"a slot (${min(slot, budget):,.0f}) can't buy one share at ${q.price:.2f}{whole_why}")
             continue
-        order = submit_order(session, bot, broker, "BUY", shares, "dip", now, decide(), symbol=s, reference_price=ref)
+        order = submit_order(session, bot, broker, "BUY", shares, "dip", now, decide(), symbol=s, reference_price=ref,
+                             notional=dollars(shares, unit, bot.fee_pct) if split else None)
         if order.status in NOT_SENT:  # not bought: the fall is still followed, the slot and the money still free
             notes[s] = f"not bought: {_describe(order)}"
             continue
@@ -810,7 +813,7 @@ def top_up(session: Session, bot: Bot, broker: Broker, now: datetime, held: dict
                          f"${value:,.2f} -> a full slot of ${slot:,.2f}{whole_why}")
             continue
         order = submit_order(session, bot, broker, "BUY", shares, "top-up", now, decide(), symbol=s,
-                             reference_price=h.reference_price)
+                             reference_price=h.reference_price, notional=dollars(shares, unit, bot.fee_pct) if split else None)
         if order.status in NOT_SENT:
             spent -= shares * unit
             lines.append(f"{s}: not topped up: {_describe(order)}")

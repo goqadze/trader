@@ -721,6 +721,7 @@ class OrderOut(BaseModel):
     order_type: str  # market | stop
     stop_price: float | None
     qty: float
+    notional: float | None = None  # a BUY sent as dollars: qty is then the estimate, filled_qty what it bought
     reason: str
     status: str
     client_order_id: str

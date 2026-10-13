@@ -45,6 +45,7 @@ def _snapshot_price(snap: dict) -> Quote | None:
 
 class AlpacaBroker(Broker):
     supports_stop_orders = True  # the stop-loss rests at Alpaca, so it works while this service is down
+    supports_notional = True  # a fractional BUY can be a dollar amount ("notional"): it never costs more than that
 
     def __init__(self, key_id: str, secret_key: str, live: bool = False,
                  transport: httpx.BaseTransport | None = None, fill_wait_seconds: float = 10.0):
@@ -119,10 +120,13 @@ class AlpacaBroker(Broker):
                 return out
         raise BrokerError(f"Alpaca bars: more than {BARS_MAX_PAGES} pages")
 
-    def submit(self, symbol: str, side: str, qty: float, client_order_id: str) -> BrokerOrder:
+    def submit(self, symbol: str, side: str, qty: float, client_order_id: str, notional: float | None = None) -> BrokerOrder:
+        # A dollar amount, or shares (a fraction too: Alpaca takes both on market orders good for the day, like this
+        # one). By dollars the fill can't cost more than that even when the price moved since the quote
+        size = {"notional": f"{notional:.2f}"} if notional is not None and side == "BUY" else {"qty": _qty(qty)}
         order = self._post_order({
             "symbol": symbol,
-            "qty": _qty(qty),  # may be a fraction: Alpaca takes those on market orders good for the day, like this one
+            **size,
             "side": side.lower(),
             "type": "market",
             "time_in_force": "day",  # an unfilled order expires at the close instead of lingering overnight

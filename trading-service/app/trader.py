@@ -209,9 +209,12 @@ def fresh_quote(broker: Broker, bot: Bot, now: datetime) -> Quote:
 
 def submit_order(session: Session, bot: Bot, broker: Broker, side: str, qty: float, reason: str,
                  now: datetime, decision: Decision | None = None, stop_price: float | None = None,
-                 symbol: str | None = None, reference_price: float | None = None) -> Order:
+                 symbol: str | None = None, reference_price: float | None = None, notional: float | None = None) -> Order:
     """Write-ahead order submission (a market order, or a resting SELL stop when stop_price is given), for the
-    bot's symbol or, on a rotation or dip bot, `symbol` (a dip buy carries its reference_price: the target to come):
+    bot's symbol or, on a rotation or dip bot, `symbol` (a dip buy carries its reference_price: the target to come).
+    `notional`: a BUY of a fraction of a share goes out as that many dollars where the broker takes those
+    (supports_notional), so a fill above the quote buys fewer shares instead of spending more than the bot has; `qty`
+    stays the estimate. Elsewhere `qty` goes out as before:
     0. on a real account other bots trade on too, refuse what would cross them (_refusal: saved as rejected);
     1. save the order as "new" and COMMIT, before the broker hears about it;
     2. send it with our client_order_id;
@@ -219,16 +222,19 @@ def submit_order(session: Session, bot: Bot, broker: Broker, side: str, qty: flo
     If we crash or the network drops between 1 and 3, the scheduler finds the "new" order and asks
     the broker what happened to it -- so an order can be neither lost nor sent twice.
     On a real account the whole of it holds account_lock: one order at a time there."""
+    if notional is not None and not (side == "BUY" and stop_price is None and broker.supports_notional):
+        notional = None
     if bot.broker not in SHARED_ACCOUNT_BROKERS:
-        return _submit(session, bot, broker, side, qty, reason, now, decision, stop_price, symbol, reference_price)
+        return _submit(session, bot, broker, side, qty, reason, now, decision, stop_price, symbol, reference_price, notional)
     with account_lock(bot.broker):
-        return _submit(session, bot, broker, side, qty, reason, now, decision, stop_price, symbol, reference_price)
+        return _submit(session, bot, broker, side, qty, reason, now, decision, stop_price, symbol, reference_price, notional)
 
 
 def _submit(session: Session, bot: Bot, broker: Broker, side: str, qty: float, reason: str, now: datetime,
-            decision: Decision | None, stop_price: float | None, symbol: str | None, reference_price: float | None) -> Order:
+            decision: Decision | None, stop_price: float | None, symbol: str | None, reference_price: float | None,
+            notional: float | None) -> Order:
     symbol = symbol or bot.symbol
-    order = Order(bot_id=bot.id, decision_id=decision.id if decision else None, side=side, symbol=symbol, qty=qty,
+    order = Order(bot_id=bot.id, decision_id=decision.id if decision else None, side=side, symbol=symbol, qty=qty, notional=notional,
                   order_type="market" if stop_price is None else "stop", stop_price=stop_price, reference_price=reference_price,
                   reason=reason, status="new", client_order_id=f"bot{bot.id}-{uuid.uuid4().hex[:16]}",
                   created_at=now, updated_at=now)
@@ -246,7 +252,7 @@ def _submit(session: Session, bot: Bot, broker: Broker, side: str, qty: float, r
     session.commit()
     try:
         if stop_price is None:
-            result = broker.submit(symbol, side, qty, order.client_order_id)
+            result = broker.submit(symbol, side, qty, order.client_order_id, notional=notional)
         else:
             result = broker.submit_stop(symbol, qty, stop_price, order.client_order_id)
     except BrokerError as e:
@@ -293,8 +299,9 @@ def apply_broker_state(session: Session, bot: Bot, order: Order, bo: BrokerOrder
 
 
 def _label(order: Order, bot: Bot) -> str:
-    """How an order is named in the audit log: 'BUY 10 AAPL' or 'stop SELL 10 AAPL @ $95.20'."""
-    text = f"{order.side} {fmt_qty(order.qty)} {order.symbol or bot.symbol}"
+    """How an order is named in the audit log: 'BUY 10 AAPL', 'BUY $30.00 of AAPL' or 'stop SELL 10 AAPL @ $95.20'."""
+    text = (f"{order.side} ${order.notional:,.2f} of {order.symbol or bot.symbol}" if order.notional is not None
+            else f"{order.side} {fmt_qty(order.qty)} {order.symbol or bot.symbol}")
     return f"stop {text} @ ${order.stop_price:.2f}" if order.order_type == "stop" else text
 
 
@@ -651,6 +658,7 @@ def _describe(order: Order | None) -> str:
         return "No order."
     if order.status in ("filled", "partially_filled"):
         return f"{order.side} {fmt_qty(order.filled_qty)} sh {order.status} @ ${order.avg_price:.2f}"
+    what = f"${order.notional:,.2f} of" if order.notional is not None else f"{fmt_qty(order.qty)} sh"
     if order.status in ("new", "submitted"):
-        return f"{order.side} {fmt_qty(order.qty)} sh sent; waiting for the fill."
-    return f"{order.side} {fmt_qty(order.qty)} sh {order.status}: {order.error or ''}".strip()
+        return f"{order.side} {what} sent; waiting for the fill."
+    return f"{order.side} {what} {order.status}: {order.error or ''}".strip()
