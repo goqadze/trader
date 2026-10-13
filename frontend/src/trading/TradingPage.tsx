@@ -3,6 +3,7 @@ import {
   Alert, App as AntApp, Badge, Button, Card, Col, Grid, List, Row, Segmented, Select, Space, Statistic, Switch, Table, Tag, Tooltip, Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
+import type { SortOrder } from "antd/es/table/interface";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { tradingApi } from "./api";
@@ -84,6 +85,8 @@ const columns: ColumnsType<Bot> = [
     title: "Return",
     key: "ret",
     align: "right",
+    sorter: (a, b) => a.return_pct - b.return_pct,
+    sortDirections: ["descend", "ascend"],
     render: (_, b) => (
       <Tooltip title={`${isRotation(b) ? `Its ${b.universe?.length} symbols held equally` : isDip(b) ? `Its starting ${b.universe?.length} symbols held equally` : "Buy & hold"} since the bot started: ${pct(b.buy_hold_return_pct)}`}>
         <span style={{ color: pnlColor(b.return_pct) }}>{pct(b.return_pct)}</span>
@@ -94,6 +97,9 @@ const columns: ColumnsType<Bot> = [
   {
     title: "Position",
     key: "pos",
+    // By the open positions' gain or loss in dollars (flat or all cash: $0)
+    sorter: (a, b) => a.unrealized_pnl - b.unrealized_pnl,
+    sortDirections: ["descend", "ascend"],
     render: (_, b) =>
       holdsMany(b) ? (
         b.holdings.length ? (
@@ -154,6 +160,28 @@ function rememberBroker(broker: string) {
   }
 }
 
+// The bot table's sort (Return or Position, by a click on the column), remembered in this browser too
+const SORT_KEY = "trading.botSort";
+type BotSort = { key: string; order: SortOrder };
+
+function rememberedSort(): BotSort {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SORT_KEY) ?? "null");
+    if (columns.some((c) => c.sorter && c.key === saved?.key) && ["ascend", "descend"].includes(saved.order)) return saved;
+  } catch {
+    /* nothing saved, or unreadable */
+  }
+  return { key: "", order: null };
+}
+
+function rememberSort(sort: BotSort) {
+  try {
+    localStorage.setItem(SORT_KEY, JSON.stringify(sort));
+  } catch {
+    /* sorts, just not remembered */
+  }
+}
+
 /** Recent audit events across all bots (or one broker's). */
 function ActivityFeed({ events, bots, title, emptyText }: { events: TradingEvent[]; bots: Bot[]; title: string; emptyText: string }) {
   const symbol = (id: number | null) => {
@@ -189,6 +217,7 @@ export default function TradingPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [initial, setInitial] = useState<BotFormInitial>({});
   const [brokerPick, setBrokerPick] = useState(rememberedBroker);
+  const [sort, setSort] = useState(rememberedSort);
 
   const bots = usePolling(() => tradingApi.listBots(showArchived), 15_000, [showArchived]);
   const status = usePolling(tradingApi.status, 30_000);
@@ -203,6 +232,7 @@ export default function TradingPage() {
     ...brokers.map((n) => ({ label: `${brokerLabel(n)} (${list.filter((b) => b.broker === n).length})`, value: n })),
   ];
   const pickBroker = (v: string) => { setBrokerPick(v); rememberBroker(v); };
+  const sorted = useMemo(() => columns.map((c) => (c.sorter ? { ...c, sortOrder: c.key === sort.key ? sort.order : null } : c)), [sort]);
   const phone = Grid.useBreakpoint().sm === false; // undefined before the first measure: the desktop control
   const events = usePolling(() => tradingApi.allEvents(broker === "all" ? undefined : broker), 15_000, [broker]);
 
@@ -333,12 +363,18 @@ export default function TradingPage() {
       >
         <Table<Bot>
           rowKey="id"
-          columns={columns}
+          columns={sorted}
           dataSource={shown}
           loading={bots.loading && !bots.data}
           pagination={false}
           size="middle"
           scroll={{ x: 900 }}
+          onChange={(_, __, s) => {
+            const one = Array.isArray(s) ? s[0] : s;
+            const next = { key: one?.order ? String(one.columnKey) : "", order: one?.order ?? null };
+            setSort(next);
+            rememberSort(next);
+          }}
           onRow={(b) => ({ onClick: (e) => { if (!(e.target as HTMLElement).closest("a")) navigate(`/trading/${b.id}`); }, style: { cursor: "pointer" } })}
           locale={{ emptyText: "No bots yet. Run a backtest you trust, then click “Trade this strategy”, or create one with New bot." }}
         />
