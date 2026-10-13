@@ -27,7 +27,7 @@ import pandas as pd
 import yfinance as yf
 from sqlalchemy.orm import Session
 
-from . import yahoo_cache
+from . import alpaca_prices, yahoo_cache
 from .brokers import Broker, BrokerError, Quote
 from .config import settings
 from .market import NY, month_end_after, ny_date, slot_window
@@ -47,9 +47,9 @@ MAX_ROUNDS = 6  # rounds of orders one rebalance may send (sells, buys, retries 
 
 def yahoo_closes(symbols: list[str], start: date) -> pd.DataFrame:
     """Daily closes from `start` to now, one column per symbol, like the backtest's download. During market hours
-    the last row is today's latest price (up to DAILY_TTL old: every bot shares the download, yahoo_cache). A symbol
-    Yahoo doesn't know comes back as an empty column."""
-    return _daily.closes(symbols, start, _download_closes)
+    the last row is today's latest price (up to DAILY_TTL old: every bot shares the download, yahoo_cache). What Yahoo
+    doesn't give comes from Alpaca's SIP feed (alpaca_prices); a symbol neither knows comes back as an empty column."""
+    return _daily.closes(symbols, start, lambda need, begin: alpaca_prices.backed(_download_closes, need, "1d", begin))
 
 
 DAILY_TTL = 15 * 60  # seconds a daily download serves every bot: the buy & hold line and new bots' start prices

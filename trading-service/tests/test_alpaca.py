@@ -166,6 +166,65 @@ def test_no_trade_and_no_usable_bid_ask_or_an_unknown_symbol_is_an_error():
         _broker(lambda req: httpx.Response(404, json={"message": "no snapshot found for ZZZZQ"})).quote("ZZZZQ")
 
 
+def test_quotes_price_many_symbols_in_one_call_like_quote():
+    seen = []
+
+    def handler(req):
+        seen.append((req.url.path, req.url.params.get("symbols"), req.url.params.get("feed")))
+        return httpx.Response(200, json={
+            "AAPL": _snapshot(("201.25", "2025-06-02T19:29:57Z"), 201.24, 201.27, quoted="2025-06-02T19:30:01Z"),
+            "UGA": _snapshot(("150.54", "2025-05-29T16:17:11Z"), 142.40, 142.86, quoted="2025-06-02T19:29:58Z"),
+            "DBE": _snapshot(None, 30.0, 0)})  # no trade, one-sided book: no price
+
+    got = _broker(handler).quotes(["AAPL", "UGA", "DBE"])
+    assert seen == [("/v2/stocks/snapshots", "AAPL,UGA,DBE", "iex")]
+    assert {s: q.price for s, q in got.items()} == {"AAPL": 201.25, "UGA": 142.63}
+
+
+def test_bars_read_every_page_of_adjusted_sip_bars():
+    from datetime import date, datetime, timezone
+
+    seen = []
+    pages = [{"bars": {"A": [{"t": "2025-06-02T13:30:00Z", "c": 10.5}]}, "next_page_token": "p2"},
+             {"bars": {"A": [{"t": "2025-06-02T13:45:00Z", "c": 10.75}], "BRK.B": [{"t": "2025-06-02T13:30:00Z", "c": 480}]},
+              "next_page_token": None}]
+
+    def handler(req):
+        seen.append(dict(req.url.params))
+        return httpx.Response(200, json=pages[len(seen) - 1])
+
+    got = _broker(handler).bars(["A", "BRK.B"], "15Min", date(2025, 5, 20), datetime(2025, 6, 2, 14, 44, 20, tzinfo=timezone.utc))
+    assert seen[0] == {"symbols": "A,BRK.B", "timeframe": "15Min", "start": "2025-05-20", "end": "2025-06-02T14:44:20Z",
+                       "feed": "sip", "adjustment": "all", "limit": "10000"}  # splits and dividends unless asked
+    assert seen[1]["page_token"] == "p2"
+    assert {s: [(t.isoformat(), c) for t, c in rows] for s, rows in got.items()} == {
+        "A": [("2025-06-02T13:30:00+00:00", 10.5), ("2025-06-02T13:45:00+00:00", 10.75)],
+        "BRK.B": [("2025-06-02T13:30:00+00:00", 480.0)]}
+    with pytest.raises(BrokerError, match="403"):
+        _broker(lambda req: httpx.Response(403, json={"message": "subscription does not permit querying recent SIP data"})
+                ).bars(["A"], "15Min", date(2025, 5, 20), datetime(2025, 6, 2, 14, 59, tzinfo=timezone.utc))
+
+
+def test_bars_leave_requests_for_the_bots_when_the_minutes_budget_runs_low(monkeypatch):
+    from datetime import date, datetime, timezone
+
+    import app.brokers.alpaca as alpaca
+
+    waits = []
+    monkeypatch.setattr(alpaca.time, "sleep", waits.append)
+    monkeypatch.setattr(alpaca.time, "time", lambda: 1000.0)
+    pages = iter([({"bars": {"A": []}, "next_page_token": "p2"}, "150"), ({"bars": {"A": []}, "next_page_token": "p3"}, "59"),
+                  ({"bars": {"A": []}, "next_page_token": None}, "58")])
+
+    def handler(req):
+        body, left = next(pages)
+        return httpx.Response(200, json=body, headers={"x-ratelimit-remaining": left, "x-ratelimit-reset": "1012"})
+
+    _broker(handler).bars(["A"], "15Min", datetime(2025, 6, 2, 14, 0, tzinfo=timezone.utc),
+                          datetime(2025, 6, 2, 14, 44, tzinfo=timezone.utc))
+    assert waits == [12.0, 12.0]  # 59 and 58 left of 200: wait for the next minute
+
+
 # --- Stop orders held at the broker ----------------------------------------------------------------
 
 def test_submit_stop_rests_a_good_till_canceled_sell_stop():

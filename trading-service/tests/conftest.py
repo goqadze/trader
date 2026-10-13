@@ -168,8 +168,9 @@ def no_split_data(monkeypatch):
 @pytest.fixture(autouse=True)
 def fresh_yahoo_cache():
     """Prices another test downloaded never answer this one (yahoo_cache)."""
-    from app import dip, rotation, yahoo_cache
+    from app import alpaca_prices, dip, rotation, yahoo_cache
 
+    alpaca_prices._kept.clear()
     rotation._daily.clear()
     for kept in dip._bars.values():
         kept.clear()

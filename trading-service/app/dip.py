@@ -22,12 +22,12 @@ the end of each 5/15/30/60-minute bar from the open (9:45, 10:00 ... 15:45 for 1
      Money added while it runs makes the slots bigger from the next buy on. Added with "top up" (bot.top_up), the
      first check that can buy first brings each holding up to a full slot at today's price (see `top_up`).
 Every signal is saved (Signal) for your information, whatever the bot did about it: the dashboard can notify you.
-Where it differs from the backtest: real quotes (Yahoo's bars for the window, the broker's quote before each trade),
-real fills, and a check runs at the first scheduler tick after its moment (within ~30 s). The stop is checked at
-each check, not held at the broker: a fast fall between checks fills lower. A paused bot still checks its holdings'
-exits at each interval (no buys), like the other bots' stop-loss. So does a check whose Yahoo download failed: exits
-on the broker's quotes, no buys, and the check is tried again. A real-money broker works the same way (main.py asks
-for confirm_live when the bot is created).
+Where it differs from the backtest: real quotes (Yahoo's bars for the window, Alpaca's SIP bars when Yahoo has none;
+the broker's quote before each trade), real fills, and a check runs at the first scheduler tick after its moment
+(within ~30 s). The stop is checked at each check, not held at the broker: a fast fall between checks fills lower. A
+paused bot still checks its holdings' exits at each interval (no buys), like the other bots' stop-loss. So does a
+check whose prices failed (Yahoo and Alpaca both): exits on the broker's quotes, no buys, and the check is tried again.
+A real-money broker works the same way (main.py asks for confirm_live when the bot is created).
 
 Like trader.py and rotation.py, every function takes `now`, and the price download (`bars_fn`), the news (`news_fn`),
 the trend filter (`trend_fn`) and the daily moves (`moves_fn`) can be swapped, so tests replay any moment without the
@@ -43,7 +43,7 @@ import yfinance as yf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import notify, splits, yahoo_cache
+from . import alpaca_prices, notify, splits, yahoo_cache
 from .brokers import Broker, BrokerError
 from .config import settings
 from .db import utcnow
@@ -139,11 +139,16 @@ def yahoo_bars(symbols: list[str], interval: str, start: date) -> pd.DataFrame:
     each CLOSED (New York time; the last one still forming); "1d": daily closes indexed by day (today's = the latest
     price during market hours). A symbol Yahoo doesn't know comes back as an empty column.
     Every bot checking at the same moment shares one download per symbol (yahoo_cache, BARS_TTL), reaching
-    SHARE_DAYS further back than asked so that bots with a somewhat longer window share it too."""
+    SHARE_DAYS further back than asked so that bots with a somewhat longer window share it too. What Yahoo doesn't
+    give comes from Alpaca's SIP feed (alpaca_prices)."""
     wider = start - timedelta(days=SHARE_DAYS)
     if interval in ("5m", "15m", "30m"):  # not past Yahoo's limit
         wider = max(wider, ny_date(utcnow()) - timedelta(days=YAHOO_INTRADAY_DAYS))
-    return _bars[interval].closes(symbols, start, lambda need, begin: _download_bars(need, interval, begin), wider)
+
+    def fetch(need: list[str], begin: date) -> pd.DataFrame:
+        return alpaca_prices.backed(lambda some, since: _download_bars(some, interval, since), need, interval, begin)
+
+    return _bars[interval].closes(symbols, start, fetch, wider)
 
 
 BARS_TTL = 120  # seconds: the bots due at one check moment are all checked well within it
