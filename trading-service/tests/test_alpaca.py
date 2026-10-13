@@ -118,9 +118,52 @@ def test_position_qty_404_means_flat():
     assert _broker(lambda req: httpx.Response(200, json={"qty": "12"})).position_qty("AAPL") == 12
 
 
-def test_quote_parses_latest_trade():
-    q = _broker(lambda req: httpx.Response(200, json={"trade": {"p": 201.25, "t": "2025-06-02T19:30:00Z"}})).quote("AAPL")
-    assert q.price == 201.25 and q.at.isoformat() == "2025-06-02T19:30:00+00:00"
+def _snapshot(trade=None, bid=0.0, ask=0.0, quoted="2025-06-02T19:30:01Z"):
+    """Alpaca's IEX snapshot: the latest trade (p, t) and the latest bid/ask (bp, ap; 0 = that side is empty)."""
+    return {"symbol": "X", "latestTrade": {"p": trade[0], "t": trade[1]} if trade else None,
+            "latestQuote": {"bp": bid, "ap": ask, "t": quoted}}
+
+
+def test_quote_is_the_latest_iex_trade_while_it_is_recent():
+    seen = []
+
+    def handler(req):
+        seen.append((req.url.path, req.url.params.get("feed")))
+        return httpx.Response(200, json=_snapshot(("201.25", "2025-06-02T19:29:57.307205784Z"), 201.24, 201.27))
+
+    q = _broker(handler).quote("AAPL")
+    assert seen == [("/v2/stocks/AAPL/snapshot", "iex")]
+    assert q.price == 201.25 and q.at.isoformat() == "2025-06-02T19:29:57.307205+00:00"  # not the midpoint 201.255
+
+
+def test_a_thin_etf_without_recent_iex_trades_is_priced_at_its_bid_ask_midpoint():
+    # UGA, Oct 12 2026: last IEX trade four days earlier at $150.54, while IEX quoted it all day ~5% lower
+    snap = _snapshot(("150.54", "2026-10-08T16:17:11Z"), 142.40, 142.86, quoted="2026-10-12T19:44:58Z")
+    q = _broker(lambda req: httpx.Response(200, json=snap)).quote("UGA")
+    assert q.price == 142.63 and q.at.isoformat() == "2026-10-12T19:44:58+00:00"
+    no_trade_yet = _snapshot(None, 142.40, 142.86, quoted="2026-10-12T19:44:58Z")
+    assert _broker(lambda req: httpx.Response(200, json=no_trade_yet)).quote("UGA").price == 142.63
+
+
+@pytest.mark.parametrize("bid, ask", [
+    (140.0, 143.0),  # a 2.1% spread: not a price to trade on
+    (142.40, 0),  # one side empty, as after the close
+    (0.01, 0),  # a placeholder bid
+    (0, 0),  # an empty book
+    (0, 142.86),  # an ask alone
+    (143.0, 142.0),  # crossed
+])
+def test_without_a_usable_bid_ask_the_old_trade_stays_and_the_caller_sees_its_age(bid, ask):
+    snap = _snapshot(("150.54", "2026-10-08T16:17:11Z"), bid, ask, quoted="2026-10-12T19:44:58Z")
+    q = _broker(lambda req: httpx.Response(200, json=snap)).quote("UGA")
+    assert q.price == 150.54 and q.at.isoformat() == "2026-10-08T16:17:11+00:00"
+
+
+def test_no_trade_and_no_usable_bid_ask_or_an_unknown_symbol_is_an_error():
+    with pytest.raises(BrokerError, match="no IEX trade and no usable bid/ask"):
+        _broker(lambda req: httpx.Response(200, json=_snapshot(None, 142.40, 0))).quote("UGA")
+    with pytest.raises(BrokerError, match="404"):
+        _broker(lambda req: httpx.Response(404, json={"message": "no snapshot found for ZZZZQ"})).quote("ZZZZQ")
 
 
 # --- Stop orders held at the broker ----------------------------------------------------------------

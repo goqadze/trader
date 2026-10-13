@@ -5,15 +5,18 @@ Docs: https://docs.alpaca.markets/reference (Trading API v2 + Market Data v2).
 """
 
 import time
+from datetime import timedelta
 
 import httpx
 
+from ..config import settings
 from ..market import to_utc
 from .base import Broker, BrokerError, BrokerOrder, Quote
 
 PAPER_URL = "https://paper-api.alpaca.markets"
 LIVE_URL = "https://api.alpaca.markets"
 DATA_URL = "https://data.alpaca.markets"
+MAX_QUOTE_SPREAD = 0.01  # a bid/ask wider than 1% of its midpoint isn't a price to trade on (UGA's is usually ~0.3%)
 
 # Alpaca order states that mean "still working" vs "finished"
 _TERMINAL = {"filled", "canceled", "expired", "rejected", "done_for_day", "stopped", "suspended"}
@@ -44,12 +47,27 @@ class AlpacaBroker(Broker):
             raise BrokerError(f"Alpaca unreachable: {e}") from e
 
     def quote(self, symbol: str) -> Quote:
-        # feed=iex is the free real-time feed (a subset of exchanges; fine for a daily strategy)
-        r = self._get(self._data, f"/v2/stocks/{symbol}/trades/latest", feed="iex")
+        """The latest trade, or the bid/ask midpoint once the bid/ask is MAX_QUOTE_AGE_MINUTES newer than that trade.
+
+        feed=iex is the free real-time feed: one exchange, a few % of the volume. A thinly traded ETF (UGA, DBE) can go
+        days without an IEX trade while IEX quotes it all day, and its last trade can be far from today's price. The
+        midpoint counts only with both sides there and a spread of at most MAX_QUOTE_SPREAD (after the close the book is
+        one-sided: then the trade stays, and the caller sees how old it is)."""
+        r = self._get(self._data, f"/v2/stocks/{symbol}/snapshot", feed="iex")  # the latest trade and bid/ask, one call
         if r.status_code != 200:
             raise BrokerError(f"Alpaca quote {symbol}: {r.status_code} {r.text[:200]}")
-        t = r.json()["trade"]
-        return Quote(price=float(t["p"]), at=to_utc(t["t"]))
+        snap = r.json()
+        t, q = snap.get("latestTrade") or {}, snap.get("latestQuote") or {}
+        trade = Quote(price=float(t["p"]), at=to_utc(t["t"])) if t.get("p") else None
+        bid, ask = float(q.get("bp") or 0), float(q.get("ap") or 0)
+        mid = None
+        if bid > 0 and ask >= bid and (ask - bid) / ((ask + bid) / 2) <= MAX_QUOTE_SPREAD:
+            mid = Quote(price=round((bid + ask) / 2, 4), at=to_utc(q["t"]))
+        if mid and (trade is None or mid.at - trade.at > timedelta(minutes=settings.max_quote_age_minutes)):
+            return mid
+        if trade is None:
+            raise BrokerError(f"Alpaca quote {symbol}: no IEX trade and no usable bid/ask")
+        return trade
 
     def submit(self, symbol: str, side: str, qty: float, client_order_id: str) -> BrokerOrder:
         order = self._post_order({
