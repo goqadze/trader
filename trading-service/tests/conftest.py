@@ -165,6 +165,17 @@ def no_split_data(monkeypatch):
     monkeypatch.setattr(splits, "fetch", lambda symbols, today, now=None: {s: [] for s in symbols})
 
 
+@pytest.fixture(autouse=True)
+def fresh_yahoo_cache():
+    """Prices another test downloaded never answer this one (yahoo_cache)."""
+    from app import dip, rotation, yahoo_cache
+
+    rotation._daily.clear()
+    for kept in dip._bars.values():
+        kept.clear()
+    yahoo_cache._last_download = float("-inf")
+
+
 @pytest.fixture(scope="session", autouse=True)
 def schema():
     """Build the schema from the models once per run (drop first, so model changes are always picked up)."""

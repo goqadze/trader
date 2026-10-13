@@ -50,12 +50,13 @@ export default function EmailAlertsPage() {
   const [testing, setTesting] = useState(false);
   const history = usePolling(() => tradingApi.emailHistory(50), 15_000);
   const enabled = Form.useWatch("enabled", form);
+  const chosen = Form.useWatch("categories", form) ?? [];
 
   useEffect(() => {
     tradingApi.emailAlerts().then(
       (c) => {
         setCfg(c);
-        form.setFieldsValue({ enabled: c.enabled, recipients: c.recipients, categories: c.categories });
+        form.setFieldsValue({ enabled: c.enabled, recipients: c.recipients, categories: c.categories, live_only: c.live_only });
       },
       (e) => setLoadError(e instanceof Error ? e.message : String(e)),
     );
@@ -133,6 +134,19 @@ export default function EmailAlertsPage() {
                     <Checkbox key={c.key} value={c.key}>
                       <Tag color={CATEGORY_COLOR[c.key]} style={{ marginRight: 6 }}>{c.label}</Tag>
                       <span style={{ color: MUTED, fontSize: 12 }}>{c.description}</span>
+                    </Checkbox>
+                  ))}
+                </Checkbox.Group>
+              </Form.Item>
+              <Form.Item
+                name="live_only"
+                label="Only from LIVE bots"
+                tooltip="Ticked kinds come only from real-money bots. Paper bots' ones stay on the dashboard (the bell, each bot's page). Alerts that aren't about one bot (HALT ALL) still come."
+              >
+                <Checkbox.Group style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {(cfg?.available ?? []).map((c) => (
+                    <Checkbox key={c.key} value={c.key} disabled={!chosen.includes(c.key)}>
+                      <Tag color={CATEGORY_COLOR[c.key]}>{c.label}</Tag>
                     </Checkbox>
                   ))}
                 </Checkbox.Group>

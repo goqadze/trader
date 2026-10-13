@@ -25,8 +25,9 @@ Every signal is saved (Signal) for your information, whatever the bot did about 
 Where it differs from the backtest: real quotes (Yahoo's bars for the window, the broker's quote before each trade),
 real fills, and a check runs at the first scheduler tick after its moment (within ~30 s). The stop is checked at
 each check, not held at the broker: a fast fall between checks fills lower. A paused bot still checks its holdings'
-exits at each interval (no buys), like the other bots' stop-loss. A real-money broker works the same way (main.py
-asks for confirm_live when the bot is created).
+exits at each interval (no buys), like the other bots' stop-loss. So does a check whose Yahoo download failed: exits
+on the broker's quotes, no buys, and the check is tried again. A real-money broker works the same way (main.py asks
+for confirm_live when the bot is created).
 
 Like trader.py and rotation.py, every function takes `now`, and the price download (`bars_fn`), the news (`news_fn`),
 the trend filter (`trend_fn`) and the daily moves (`moves_fn`) can be swapped, so tests replay any moment without the
@@ -42,9 +43,10 @@ import yfinance as yf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import notify, splits
+from . import notify, splits, yahoo_cache
 from .brokers import Broker, BrokerError
 from .config import settings
+from .db import utcnow
 from .decision_client import get_news
 from .market import NY, ny_date, session_bounds, sessions_after, sessions_since, slot_window
 from .models import Bot, Decision, Holding, Order, Signal, WatchItem
@@ -135,7 +137,21 @@ def history_start(bot: Bot, today: date) -> date:
 def yahoo_bars(symbols: list[str], interval: str, start: date) -> pd.DataFrame:
     """Closes from `start` to now, one column per symbol. Intraday intervals: regular-hours bars indexed by the moment
     each CLOSED (New York time; the last one still forming); "1d": daily closes indexed by day (today's = the latest
-    price during market hours). A symbol Yahoo doesn't know comes back as an empty column."""
+    price during market hours). A symbol Yahoo doesn't know comes back as an empty column.
+    Every bot checking at the same moment shares one download per symbol (yahoo_cache, BARS_TTL), reaching
+    SHARE_DAYS further back than asked so that bots with a somewhat longer window share it too."""
+    wider = start - timedelta(days=SHARE_DAYS)
+    if interval in ("5m", "15m", "30m"):  # not past Yahoo's limit
+        wider = max(wider, ny_date(utcnow()) - timedelta(days=YAHOO_INTRADAY_DAYS))
+    return _bars[interval].closes(symbols, start, lambda need, begin: _download_bars(need, interval, begin), wider)
+
+
+BARS_TTL = 120  # seconds: the bots due at one check moment are all checked well within it
+SHARE_DAYS = 7
+_bars = {interval: yahoo_cache.Shared(BARS_TTL) for interval in INTERVAL_MINUTES}
+
+
+def _download_bars(symbols: list[str], interval: str, start: date) -> pd.DataFrame:
     yahoo = {s: s.replace(".", "-") for s in symbols}  # Yahoo writes share classes with a dash (BRK-B)
     try:
         df = yf.download(list(yahoo.values()), start=start.isoformat(), interval=YAHOO_INTERVALS[interval], progress=False,
@@ -361,7 +377,7 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
     kind: 'scheduled' (the interval), 'manual' (Run now while the market is open and the bot active), 'preview' (Run now
     otherwise: shows what it WOULD do; no order, no signal). A scheduled check that changed nothing leaves no Decision
     behind (a 15-minute bot checks 25 times a day): it returns None. Marks the check as done (last_decision_at) only
-    once the prices came in, so a failed download is retried."""
+    once the prices came in, so a failed download is retried; its exits run anyway, on the broker's quotes."""
     bars_fn, news_fn, trend_fn, moves_fn = bars_fn or yahoo_bars, news_fn or get_news, trend_fn or uptrend, moves_fn or daily_moves
     today = ny_date(now)
     trade = kind != "preview"
@@ -382,24 +398,19 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
             session.flush()
         return decision
 
+    failed = None
     try:
         closes = bars_fn(symbols, bot.interval, history_start(bot, today)) if symbols else pd.DataFrame()
-    except Exception as e:  # BrokerError, or a malformed download: never trade on prices we couldn't read
-        msg = f"Prices failed, no check: {e}"
-        if kind == "scheduled":
-            log_event(session, bot.id, "error", msg, "error", now)
-            session.commit()
-            return None
-        d = decide()
-        d.outcome = msg
-        session.commit()
-        return d
+    except Exception as e:  # BrokerError, or a malformed download: never buy on prices we couldn't read, but the
+        # exits below go on, on the broker's quotes: a stop-loss mustn't wait for Yahoo
+        closes = pd.DataFrame()
+        failed = f"Prices failed, no buys this check (stops and targets checked on the broker's quotes): {e}"
 
     # Stock splits: the holdings' records follow them (a preview too: a split is a fact, not a decision); a symbol
     # splitting today is neither bought nor followed today (see splits.py)
     split_today = splits.apply(session, bot, today, splits_fn, now)
 
-    if trade:  # a stop's blacklist that is over (reenable_days): watched again from this check, as in the backtest
+    if trade and not failed:  # a stop's blacklist that is over (reenable_days): watched again, as in the backtest
         for item in items:
             if item.status == "blacklisted" and item.reenable_on and item.reenable_on <= today:
                 reenable(item)
@@ -412,7 +423,7 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
     sold: list[str] = []
     events = 0  # signals saved: a scheduled check that saved one is worth a Decision row
     moves: dict[str, float | None] = {}  # drop_mode "volatility": each symbol's usual daily move
-    if bot.drop_mode == "volatility" and items:
+    if bot.drop_mode == "volatility" and items and not failed:
         try:
             moves = moves_fn([i.symbol for i in items], today)
         except Exception as e:  # can't tell the daily moves: no new falls, the rest of the check goes on
@@ -472,6 +483,20 @@ def check(session: Session, bot: Bot, broker: Broker, now: datetime, kind: str, 
         else:
             signal(session, bot, s, "time", now, f"{s} held {bot.max_hold_days} trading days without getting back "
                    f"({_pct(change)} from the buy): sell", done, q.price, h.reference_price, change)
+
+    if failed:  # the check isn't done (last_decision_at stays): the scheduler tries it again
+        if kind == "scheduled":
+            log_event(session, bot.id, "error", failed, "error", now)
+            if decision is None:
+                session.commit()
+                return None
+        d = decide()
+        d.action = "SELL" if sold else "HOLD"
+        d.steps = lines
+        d.reasoning = f"Sold {', '.join(sold)}." if sold else "No buys: no prices."
+        d.outcome = failed
+        session.commit()
+        return d
 
     # 2. Where each watched symbol stands; falls that start or end
     rebound = bool(bot.rebound)  # NULL on bots from before the option: buy at once, as they always did

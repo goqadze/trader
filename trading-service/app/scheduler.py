@@ -218,14 +218,17 @@ def _log_error_throttled(session, bot_id: int, e: Exception, now: datetime) -> N
 
 
 def tick(now: datetime, signal_fn=get_signal, broker_factory=get_broker) -> None:
-    """One pass over every non-archived bot, a few in parallel (LLM decisions can take seconds each). Stock splits
-    first, one bot after another: dip bots sharing a symbol must all have them before any compares with the account."""
+    """One pass over every non-archived bot, a few in parallel (LLM decisions can take seconds each), the real-money
+    ones first: many paper bots waiting for their price downloads (one at a time, yahoo_cache) never delay them.
+    Stock splits first, one bot after another: dip bots sharing a symbol must all have them before any compares with
+    the account."""
     try:
         splits.apply_all(now)
     except Exception:
         logger.exception("split pass failed")
     with SessionLocal() as session:
-        ids = list(session.scalars(select(Bot.id).where(Bot.status != "archived")))
+        ids = list(session.scalars(select(Bot.id).where(Bot.status != "archived")
+                                   .order_by((Bot.broker == "alpaca-live").desc(), Bot.id)))
     with ThreadPoolExecutor(max_workers=4) as pool:
         list(pool.map(lambda i: process_bot(i, now, signal_fn, broker_factory), ids))
     state["last_tick"] = now

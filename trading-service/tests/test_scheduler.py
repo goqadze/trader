@@ -1,6 +1,8 @@
 """The scheduler: decides at the right moment, exactly once per day, and keeps protecting positions."""
 
+import contextlib
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 from conftest import FakeBroker, at, make_bot, signal
@@ -49,6 +51,17 @@ def test_not_due_on_a_holiday(session):
     bot = make_bot(session)
     christmas_1530 = at(20, 30).replace(month=12, day=25)
     assert scheduler.decision_due(bot, christmas_1530) is False
+
+
+def test_a_tick_checks_the_real_money_bots_first(session, monkeypatch):
+    for broker in ("paper", "alpaca-live", "alpaca-paper", "alpaca-live"):
+        make_bot(session, broker=broker)
+    make_bot(session, broker="alpaca-live", status="archived")
+    order = []
+    monkeypatch.setattr(scheduler, "process_bot", lambda bot_id, *a: order.append(bot_id))
+    monkeypatch.setattr(scheduler, "ThreadPoolExecutor", lambda max_workers: contextlib.nullcontext(SimpleNamespace(map=map)))
+    scheduler.tick(at(15, 0))
+    assert order == [2, 4, 1, 3]
 
 
 def test_tick_decides_once_then_leaves_the_bot_alone_for_the_day(session):

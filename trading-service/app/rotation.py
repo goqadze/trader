@@ -27,6 +27,7 @@ import pandas as pd
 import yfinance as yf
 from sqlalchemy.orm import Session
 
+from . import yahoo_cache
 from .brokers import Broker, BrokerError, Quote
 from .config import settings
 from .market import NY, month_end_after, ny_date, slot_window
@@ -46,7 +47,16 @@ MAX_ROUNDS = 6  # rounds of orders one rebalance may send (sells, buys, retries 
 
 def yahoo_closes(symbols: list[str], start: date) -> pd.DataFrame:
     """Daily closes from `start` to now, one column per symbol, like the backtest's download. During market hours
-    the last row is today's latest price. A symbol Yahoo doesn't know comes back as an empty column."""
+    the last row is today's latest price (up to DAILY_TTL old: every bot shares the download, yahoo_cache). A symbol
+    Yahoo doesn't know comes back as an empty column."""
+    return _daily.closes(symbols, start, _download_closes)
+
+
+DAILY_TTL = 15 * 60  # seconds a daily download serves every bot: the buy & hold line and new bots' start prices
+_daily = yahoo_cache.Shared(DAILY_TTL)
+
+
+def _download_closes(symbols: list[str], start: date) -> pd.DataFrame:
     yahoo = {s: s.replace(".", "-") for s in symbols}  # Yahoo writes share classes with a dash (BRK-B)
     try:
         df = yf.download(list(yahoo.values()), start=start.isoformat(), progress=False, auto_adjust=True)

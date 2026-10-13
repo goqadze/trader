@@ -581,7 +581,23 @@ def test_a_failed_download_is_retried(session):
         raise BrokerError("no prices from Yahoo")
 
     assert dip.check(session, bot, broker, T, "scheduled", bars_fn=broken) is None
-    assert bot.last_decision_at is None
+    assert bot.last_decision_at is None and broker.sent == []  # A fell 6.4%, but without bars nothing is bought
+    assert "Prices failed" in session.scalar(select(Event).where(Event.level == "error")).message
+
+
+def test_a_failed_download_still_sells_at_the_stop_on_the_brokers_quote(session):
+    bot, broker = _bought(session)  # 48 A at $103, stop 5% under
+    checked = bot.last_decision_at
+    broker.prices.update(A=97.0, B=40.0)  # A under its stop; B fell 20%, but there are no bars to see it
+
+    def broken(*a):
+        raise BrokerError("Too Many Requests")
+
+    d = dip.check(session, bot, broker, T15, "scheduled", bars_fn=broken, news_fn=no_news)
+    assert broker.sent[-1] == ("SELL", "A", 48) and len(broker.sent) == 2  # the buy, then the stop: nothing bought
+    assert item(session, bot, "A").status == "blacklisted" and signals(session, bot)[-1] == ("A", "stop")
+    assert d.action == "SELL" and "Prices failed" in d.outcome
+    assert bot.last_decision_at == checked  # not done: the scheduler tries the check again
     assert "Prices failed" in session.scalar(select(Event).where(Event.level == "error")).message
 
 

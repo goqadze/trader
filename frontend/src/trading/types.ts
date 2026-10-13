@@ -231,6 +231,7 @@ export interface EmailAlertsSave {
   enabled: boolean;
   recipients: string[];
   categories: NotifyCategory[];
+  live_only: NotifyCategory[]; // of those, wanted from real-money (LIVE) bots only
 }
 
 export interface EmailAlerts extends EmailAlertsSave {

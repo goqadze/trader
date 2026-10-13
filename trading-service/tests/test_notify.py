@@ -101,6 +101,22 @@ def test_dip_signals_only_for_those_who_chose_them(session, smtp):
     assert n.body.startswith("AAPL turned up +1.2% from its low $101.80: buy\nbought 48\nBot: Dips")
 
 
+def test_a_category_can_come_from_real_money_bots_only(session, smtp):
+    notify.save(session, {"enabled": True, "recipients": ["me@test.dev"], "categories": ["trades", "risk", "signals"],
+                          "live_only": ["signals", "risk"]}, T)
+    session.commit()
+    paper = make_bot(session, strategy=DIP, symbol=DIP, name="Paper dips", broker="alpaca-paper")
+    live = make_bot(session, strategy=DIP, symbol=DIP, name="Live dips", broker="alpaca-live")
+    dip.signal(session, paper, "AAPL", "down", T, "AAPL is 6.0% under its 5-day high: buy", "bought 48", 103.0, 110.0, -0.06)
+    dip.signal(session, live, "MSFT", "down", T, "MSFT is 6.0% under its 5-day high: buy", "bought 2", 400.0, 425.0, -0.06)
+    swing = make_bot(session, name="Paper swing", broker="alpaca-paper")
+    submit_order(session, swing, FakeBroker(price=100.0, now=T), "BUY", 10, "signal", T)  # trades: from every bot
+    log_event(session, paper.id, "risk", "AAPL blacklisted: stop-loss at $95.00 (stop $96.00).", "warning", T)
+    log_event(session, None, "halt", "HALT ALL: paused 3 bot(s)", "warning", T)  # no bot: still comes
+    session.commit()
+    assert [(n.category, n.bot_id) for n in _queued(session)] == [("signals", live.id), ("trades", swing.id), ("risk", None)]
+
+
 def test_what_piled_up_goes_out_in_one_email_and_a_failed_send_is_retried(session, smtp):
     _on(session, recipients=["me@test.dev", "you@test.dev"])
     bot = make_bot(session, name="AAPL swing")
@@ -204,22 +220,24 @@ def api(smtp):
 def test_the_settings_api(api, monkeypatch):
     c = api
     cfg = c.get("/email-alerts").json()
-    assert (cfg["enabled"], cfg["recipients"], cfg["categories"]) == (False, [], ["trades", "risk", "problems"])
+    assert (cfg["enabled"], cfg["recipients"], cfg["categories"], cfg["live_only"]) == (False, [], ["trades", "risk", "problems"], [])
     assert cfg["smtp_configured"] and cfg["smtp_server"] == "smtp.test:587 (starttls)" and cfg["sender"] == "bot@test.dev"
     assert [x["key"] for x in cfg["available"]] == ["trades", "risk", "problems", "signals"]
 
     assert c.put("/email-alerts", json={"enabled": True, "recipients": [], "categories": []}).status_code == 422
     r = c.put("/email-alerts", json={"enabled": True, "recipients": ["me@test.dev", "nope"], "categories": ["trades"]})
     assert r.status_code == 422 and "not an email address: nope" in r.text
+    assert c.put("/email-alerts", json={"enabled": False, "live_only": ["news"]}).status_code == 422
     r = c.put("/email-alerts", json={"enabled": True, "recipients": [" me@test.dev ", "me@test.dev"],
-                                     "categories": ["trades", "signals", "trades"]})
+                                     "categories": ["trades", "signals", "trades"], "live_only": ["signals", "signals"]})
     assert r.status_code == 200 and (r.json()["recipients"], r.json()["categories"]) == (["me@test.dev"], ["trades", "signals"])
+    assert r.json()["live_only"] == ["signals"] and c.get("/email-alerts").json()["live_only"] == ["signals"]
 
     sent = []
     monkeypatch.setattr(notify, "deliver", sent.append)
     r = c.post("/email-alerts/test")
     assert r.status_code == 200 and r.json()["status"] == "sent"
-    assert "buys and sells, dip signals" in sent[0].get_body(("plain",)).get_content()
+    assert "buys and sells, dip signals (LIVE bots only)." in sent[0].get_body(("plain",)).get_content()
 
     def refused(msg):
         raise smtplib.SMTPAuthenticationError(535, b"Username and Password not accepted")

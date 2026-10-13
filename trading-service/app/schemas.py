@@ -390,6 +390,7 @@ class EmailAlertsIn(BaseModel):
     enabled: bool = False
     recipients: list[str] = Field(default_factory=list, max_length=10)
     categories: list[NotifyCategory] = Field(default_factory=list)
+    live_only: list[NotifyCategory] = Field(default_factory=list)  # of those, wanted from real-money bots only
 
     @field_validator("recipients")
     @classmethod
@@ -400,7 +401,7 @@ class EmailAlertsIn(BaseModel):
             raise ValueError(f"not an email address: {', '.join(bad)}")
         return out
 
-    @field_validator("categories")
+    @field_validator("categories", "live_only")
     @classmethod
     def _once(cls, v: list[str]) -> list[str]:
         return list(dict.fromkeys(v))
@@ -422,6 +423,7 @@ class EmailAlertsOut(BaseModel):
     enabled: bool
     recipients: list[str]
     categories: list[str]
+    live_only: list[str]
     smtp_configured: bool  # SMTP_HOST is set: without it nothing is sent
     smtp_server: str  # "smtp.gmail.com:587 (starttls)"
     sender: str

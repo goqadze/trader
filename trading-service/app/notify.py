@@ -38,7 +38,9 @@ CATEGORIES = {
     "problems": ("Problems", "Errors, and orders that failed or need a look (at most one per bot and kind an hour)"),
     "signals": ("Dip signals", "Every dip buyer signal: buy zone, turned up, back up, held too long, news veto (chatty)"),
 }
-DEFAULTS = {"enabled": False, "recipients": [], "categories": ["trades", "risk", "problems"]}
+# live_only: the categories wanted from real-money bots only (a paper bot's stay on the dashboard; alerts without a bot
+# still come)
+DEFAULTS = {"enabled": False, "recipients": [], "categories": ["trades", "risk", "problems"], "live_only": []}
 SEND_EVERY_S = 15
 MAX_PER_EMAIL = 50
 RETRY_AFTER = (timedelta(minutes=1), timedelta(minutes=5), timedelta(minutes=30), timedelta(hours=2))  # then "failed"
@@ -60,7 +62,7 @@ LIVE_MARK = "🔴 LIVE — real money · "
 # ---------------------------------------------------------------------------
 
 def load(session: Session) -> dict:
-    """Who gets the alerts and about what: {"enabled", "recipients", "categories"}."""
+    """Who gets the alerts and about what: {"enabled", "recipients", "categories", "live_only"}."""
     row = session.get(Setting, KEY)
     return {**DEFAULTS, **(row.value if row else {})}
 
@@ -103,6 +105,8 @@ def enqueue(session: Session, category: str, kind: str, subject: str, body: str,
             return None
         cfg = load(session)
         if not cfg["enabled"] or not cfg["recipients"] or category not in cfg["categories"]:
+            return None
+        if category in cfg["live_only"] and bot_id is not None and not is_live(session.get(Bot, bot_id)):
             return None
         now = now or utcnow()
         if category == "problems" and session.scalar(
@@ -322,7 +326,8 @@ def send_test(session: Session, recipients: list[str], now: datetime,
               send: Callable[[EmailMessage], None] | None = None) -> Notification:
     """Send a test email right away (raises with the server's answer when it fails); kept in the history either way."""
     cfg = load(session)
-    wanted = ", ".join(CATEGORIES[c][0].lower() for c in cfg["categories"] if c in CATEGORIES) or "nothing yet"
+    wanted = ", ".join(CATEGORIES[c][0].lower() + (" (LIVE bots only)" if c in cfg["live_only"] else "")
+                       for c in cfg["categories"] if c in CATEGORIES) or "nothing yet"
     n = Notification(created_at=now, category="test", kind="test", subject="Test email: alerts work",
                      body=f"This address will get the trading alerts you chose: {wanted}.\n"
                           f"Sent through {settings.smtp_host}:{settings.smtp_port} as {sender()}.")
