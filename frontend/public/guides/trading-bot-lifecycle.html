@@ -484,7 +484,7 @@
           <tr><td class="nowrap"><b>Close position</b></td><td>Sells all shares at market right now (reason: manual).</td><td>Market open, holding shares, no pending order</td></tr>
           <tr><td class="nowrap"><b>Edit</b></td><td>Changes the strategy and its settings from the next decision on. An open position keeps the stop-loss / take-profit it was opened with. Symbol, broker and capital are fixed; make a new bot to change those. Every change is audited.</td><td>Not archived</td></tr>
           <tr><td class="nowrap"><b>Archive</b></td><td>Retires the bot. History stays.</td><td>Flat, no pending order</td></tr>
-          <tr><td class="nowrap"><b>Halt all</b></td><td>Kill switch: pauses every active bot at once. Positions stay protected.</td><td>Any time</td></tr>
+          <tr><td class="nowrap"><b>Halt all</b></td><td>Kill switch (More ▾ on the Trading bots page): pauses every active bot at once. Positions stay protected.</td><td>Any time</td></tr>
           <tr><td class="nowrap"><b>Trade this strategy</b></td><td>On a finished backtest: opens New bot with the same strategy and settings.</td><td>After a backtest</td></tr>
           <tr><td class="nowrap"><b>Apply</b> (suggested)</td><td>Under the Strategy picker: fills in that strategy's suggested check frequency, stop-loss, take-profit and check time. Nothing is saved until you press Save / Create.</td><td>In the bot and backtest forms</td></tr>
         </tbody>
@@ -602,7 +602,7 @@
           <div class="term"><dt>Lock</dt><dd>Makes sure only one thing works on a bot at a time. A click during a decision gets “bot is busy”.</dd></div>
           <div class="term"><dt>Write-ahead order</dt><dd>Saving an order before sending it, so a crash can't lose or duplicate it.</dd></div>
           <div class="term"><dt>Reconcile</dt><dd>Comparing the real account's shares with the bot's records. A mismatch pauses the bot.</dd></div>
-          <div class="term"><dt>Kill switch (Halt all)</dt><dd>One button that pauses every bot.</dd></div>
+          <div class="term"><dt>Kill switch (Halt all)</dt><dd>One menu option (More ▾ → Halt all bots) that pauses every bot.</dd></div>
           <div class="term"><dt>Equity snapshot</dt><dd>One chart point per bot per trading day, updated during the day.</dd></div>
           <div class="term"><dt>Audit log (events)</dt><dd>Diary of everything: created, paused, settings changed, orders, errors.</dd></div>
           <div class="term"><dt>Archive</dt><dd>Retire a bot without deleting its history.</dd></div>

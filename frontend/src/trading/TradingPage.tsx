@@ -1,6 +1,7 @@
-import { FallOutlined, PlusOutlined, RetweetOutlined, StopOutlined } from "@ant-design/icons";
+import { DownOutlined, FallOutlined, PlusOutlined, RetweetOutlined, StopOutlined } from "@ant-design/icons";
 import {
-  Alert, App as AntApp, Badge, Button, Card, Col, Grid, List, Row, Segmented, Select, Space, Statistic, Switch, Table, Tag, Tooltip, Typography,
+  Alert, App as AntApp, Badge, Button, Card, Col, Dropdown, Grid, List, Row, Segmented, Select, Space, Statistic, Switch, Table, Tag, Tooltip,
+  Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { SortOrder } from "antd/es/table/interface";
@@ -302,7 +303,16 @@ export default function TradingPage() {
         </Col>
         <Col flex="0 1 auto">
           <Space wrap>
-            <Button danger icon={<StopOutlined />} disabled={!list.some((b) => b.status === "active")} onClick={haltAll}>Halt all</Button>
+            {/* The kill switch sits in a menu, so a stray click next to New dip bot can't reach it; it still asks first */}
+            <Dropdown
+              trigger={["click"]}
+              menu={{
+                items: [{ key: "halt", danger: true, icon: <StopOutlined />, label: "Halt all bots", disabled: !list.some((b) => b.status === "active") }],
+                onClick: ({ key }) => { if (key === "halt") haltAll(); },
+              }}
+            >
+              <Button>More <DownOutlined style={{ fontSize: 10 }} /></Button>
+            </Dropdown>
             <Tooltip title="Watches a list of symbols, buys the ones that just fell and sells them once they're back (see the Dip buyer page)">
               <Button icon={<FallOutlined />} onClick={() => navigate("/dip", { state: { newDipBot: true } })}>
                 New dip bot
