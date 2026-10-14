@@ -21,7 +21,7 @@ from pydantic import ValidationError
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session, defer
 
-from . import auth, dip, notify, rotation, scheduler, studies
+from . import auth, dip, journal, notify, rotation, scheduler, studies
 from .brokers import SHARED_ACCOUNT_BROKERS, BrokerError, catalog, get_broker
 from .config import settings
 from .db import get_session, init_db, utcnow
@@ -61,6 +61,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="Trading Service", lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=4096)  # a dip study's grid is a few MB of JSON
 app.include_router(auth.router)
+app.include_router(journal.router)  # each user's own trading journal
 
 
 # ---------------------------------------------------------------------------

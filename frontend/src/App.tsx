@@ -14,6 +14,8 @@ import EmailAlertsPage from "./pages/EmailAlertsPage";
 import RotationPage from "./pages/RotationPage";
 import ScanPage from "./pages/ScanPage";
 import GuidePage from "./pages/GuidePage";
+import JournalPage from "./pages/JournalPage";
+import JournalTradePage from "./journal/TradePage";
 import BotPage from "./trading/BotPage";
 import TradingPage from "./trading/TradingPage";
 
@@ -82,10 +84,13 @@ function Header() {
     { key: "rotation", label: <Link to="/rotation">Momentum Rotation</Link> },
     { key: "dip", label: <Link to="/dip">Dip buyer</Link> },
     { key: "trading", label: <Link to="/">Live trading</Link> },
+    { key: "journal", label: <Link to="/journal">Journal</Link> },
     ...(admin ? [{ key: "users", label: <Link to="/admin/users"><UsersNavLabel /></Link> }] : []),
   ];
   const current = pathname === "/" || pathname.startsWith("/trading")
     ? "trading"
+    : pathname.startsWith("/journal")
+      ? "journal"
     : pathname.startsWith("/admin/users")
       ? "users"
       : pathname === "/compare"
@@ -165,6 +170,8 @@ export default function App() {
                 <Route path="/trading" element={<Navigate to="/" replace />} />
                 <Route path="/trading/:id" element={<BotPage />} />
                 <Route path="/alerts" element={<EmailAlertsPage />} />
+                <Route path="/journal" element={<JournalPage />} />
+                <Route path="/journal/trades/:id" element={<JournalTradePage />} />
                 <Route path="/guide" element={<GuidePage guide="lifecycle" />} />
                 <Route path="/guide/strategies" element={<GuidePage guide="strategies" />} />
                 <Route path="/guide/architecture" element={<GuidePage guide="architecture" />} />

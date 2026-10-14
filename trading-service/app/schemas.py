@@ -835,3 +835,419 @@ class UserUpdate(BaseModel):
 
     status: Literal["active", "rejected", "disabled"] | None = None
     role: Literal["admin", "user"] | None = None
+
+
+# --- The trading journal (journal.py): each user's own ---
+
+JournalStatus = Literal["planned", "open", "closed", "skipped"]  # models.JOURNAL_STATUSES
+JournalSide = Literal["long", "short"]
+JournalStage = Literal["plan", "entry", "during", "exit", "review", "checkin"]  # models.JOURNAL_STAGES
+# What a journal symbol may look like: stocks (BRK.B), crypto (BTC-USD), forex (EUR/USD), futures (MNQZ6, ES=F), indexes (^GSPC)
+JOURNAL_SYMBOL = r"^[A-Z0-9^][A-Z0-9.\-/=^]{0,23}$"
+def _rating():
+    return Field(None, ge=1, le=5)  # 1-5, or not rated
+
+
+def _labels(v: list[str], most: int, longest: int, lower: bool = False) -> list[str]:
+    """Tags, emotions, mistakes: spaces tidied, blanks dropped, each once (ignoring case; the first spelling stays)."""
+    out: list[str] = []
+    for s in v:
+        s = " ".join(s.split())
+        s = s.lower() if lower else s
+        if not s or s.lower() in {o.lower() for o in out}:
+            continue
+        if len(s) > longest:
+            raise ValueError(f"'{s[:24]}' is longer than {longest} characters")
+        out.append(s)
+    if len(out) > most:
+        raise ValueError(f"at most {most}")
+    return out
+
+
+def _aware(v: datetime | None) -> datetime | None:
+    if v is not None and v.tzinfo is None:
+        raise ValueError("give the time with its time zone (e.g. 2026-10-14T15:30:00Z)")
+    return v
+
+
+class JournalNoteIn(BaseModel):
+    """How you felt and what you thought at one stage of a trade (or a check-in). Emotions are the dashboard's keys
+    ("fomo", "calm") or your own words, kept lowercase."""
+
+    stage: JournalStage
+    at: datetime | None = None  # when it happened; now if not given
+    emotions: list[str] = Field(default_factory=list)
+    intensity: int | None = _rating()
+    text: str = Field("", max_length=5000)
+    trade_id: int | None = None  # POST /journal/notes only: the trade it's about (none: a check-in for the day)
+
+    @field_validator("emotions")
+    @classmethod
+    def _emotions(cls, v):
+        return _labels(v, 12, 32, lower=True)
+
+    @field_validator("text")
+    @classmethod
+    def _text(cls, v):
+        return v.strip()
+
+    @field_validator("at")
+    @classmethod
+    def _at(cls, v):
+        return _aware(v)
+
+    @model_validator(mode="after")
+    def _says_something(self):
+        if not self.emotions and not self.text:
+            raise ValueError("a note needs an emotion or some words")
+        return self
+
+
+class JournalNoteUpdate(BaseModel):
+    """Only the fields sent change."""
+
+    stage: JournalStage | None = None
+    at: datetime | None = None
+    emotions: list[str] | None = None
+    intensity: int | None = _rating()
+    text: str | None = Field(None, max_length=5000)
+
+    @field_validator("emotions")
+    @classmethod
+    def _emotions(cls, v):
+        return None if v is None else _labels(v, 12, 32, lower=True)
+
+    @field_validator("at")
+    @classmethod
+    def _at(cls, v):
+        return _aware(v)
+
+
+class JournalNoteOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    trade_id: int | None
+    symbol: str | None = None  # the trade's symbol (None: a check-in)
+    at: datetime
+    stage: str
+    emotions: list[str]
+    intensity: int | None
+    text: str
+    created_at: datetime
+
+
+class JournalTradeIn(BaseModel):
+    """A journal trade as a whole, checked against its status: an open trade needs its entry (price, size, time), a
+    closed one its exit too. Fields that don't fit the status are cleared when it's saved (journal.apply): a planned
+    trade has no times or exit, an open one no exit."""
+
+    status: JournalStatus = "planned"
+    symbol: str = Field(..., min_length=1, max_length=24)
+    side: JournalSide = "long"
+    account: str = Field("", max_length=60)
+    setup: str = Field("", max_length=60)
+    tags: list[str] = Field(default_factory=list)
+    quantity: float | None = Field(None, gt=0, le=1e9)
+    entry_price: float | None = Field(None, gt=0, le=1e9)
+    stop_price: float | None = Field(None, gt=0, le=1e9)
+    target_price: float | None = Field(None, gt=0, le=1e9)
+    confidence: int | None = _rating()
+    thesis: str = Field("", max_length=10_000)
+    opened_at: datetime | None = None
+    closed_at: datetime | None = None
+    exit_price: float | None = Field(None, gt=0, le=1e9)
+    fees: float = Field(0.0, ge=0, le=1e7)
+    exit_reason: str = Field("", max_length=2000)
+    followed_plan: bool | None = None
+    grade: int | None = _rating()
+    mistakes: list[str] = Field(default_factory=list)
+    review: str = Field("", max_length=10_000)
+    lessons: str = Field("", max_length=10_000)
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def _symbol(cls, v):
+        v = v.strip().upper() if isinstance(v, str) else v
+        if isinstance(v, str) and not re.match(JOURNAL_SYMBOL, v):
+            raise ValueError("not a symbol (letters, digits and . - / = ^, like AAPL, BRK.B, BTC-USD, EUR/USD)")
+        return v
+
+    @field_validator("account", "setup", "thesis", "exit_reason", "review", "lessons")
+    @classmethod
+    def _strip(cls, v):
+        return v.strip()
+
+    @field_validator("tags")
+    @classmethod
+    def _tags(cls, v):
+        return _labels(v, 20, 32)
+
+    @field_validator("mistakes")
+    @classmethod
+    def _mistakes(cls, v):
+        return _labels(v, 20, 60)
+
+    @field_validator("opened_at", "closed_at")
+    @classmethod
+    def _times(cls, v):
+        return _aware(v)
+
+    @model_validator(mode="after")
+    def _fits_status(self):
+        need = {"open": ("entry_price", "quantity", "opened_at"),
+                "closed": ("entry_price", "quantity", "opened_at", "exit_price", "closed_at")}.get(self.status, ())
+        missing = [f.replace("_", " ") for f in need if getattr(self, f) is None]
+        if missing:
+            raise ValueError(f"an {self.status} trade needs its {', '.join(missing)}" if self.status == "open"
+                             else f"a {self.status} trade needs its {', '.join(missing)}")
+        if self.status == "closed" and self.closed_at < self.opened_at:
+            raise ValueError("the exit can't be before the entry")
+        long = self.side == "long"
+        if self.entry_price and self.stop_price and (self.stop_price >= self.entry_price if long else self.stop_price <= self.entry_price):
+            raise ValueError(f"a {self.side} trade's stop is {'below' if long else 'above'} its entry")
+        if self.entry_price and self.target_price and (self.target_price <= self.entry_price if long else self.target_price >= self.entry_price):
+            raise ValueError(f"a {self.side} trade's target is {'above' if long else 'below'} its entry")
+        return self
+
+
+class JournalTradeCreate(JournalTradeIn):
+    note: JournalNoteIn | None = None  # how you feel about it right now, saved with it
+
+
+class JournalTradeUpdate(BaseModel):
+    """Only the fields sent change; the trade as a whole is then checked again (JournalTradeIn). With a note: how you
+    feel at this step (entering, exiting, reviewing), saved in the same go."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: JournalStatus | None = None
+    symbol: str | None = None
+    side: JournalSide | None = None
+    account: str | None = None
+    setup: str | None = None
+    tags: list[str] | None = None
+    quantity: float | None = None
+    entry_price: float | None = None
+    stop_price: float | None = None
+    target_price: float | None = None
+    confidence: int | None = None
+    thesis: str | None = None
+    opened_at: datetime | None = None
+    closed_at: datetime | None = None
+    exit_price: float | None = None
+    fees: float | None = None
+    exit_reason: str | None = None
+    followed_plan: bool | None = None
+    grade: int | None = None
+    mistakes: list[str] | None = None
+    review: str | None = None
+    lessons: str | None = None
+    note: JournalNoteIn | None = None
+
+
+class JournalImageOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    trade_id: int
+    created_at: datetime
+    content_type: str
+    size: int
+    caption: str
+
+
+class JournalTradeOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    status: str
+    symbol: str
+    side: str
+    account: str
+    bot_id: int | None
+    setup: str
+    tags: list[str]
+    quantity: float | None
+    entry_price: float | None
+    stop_price: float | None
+    target_price: float | None
+    confidence: int | None
+    thesis: str
+    opened_at: datetime | None
+    closed_at: datetime | None
+    exit_price: float | None
+    fees: float
+    exit_reason: str
+    pnl: float | None
+    r_multiple: float | None
+    followed_plan: bool | None
+    grade: int | None
+    mistakes: list[str]
+    review: str
+    lessons: str
+    source: str
+    created_at: datetime
+    updated_at: datetime
+    # Worked out (journal.trade_out)
+    day: date  # its trading day (New York date): of the exit, else the entry, else when it was written down
+    risk: float | None = None  # $ lost at the first stop (one R)
+    reward_risk: float | None = None  # the plan's target vs its stop: 2.0 = aims for twice what it risks
+    return_pct: float | None = None  # pnl vs the money put in
+    hold_minutes: int | None = None
+    emotions: list[str] = []  # every emotion in its notes, first felt first
+    notes: int = 0
+    images: int = 0
+
+
+class JournalTradeDetailOut(JournalTradeOut):
+    note_list: list[JournalNoteOut]
+    image_list: list[JournalImageOut]
+    bot_name: str | None = None
+
+
+class JournalTradePageOut(BaseModel):
+    total: int
+    items: list[JournalTradeOut]
+
+
+class JournalDayIn(BaseModel):
+    mood: int | None = _rating()
+    energy: int | None = _rating()
+    sleep: int | None = _rating()
+    plan: str = Field("", max_length=10_000)
+    review: str = Field("", max_length=10_000)
+    lessons: str = Field("", max_length=10_000)
+    grade: int | None = _rating()
+    followed_rules: bool | None = None
+
+    @field_validator("plan", "review", "lessons")
+    @classmethod
+    def _strip(cls, v):
+        return v.strip()
+
+
+class JournalDayOut(JournalDayIn):
+    day: date
+    updated_at: datetime | None = None  # None: nothing written for this day yet
+    notes: list[JournalNoteOut] = []  # that day's check-ins and trade notes, oldest first
+    trades: list[JournalTradeOut] = []  # entered, exited or planned that day
+    pnl: float = 0.0  # of the trades closed that day
+
+
+class JournalCalendarDayOut(BaseModel):
+    day: date
+    pnl: float  # of the trades closed that day
+    closed: int
+    wins: int
+    losses: int
+    opened: int  # trades entered that day
+    notes: int
+    mood: int | None
+    grade: int | None
+    page: bool  # a plan or a review was written for it
+
+
+class JournalGroupOut(BaseModel):
+    """The closed trades sharing one value (a setup, an emotion, a weekday ...) and how they did."""
+
+    key: str
+    trades: int
+    wins: int
+    losses: int
+    win_rate: float  # % of the trades
+    pnl: float
+    avg_pnl: float
+    avg_r: float | None  # of those with a stop
+
+
+class JournalExtremeOut(BaseModel):
+    id: int
+    symbol: str
+    pnl: float
+    day: date
+
+
+class JournalDailyOut(BaseModel):
+    day: date
+    pnl: float
+    trades: int
+    cumulative: float
+
+
+class JournalStatsOut(BaseModel):
+    """Statistics of the closed trades matching the filters (except the counts of open, planned and skipped ones)."""
+
+    trades: int
+    open: int
+    planned: int
+    skipped: int
+    wins: int
+    losses: int
+    breakeven: int  # within half a cent
+    win_rate: float | None
+    net_pnl: float
+    gross_profit: float
+    gross_loss: float  # negative
+    fees: float
+    profit_factor: float | None  # gross profit / gross loss; None without a loss
+    avg_win: float | None
+    avg_loss: float | None
+    payoff_ratio: float | None  # average win / average loss
+    expectancy: float | None  # average P&L per trade
+    avg_r: float | None
+    total_r: float | None
+    r_trades: int  # the trades with a stop (an R)
+    best: JournalExtremeOut | None
+    worst: JournalExtremeOut | None
+    max_win_streak: int
+    max_loss_streak: int
+    current_streak: int  # +3: the last three were wins, -2: the last two losses
+    max_drawdown: float  # the deepest fall of the running P&L from its high, in $ (negative or 0)
+    avg_hold_minutes_win: int | None
+    avg_hold_minutes_loss: int | None
+    daily: list[JournalDailyOut]
+    by_setup: list[JournalGroupOut]
+    by_tag: list[JournalGroupOut]
+    by_mistake: list[JournalGroupOut]
+    by_emotion: list[JournalGroupOut]  # felt while planning or entering
+    by_symbol: list[JournalGroupOut]
+    by_side: list[JournalGroupOut]
+    by_weekday: list[JournalGroupOut]  # of the entry, New York
+    by_hour: list[JournalGroupOut]  # of the entry, New York
+    by_grade: list[JournalGroupOut]
+    by_confidence: list[JournalGroupOut]
+    by_plan: list[JournalGroupOut]  # followed the plan: yes / no
+    by_account: list[JournalGroupOut]
+    emotions: list[dict]  # [{"emotion", "count"}] in every note of the period (check-ins too), most felt first
+
+
+class JournalOptionsOut(BaseModel):
+    """What this user wrote before, most used first: for the form's suggestions."""
+
+    symbols: list[str]
+    accounts: list[str]
+    setups: list[str]
+    tags: list[str]
+    mistakes: list[str]
+    emotions: list[str]
+
+
+class JournalImportBotOut(BaseModel):
+    id: int
+    name: str
+    strategy: str
+    broker: str
+    live: bool
+    status: str
+    closed_trades: int  # its sells that closed (part of) a position
+    imported: int  # how many of them are in your journal already
+
+
+class JournalImportIn(BaseModel):
+    bot_ids: list[int] = Field(..., min_length=1, max_length=500)
+
+
+class JournalImportOut(BaseModel):
+    imported: int
+    already: int  # in the journal from an earlier import

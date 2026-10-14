@@ -16,6 +16,10 @@
     EquitySnapshot one row per bot per trading day, for the equity chart
     Event          audit log: created, paused, parameters changed, stop-loss hit, errors, ...
     User           who may sign in to the dashboard (see auth.py)
+    JournalTrade   a trade in someone's trading journal: the plan, the execution, the review (see journal.py)
+    JournalNote    a journal note: how they felt and what they thought at one stage of a trade, or a check-in
+    JournalDay     a trading day's journal page: the plan before the open, the review after the close
+    JournalImage   a screenshot attached to a journal trade (a chart at the entry, at the exit ...)
 
 Money is stored as float and rounded to cents at each step, same as the backtest engine. That keeps the
 two in agreement; switch to Decimal (Numeric columns) if you ever do real accounting on top of this.
@@ -23,7 +27,8 @@ two in agreement; switch to Decimal (Numeric columns) if you ever do real accoun
 
 from datetime import date, datetime, timezone
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, TypeDecorator, UniqueConstraint
+from sqlalchemy import (JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text, TypeDecorator,
+                        UniqueConstraint)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base, utcnow
@@ -463,3 +468,116 @@ class User(Base):
     approved_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
     approved_by: Mapped[str | None] = mapped_column(String(32), nullable=True)  # the admin's username
     last_login_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+
+
+# --- The trading journal: each user's own (nobody else sees it), separate from what the bots do (see journal.py) ---
+
+# A journal trade's life:
+#   planned -> open (entered) -> closed (exited)
+#   planned -> skipped (decided not to take it: kept, because the trades you pass on teach something too)
+JOURNAL_STATUSES = ("planned", "open", "closed", "skipped")
+JOURNAL_SIDES = ("long", "short")
+# When a note was written: planning the trade, entering it, while it runs, exiting it, reviewing it afterwards, or a
+# check-in (how you feel right now) that belongs to the day rather than to one trade
+JOURNAL_STAGES = ("plan", "entry", "during", "exit", "review", "checkin")
+
+
+class JournalTrade(Base):
+    """One trade in a user's journal: what they planned (thesis, entry, stop, target), what happened (fills, times), and
+    their review of it. Prices are averages when the position was built or sold in parts. pnl and r_multiple are worked
+    out from the prices on every save (journal.apply), kept so the list can sort and filter by them."""
+
+    __tablename__ = "journal_trades"
+    __table_args__ = (UniqueConstraint("user_id", "source_key"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(8), default="planned")
+    symbol: Mapped[str] = mapped_column(String(24))
+    side: Mapped[str] = mapped_column(String(5), default="long")
+    account: Mapped[str] = mapped_column(String(60), default="")  # where it was traded: "Alpaca live", a bank's app ...
+    bot_id: Mapped[int | None] = mapped_column(Integer, nullable=True)  # the bot that made it (imported), if any
+    setup: Mapped[str] = mapped_column(String(60), default="")  # the pattern or strategy: "Dip buy", "Breakout" ...
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    # --- The plan ---
+    quantity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # planned, then the (average) fill
+    stop_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # the first stop: what one R of risk is
+    target_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    confidence: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1-5 before entering
+    thesis: Mapped[str] = mapped_column(Text, default="")  # why this trade, and what would prove it wrong
+    # --- What happened ---
+    opened_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fees: Mapped[float] = mapped_column(Float, default=0.0)
+    exit_reason: Mapped[str] = mapped_column(Text, default="")
+    pnl: Mapped[float | None] = mapped_column(Float, nullable=True)  # closed only: after fees
+    r_multiple: Mapped[float | None] = mapped_column(Float, nullable=True)  # pnl in units of the first stop's risk
+    # --- The review ---
+    followed_plan: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    grade: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1-5: how well it was traded, whatever the P&L
+    mistakes: Mapped[list] = mapped_column(JSON, default=list)
+    review: Mapped[str] = mapped_column(Text, default="")  # what went well, what to do differently
+    lessons: Mapped[str] = mapped_column(Text, default="")
+    # --- Where it came from ---
+    source: Mapped[str] = mapped_column(String(8), default="manual")  # manual | bot (imported from a bot's orders)
+    source_key: Mapped[str | None] = mapped_column(String(40), nullable=True)  # "order:<id>": never imported twice
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
+
+
+class JournalNote(Base):
+    """What a user felt and thought at one moment: at a stage of a trade, or a check-in with no trade (it belongs to
+    the day). The journal's emotion statistics are counted from these."""
+
+    __tablename__ = "journal_notes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    trade_id: Mapped[int | None] = mapped_column(ForeignKey("journal_trades.id", ondelete="CASCADE"), nullable=True, index=True)
+    at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, index=True)  # when it happened
+    stage: Mapped[str] = mapped_column(String(8))  # JOURNAL_STAGES
+    emotions: Mapped[list] = mapped_column(JSON, default=list)  # ["calm", "fomo"]
+    intensity: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1 (barely) - 5 (overwhelming)
+    text: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class JournalDay(Base):
+    """A trading day's page (a New York date, like the market's): the plan before the open and the review after the
+    close, with how the trader was doing that day."""
+
+    __tablename__ = "journal_days"
+    __table_args__ = (UniqueConstraint("user_id", "day"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    day: Mapped[date] = mapped_column(Date)
+    # Before the open, each 1 (bad) - 5 (great)
+    mood: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    energy: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sleep: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    plan: Mapped[str] = mapped_column(Text, default="")  # the market, what to watch, the day's rules and goals
+    # After the close
+    review: Mapped[str] = mapped_column(Text, default="")
+    lessons: Mapped[str] = mapped_column(Text, default="")
+    grade: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 1-5: how well they traded, not the P&L
+    followed_rules: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, onupdate=utcnow)
+
+
+class JournalImage(Base):
+    """A screenshot on a journal trade, kept in the database (so the backups carry it). Only PNG, JPEG, WebP and GIF
+    are taken (journal.image_type checks the file's first bytes); the dashboard shrinks big ones before uploading."""
+
+    __tablename__ = "journal_images"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    trade_id: Mapped[int] = mapped_column(ForeignKey("journal_trades.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    content_type: Mapped[str] = mapped_column(String(16))
+    size: Mapped[int] = mapped_column(Integer)
+    caption: Mapped[str] = mapped_column(String(200), default="")
+    data: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)  # only read when the image itself is asked for
