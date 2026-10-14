@@ -253,11 +253,39 @@ Then schedule it with `crontab -e` and add this line:
 22:30 is in the server's time zone. Servers normally run on UTC (check with `timedatectl`), and 22:30
 UTC is after the US close all year. The script keeps 7 days of `backups/trading-*.sql.gz`.
 
-A backup on the same server is lost with the server, so also copy them off now and then, from your laptop:
+A backup on the same server is lost with the server, so your laptop keeps copies too.
+`scripts/pull-server-backups.sh` copies the server's newest backup into `backups/server/` and deletes copies there
+older than 7 days. It deletes only after a good download, and never the newest copy. If it fails, it writes the
+failure to `backups/server/pull.log` and shows a macOS notification. Try it once:
 
 ```bash
-rsync -av trader@SERVER_IP:trading/backups/ ~/trading-backups/
+BACKUP_SERVER=trader@SERVER_IP ./scripts/pull-server-backups.sh
 ```
+
+On a Mac, launchd runs it every morning at 09:00 (if the Mac is asleep then, it runs on wake). Save this as
+`~/Library/LaunchAgents/com.trading.pull-server-backups.plist`, with your server and paths:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.trading.pull-server-backups</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/bash</string><string>/Users/YOU/ClaudeProjects/Trading/scripts/pull-server-backups.sh</string></array>
+  <key>EnvironmentVariables</key>
+  <dict><key>BACKUP_SERVER</key><string>trader@SERVER_IP</string></dict>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
+  <key>StandardOutPath</key><string>/Users/YOU/ClaudeProjects/Trading/backups/server/pull.log</string>
+  <key>StandardErrorPath</key><string>/Users/YOU/ClaudeProjects/Trading/backups/server/pull.log</string>
+</dict>
+</plist>
+```
+
+Then `mkdir -p backups/server` and `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.trading.pull-server-backups.plist`.
+To run it now: `launchctl kickstart gui/$(id -u)/com.trading.pull-server-backups`. To stop it:
+`launchctl bootout gui/$(id -u)/com.trading.pull-server-backups`. The ssh key must work without a passphrase prompt.
 
 Your provider's snapshot backups (a few $/month) cover the whole server as well.
 
