@@ -1,8 +1,8 @@
 # --- Stage 1: build the React app with Vite ---
 FROM node:20-alpine AS build
 WORKDIR /app
-COPY package.json ./
-RUN npm install
+COPY package.json package-lock.json ./
+RUN npm ci                 # exactly the versions in package-lock.json
 COPY . .
 RUN npm run build          # outputs static files to /app/dist
 

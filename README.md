@@ -392,6 +392,10 @@ A server runs `docker-compose.server.yml`: built images, capped logs, and only t
 
 Tests for all three backends: `make test`.
 
+Library versions are locked, so the Mac and the server build the same thing: each Python service installs exactly
+the versions in its `requirements.lock`, the frontend exactly those in `package-lock.json` (`npm ci`). After changing a
+`requirements.txt` (or to take updates), run `make lock`, rebuild, and run `make test`.
+
 ### Frontend dev (hot reload)
 
 ```bash
