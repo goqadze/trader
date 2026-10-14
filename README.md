@@ -328,7 +328,7 @@ Safety built in:
 | Browse tables and data | pgAdmin at http://localhost:5050 (Resources → Databases): Servers → trading-db → trading → Schemas → public → Tables, then right-click a table → View/Edit Data. Sign in as `admin@local.dev` with `PGADMIN_PASSWORD` from the project's `.env` (copy `.env.example`); the databases then open without a password |
 | Connect with any SQL client | `localhost:5433`, database `trading`, user/password `trading` (localhost only) |
 | Quick look from the terminal | `docker compose exec trading-db psql -U trading trading` |
-| Back up | `make backup-trading-db` → `backups/trading-<timestamp>.sql.gz` (git-ignored; keeps 30 days) |
+| Back up | `make backup-trading-db` → `backups/trading-<timestamp>.sql.gz` (git-ignored; keeps 7 days) |
 | Restore | `gunzip -c backups/<file>.sql.gz \| docker compose exec -T trading-db psql -U trading trading` |
 | Daily on a server | a cron line runs `scripts/backup-trading-db.sh` (see [DEPLOY.md](DEPLOY.md#9-daily-backups)) |
 

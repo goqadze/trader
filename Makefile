@@ -35,7 +35,7 @@ test-watchdog:
 		sh -c "pip install -q -r requirements-dev.txt && pytest"
 
 # Snapshot the trading history (bots, decisions, orders, equity, audit log) to backups/*.sql.gz,
-# keeping the last 30 days. Restore: gunzip -c backups/<file>.sql.gz | docker compose exec -T trading-db psql -U trading trading
+# keeping the last 7 days. Restore: gunzip -c backups/<file>.sql.gz | docker compose exec -T trading-db psql -U trading trading
 backup-trading-db:
 	./scripts/backup-trading-db.sh
 

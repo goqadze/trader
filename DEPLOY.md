@@ -251,7 +251,7 @@ Then schedule it with `crontab -e` and add this line:
 ```
 
 22:30 is in the server's time zone. Servers normally run on UTC (check with `timedatectl`), and 22:30
-UTC is after the US close all year. The script keeps 30 days of `backups/trading-*.sql.gz`.
+UTC is after the US close all year. The script keeps 7 days of `backups/trading-*.sql.gz`.
 
 A backup on the same server is lost with the server, so also copy them off now and then, from your laptop:
 

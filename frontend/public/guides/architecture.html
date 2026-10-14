@@ -595,7 +595,7 @@ out.label  # a typed object, not free text</code></pre>
         <code>trading-service/.env</code> (Alpaca broker keys, <code>JWT_SECRET</code>). Read only when a container is
         <i>created</i>: recreate it after changing keys.</dd>
       <dt>Databases</dt><dd>trading-db holds real history: <b>never TRUNCATE it</b>. <code>make backup-trading-db</code>
-        snapshots it (last 30 days kept). New columns are added at startup by <code>db._add_missing_columns()</code>.</dd>
+        snapshots it (last 7 days kept). New columns are added at startup by <code>db._add_missing_columns()</code>.</dd>
       <dt>Reproducible</dt><dd>Same settings → same result: saved news judgments, temperature 0, the 15:30 replay. Change
         how news is judged → bump <code>NEWS_JUDGMENT_VERSION</code>.</dd>
       <dt>Time</dt><dd>Market logic runs in New York time (<code>zoneinfo</code>, tzdata pinned); this laptop is UTC+4.

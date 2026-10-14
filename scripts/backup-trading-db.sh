@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # Snapshot the trading history (bots, decisions, orders, equity, audit log) into backups/ and delete
-# snapshots older than KEEP_DAYS (default 30). Safe to run while bots are trading: pg_dump reads a
+# snapshots older than KEEP_DAYS (default 7). Safe to run while bots are trading: pg_dump reads a
 # consistent snapshot without blocking writes.
 #
 #   ./scripts/backup-trading-db.sh              # or: make backup-trading-db
-#   KEEP_DAYS=90 ./scripts/backup-trading-db.sh
+#   KEEP_DAYS=30 ./scripts/backup-trading-db.sh
 #
 # On a server, cron runs it daily (see DEPLOY.md). Restore a snapshot with:
 #   gunzip -c backups/<file>.sql.gz | docker compose exec -T trading-db psql -U trading trading
 set -euo pipefail  # stop on any error, including a failed pg_dump inside the pipe
 
 cd "$(dirname "$0")/.."  # the project root, wherever this is called from (cron starts in $HOME)
-KEEP_DAYS="${KEEP_DAYS:-30}"
+KEEP_DAYS="${KEEP_DAYS:-7}"
 mkdir -p backups
 file="backups/trading-$(date +%Y%m%d-%H%M%S).sql.gz"
 
