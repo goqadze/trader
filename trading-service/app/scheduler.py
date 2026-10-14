@@ -23,15 +23,16 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, union
 
-from .brokers import BrokerError, get_broker
+from .brokers import SHARED_ACCOUNT_BROKERS, BrokerError, get_broker
+from .brokers.alpaca import shared_round
 from .config import settings
 from .db import SessionLocal, utcnow
 from .decision_client import get_signal
 from .market import NY, is_open, ny_date, session_bounds, sessions_since, slot_window
 from . import dip, rotation, splits
-from .models import DIP, ROTATION, Bot
+from .models import DIP, HOLDINGS_STRATEGIES, ROTATION, Bot, Holding, WatchItem
 from .trader import bot_lock, evaluate, log_event, protect, reconcile, sync_pending, watch
 
 logger = logging.getLogger("trading-service")
@@ -217,11 +218,22 @@ def _log_error_throttled(session, bot_id: int, e: Exception, now: datetime) -> N
         logger.exception("could not write error event")
 
 
+def round_symbols(session) -> list[str]:
+    """Every symbol the bots on Alpaca may ask a price of in a pass: what they hold, what the dip bots watch, and the
+    single-symbol bots' symbols. The pass reads them all in one go (brokers.alpaca.shared_round)."""
+    on_alpaca = (Bot.status != "archived", Bot.broker.in_(SHARED_ACCOUNT_BROKERS))
+    return sorted(set(session.scalars(union(
+        select(Holding.symbol).join(Bot, Bot.id == Holding.bot_id).where(*on_alpaca),
+        select(WatchItem.symbol).join(Bot, Bot.id == WatchItem.bot_id).where(*on_alpaca),
+        select(Bot.symbol).where(*on_alpaca, Bot.strategy.not_in(HOLDINGS_STRATEGIES))))))
+
+
 def tick(now: datetime, signal_fn=get_signal, broker_factory=get_broker) -> None:
     """One pass over every non-archived bot, a few in parallel (LLM decisions can take seconds each), the real-money
     ones first: many paper bots waiting for their price downloads (one at a time, yahoo_cache) never delay them.
     Stock splits first, one bot after another: dip bots sharing a symbol must all have them before any compares with
-    the account."""
+    the account. The pass reads Alpaca's prices and each account's positions once for all the bots (shared_round): one
+    request per bot and symbol would go over Alpaca's 200 a minute with ~100 bots."""
     try:
         splits.apply_all(now)
     except Exception:
@@ -229,7 +241,8 @@ def tick(now: datetime, signal_fn=get_signal, broker_factory=get_broker) -> None
     with SessionLocal() as session:
         ids = list(session.scalars(select(Bot.id).where(Bot.status != "archived")
                                    .order_by((Bot.broker == "alpaca-live").desc(), Bot.id)))
-    with ThreadPoolExecutor(max_workers=4) as pool:
+        symbols = round_symbols(session)
+    with shared_round(symbols), ThreadPoolExecutor(max_workers=4) as pool:
         list(pool.map(lambda i: process_bot(i, now, signal_fn, broker_factory), ids))
     state["last_tick"] = now
 

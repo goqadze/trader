@@ -382,7 +382,7 @@ def reconcile(session: Session, bot: Bot, broker: Broker, now: datetime) -> bool
     held = {h.symbol: h.shares for h in holdings(session, bot)}
     planned = [s for s, _ in (bot.rotation_plan or {}).get("targets", [])]
     for s in dict.fromkeys([*held, *planned]):
-        qty = broker.position_qty(s)
+        qty = broker.position_qty(s, cached=True)  # the scheduler pass's one read of the account
         if qty is None:
             return True  # the simulator: nothing to compare with
         view = others_hold(session, bot, s)
@@ -390,6 +390,8 @@ def reconcile(session: Session, bot: Bot, broker: Broker, now: datetime) -> bool
             continue  # another bot's order for it is working: compare next time
         theirs, per = view
         mine = held.get(s, 0)
+        if not same_qty(qty, mine + theirs):
+            qty = broker.position_qty(s)  # that read may be from earlier in the pass: the account itself, before pausing
         if not same_qty(qty, mine + theirs):
             if bot.status == "active":
                 bot.status = "paused"

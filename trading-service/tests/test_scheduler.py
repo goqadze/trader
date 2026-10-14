@@ -220,3 +220,26 @@ def test_next_decision_at_follows_the_bots_slots_and_rebalance_days(session):
 
     paused = make_bot(session, status="paused")
     assert scheduler.next_decision_at(paused, at(12, 0)) is None
+
+
+def test_a_pass_reads_alpaca_once_for_every_symbol_its_bots_may_price(session, monkeypatch):
+    from app.brokers import alpaca
+    from app.models import Holding, WatchItem
+
+    live = make_bot(session, broker="alpaca-live", symbol="DIP", strategy="dip_buyer")
+    paper = make_bot(session, broker="alpaca-paper", symbol="DIP", strategy="dip_buyer")
+    make_bot(session, broker="alpaca-paper", symbol="MSFT")  # a single-symbol bot: its one symbol
+    sim = make_bot(session, broker="paper", symbol="DIP", strategy="dip_buyer")  # the simulator prices through Yahoo
+    gone = make_bot(session, broker="alpaca-paper", symbol="DIP", strategy="dip_buyer", status="archived")
+    for bot, symbol in ((live, "GLD"), (live, "URA"), (paper, "URA"), (paper, "BE"), (sim, "TSLA"), (gone, "META")):
+        session.add(WatchItem(bot_id=bot.id, symbol=symbol, status="watching"))
+    session.add(Holding(bot_id=paper.id, symbol="NVT", shares=1.0, cost_basis=150.0))  # off the list, still held
+    session.add(Holding(bot_id=sim.id, symbol="AMD", shares=1.0, cost_basis=150.0))
+    session.commit()
+    assert scheduler.round_symbols(session) == ["BE", "GLD", "MSFT", "NVT", "URA"]
+
+    seen = []
+    monkeypatch.setattr(scheduler, "process_bot", lambda bot_id, *a: seen.append(alpaca._round.symbols))
+    scheduler.tick(at(15, 0))
+    assert seen and all(s == ["BE", "GLD", "MSFT", "NVT", "URA"] for s in seen)
+    assert alpaca._round is None  # over with the pass

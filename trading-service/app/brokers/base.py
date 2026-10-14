@@ -59,8 +59,10 @@ class Broker(ABC):
         (simulator): the bot's own cash is the limit."""
         return None
 
-    def position_qty(self, symbol: str) -> float | None:
-        """Shares the real account holds. None = nothing to reconcile against (simulator)."""
+    def position_qty(self, symbol: str, cached: bool = False) -> float | None:
+        """Shares the real account holds. None = nothing to reconcile against (simulator). cached=True: may come from a
+        scheduler pass's one read of the whole account (Alpaca's shared_round), so a caller that would act on a
+        difference asks again without it first."""
         return None
 
     def fractionable(self, symbol: str) -> bool:

@@ -365,3 +365,15 @@ def test_a_rotation_bot_changes_only_its_name_costs_and_breaker(api):
     r = c.patch(f"/bots/{single['id']}", json={"fractional": True})
     assert r.status_code == 422 and "whole shares only" in r.text
     assert c.get(f"/bots/{bot['id']}/decisions").json() == []
+
+
+def test_an_account_read_from_earlier_in_the_pass_is_asked_again_before_pausing(session):
+    bot = make_rotation(session, cash=5_000.0)
+    _hold(session, bot, "A", 50, 5_000.0)
+    broker = FakeBroker(now=T1, prices=PRICES)
+    broker.held_by = {"A": 50}
+    broker.round_held = {"A": 40}  # the pass read the account before a fill was booked
+    assert reconcile(session, bot, broker, T1) is True and bot.status == "active"
+    assert broker.position_asks == [("A", True), ("A", False)]
+    broker.round_held, broker.position_asks = {"A": 50}, []
+    assert reconcile(session, bot, broker, T1) is True and broker.position_asks == [("A", True)]  # agrees: one read

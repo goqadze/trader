@@ -292,3 +292,13 @@ def test_added_money_does_not_hide_a_loss_from_the_drawdown_breaker(session):
     watch(session, bot, FakeBroker(price=69.0, now=T), T)  # 10000 + 50*69 = 13450: over 10% under 15000
     assert bot.status == "paused"
 
+
+
+def test_an_account_read_from_earlier_in_the_pass_is_asked_again_before_pausing(session):
+    bot = _long(session)
+    broker = FakeBroker(now=T)
+    broker.held, broker.round_held = 50, {"AAPL": 40}  # the pass read the account before a fill was booked
+    assert reconcile(session, bot, broker, T) is True and bot.status == "active"
+    assert broker.position_asks == [("AAPL", True), ("AAPL", False)]
+    broker.held, broker.position_asks = 40, []  # really 40: paused
+    assert reconcile(session, bot, broker, T) is False and bot.status == "paused"

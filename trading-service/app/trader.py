@@ -548,11 +548,12 @@ def reconcile(session: Session, bot: Bot, broker: Broker, now: datetime) -> bool
     symbol by hand (or a fill was missed), pause instead of trading on a wrong picture of reality."""
     if open_orders(session, bot):
         return True  # position is in flux; compare once the order finishes
-    qty = broker.position_qty(bot.symbol)
-    if qty is not None and not same_qty(qty, bot.shares) and resting_stop(session, bot) is not None:
-        # The broker-held stop may have filled a moment ago: book that sale first, then compare again
-        sync_pending(session, bot, broker, now)
-        qty = broker.position_qty(bot.symbol)
+    qty = broker.position_qty(bot.symbol, cached=True)  # the scheduler pass's one read of the account
+    if qty is not None and not same_qty(qty, bot.shares):
+        if resting_stop(session, bot) is not None:
+            # The broker-held stop may have filled a moment ago: book that sale first, then compare again
+            sync_pending(session, bot, broker, now)
+        qty = broker.position_qty(bot.symbol)  # the account itself: the pass's read may be from before
     if qty is None or same_qty(qty, bot.shares):
         return True
     if bot.status == "active":

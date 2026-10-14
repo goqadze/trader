@@ -818,6 +818,38 @@ def test_the_account_check_adds_up_every_bots_records(session):
     assert rotation.reconcile(session, one, broker, T15)  # bot #2's sale is still working: compared next time
 
 
+def test_a_pass_of_thirty_bots_on_one_account_asks_alpaca_twice_not_per_bot_and_symbol(session, monkeypatch):
+    import httpx
+
+    from app.brokers.alpaca import AlpacaBroker
+
+    bots = [make_dip(session, symbols=("A", "B", "C"), broker="alpaca-paper", last_decision_at=T) for _ in range(30)]
+    for bot in bots:  # each holds a share of all three; its check at 11:00 is done, the account check and prices are due
+        for s, p in QUOTES.items():
+            session.add(Holding(bot_id=bot.id, symbol=s, shares=1.0, cost_basis=p, entry_price=p, opened_at=T,
+                                stop_price=p / 2, target_price=p * 2))
+    session.commit()
+    monkeypatch.setattr(rotation, "yahoo_closes", lambda symbols, start: pd.DataFrame(
+        {s: [QUOTES[s]] for s in symbols}, index=pd.DatetimeIndex(["2025-06-02"])))
+    seen = []
+
+    def alpaca(req):
+        seen.append(f"{req.method} {req.url.path}")
+        if req.url.path == "/v2/positions":
+            return httpx.Response(200, json=[{"symbol": s, "qty": "30"} for s in QUOTES])
+        if req.url.path == "/v2/stocks/snapshots":
+            return httpx.Response(200, json={s: {"latestTrade": {"p": QUOTES[s] + 1, "t": T.isoformat()}, "latestQuote": {}}
+                                             for s in req.url.params["symbols"].split(",")})
+        return httpx.Response(500, text="a request of its own")
+
+    broker = AlpacaBroker("key", "secret", transport=httpx.MockTransport(alpaca), fill_wait_seconds=0)
+    scheduler.tick(T, broker_factory=lambda bot: broker)
+    assert sorted(seen) == ["GET /v2/positions", "GET /v2/stocks/snapshots"]  # was 90 + 90
+    session.expire_all()
+    assert all(b.status == "active" for b in bots)  # the account agrees with all thirty
+    assert {h.last_price for h in session.scalars(select(Holding))} == {104.0, 51.0, 21.0}  # every holding priced
+
+
 def test_a_sale_never_takes_another_bots_shares_or_sells_short(session):
     one, two, broker = _sharing(session)
     h = session.scalar(select(Holding).where(Holding.bot_id == two.id))

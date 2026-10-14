@@ -88,6 +88,8 @@ class FakeBroker(Broker):
         self.held: int | None = None
         self.held_by: dict[str, int] | None = None  # a real account's positions per symbol (rotation bots)
         self.whole_only: set[str] = set()  # symbols it can't split into fractions of a share
+        self.round_held: dict[str, float] | None = None  # what a cached position read answers (else the same as held)
+        self.position_asks: list[tuple[str, bool]] = []  # (symbol, cached)
 
     def quote(self, symbol):
         return Quote(self.prices.get(symbol, self.price), self.quote_at or self.now or datetime.now(timezone.utc))
@@ -159,8 +161,21 @@ class FakeBroker(Broker):
     def buying_power(self):
         return self.bp
 
-    def position_qty(self, symbol):
+    def position_qty(self, symbol, cached=False):
+        self.position_asks.append((symbol, cached))
+        if cached and self.round_held is not None:  # a scheduler pass's read of the account from a moment ago
+            return self.round_held.get(symbol, 0)
         return self.held_by.get(symbol, 0) if self.held_by is not None else self.held
+
+
+@pytest.fixture(autouse=True)
+def fresh_alpaca_rate_state():
+    """No test sees what another one's mocked Alpaca answers said about the rate budgets."""
+    from app.brokers import alpaca
+
+    alpaca.reset_rate_state()
+    yield
+    alpaca.reset_rate_state()
 
 
 @pytest.fixture(autouse=True)
