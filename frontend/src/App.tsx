@@ -76,15 +76,15 @@ function Header() {
   const mobile = screens.md === false; // under 768px
   const [drawer, setDrawer] = useState(false);
   const pages: MenuProps["items"] = [
-    { key: "backtest", label: <Link to="/">Backtest</Link> },
+    { key: "backtest", label: <Link to="/backtest">Backtest</Link> },
     { key: "compare", label: <Link to="/compare">Compare strategies</Link> },
     { key: "scan", label: <Link to="/scan">Scan</Link> },
     { key: "rotation", label: <Link to="/rotation">Momentum Rotation</Link> },
     { key: "dip", label: <Link to="/dip">Dip buyer</Link> },
-    { key: "trading", label: <Link to="/trading">Live trading</Link> },
+    { key: "trading", label: <Link to="/">Live trading</Link> },
     ...(admin ? [{ key: "users", label: <Link to="/admin/users"><UsersNavLabel /></Link> }] : []),
   ];
-  const current = pathname.startsWith("/trading")
+  const current = pathname === "/" || pathname.startsWith("/trading")
     ? "trading"
     : pathname.startsWith("/admin/users")
       ? "users"
@@ -96,7 +96,7 @@ function Header() {
             ? "rotation"
           : pathname === "/dip"
             ? "dip"
-        : pathname === "/"
+        : pathname === "/backtest"
           ? "backtest"
           : "";
   const selected = current ? [current] : [];
@@ -155,12 +155,14 @@ export default function App() {
               <Route path="/signup" element={<SignupPage />} />
               {/* Everything else needs a signed-in user */}
               <Route element={<RequireAuth><Shell /></RequireAuth>}>
-                <Route path="/" element={<BacktestPage />} />
+                <Route path="/" element={<TradingPage />} />
+                <Route path="/backtest" element={<BacktestPage />} />
                 <Route path="/compare" element={<ComparePage />} />
                 <Route path="/scan" element={<ScanPage />} />
                 <Route path="/rotation" element={<RotationPage />} />
                 <Route path="/dip" element={<DipPage />} />
-                <Route path="/trading" element={<TradingPage />} />
+                {/* old bookmarks; bot pages stay at /trading/:id (the emails link there) */}
+                <Route path="/trading" element={<Navigate to="/" replace />} />
                 <Route path="/trading/:id" element={<BotPage />} />
                 <Route path="/alerts" element={<EmailAlertsPage />} />
                 <Route path="/guide" element={<GuidePage guide="lifecycle" />} />

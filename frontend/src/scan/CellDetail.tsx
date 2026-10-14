@@ -87,7 +87,7 @@ export default function CellDetail({ cell, onClose }: { cell?: ScanCell; onClose
             {latest.config.news === false && (
               <Button
                 icon={<SearchOutlined />}
-                onClick={() => navigate("/", { state: { prefill: { ...latest.config, news: true } } })}
+                onClick={() => navigate("/backtest", { state: { prefill: { ...latest.config, news: true } } })}
                 title="Open the Backtest page with these settings and news on"
               >
                 Re-check with news

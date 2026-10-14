@@ -39,7 +39,7 @@ export default function TradeThisButton({ config, type = "primary" }: { config: 
     );
   }
   return (
-    <Button type={type} icon={<RocketOutlined />} onClick={() => navigate("/trading", { state: { prefill: toBotParams(config) } })}>
+    <Button type={type} icon={<RocketOutlined />} onClick={() => navigate("/", { state: { prefill: toBotParams(config) } })}>
       Trade this strategy
     </Button>
   );

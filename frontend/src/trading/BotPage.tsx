@@ -199,7 +199,7 @@ export default function BotPage() {
   );
 
   if (page.error && !bot) {
-    return <Alert type="error" showIcon message="Couldn't load this bot" description={page.error} action={<Link to="/trading">Back</Link>} />;
+    return <Alert type="error" showIcon message="Couldn't load this bot" description={page.error} action={<Link to="/">Back</Link>} />;
   }
   if (!bot) return <Card loading />;
 
@@ -286,7 +286,7 @@ export default function BotPage() {
 
   return (
     <>
-      <Link to="/trading" style={{ color: MUTED }}><ArrowLeftOutlined /> All bots</Link>
+      <Link to="/" style={{ color: MUTED }}><ArrowLeftOutlined /> All bots</Link>
 
       {/* ---------- Header: identity + controls ---------- */}
       <Row justify="space-between" align="middle" gutter={[16, 12]} style={{ margin: "8px 0 16px" }}>
