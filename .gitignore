@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+# Claude Code's machine-specific notes (server address): this repo is public
+CLAUDE.local.md
 
 # --- Python ---
 __pycache__/
