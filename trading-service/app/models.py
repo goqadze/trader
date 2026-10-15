@@ -318,7 +318,7 @@ class DipTest(Base):
 
 
 # What an email alert is about (notify.CATEGORIES describes each); you choose which ones you get
-NOTIFY_CATEGORIES = ("trades", "risk", "problems", "signals")
+NOTIFY_CATEGORIES = ("trades", "risk", "problems", "signals", "report")
 # pending -> sent | failed (gave up after the retries) | skipped (alerts were turned off before it went out)
 NOTIFY_STATUSES = ("pending", "sent", "failed", "skipped")
 
@@ -341,6 +341,17 @@ class Notification(Base):
     next_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)  # after a failed send
     sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)  # the last failed send's reason
+
+
+class SymbolSector(Base):
+    """A symbol's sector as Yahoo gives it (an ETF's category), for the daily risk report (risk_report.py): looked up
+    once, an unknown one again after a while."""
+
+    __tablename__ = "symbol_sectors"
+
+    symbol: Mapped[str] = mapped_column(String(16), primary_key=True)
+    sector: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    checked_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
 class Setting(Base):

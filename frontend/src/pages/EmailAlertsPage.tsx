@@ -1,4 +1,4 @@
-import { MailOutlined, SendOutlined } from "@ant-design/icons";
+import { FileSearchOutlined, MailOutlined, SendOutlined } from "@ant-design/icons";
 import { Alert, App as AntApp, Button, Card, Checkbox, Col, Form, Row, Select, Space, Switch, Table, Tag, Tooltip, Typography } from "antd";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
@@ -8,7 +8,7 @@ import type { EmailAlert, EmailAlerts, EmailAlertsSave } from "../trading/types"
 import { usePolling } from "../trading/usePolling";
 
 const MUTED = "#8b98b5";
-const CATEGORY_COLOR: Record<string, string> = { trades: "blue", risk: "red", problems: "gold", signals: "cyan", test: "green" };
+const CATEGORY_COLOR: Record<string, string> = { trades: "blue", risk: "red", problems: "gold", signals: "cyan", report: "purple", test: "green" };
 const EMAIL = /^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$/; // as trading-service checks it
 const STATUS_COLOR: Record<EmailAlert["status"], string> = { sent: "green", pending: "blue", failed: "red", skipped: "default" };
 
@@ -48,6 +48,7 @@ export default function EmailAlertsPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [reporting, setReporting] = useState(false);
   const history = usePolling(() => tradingApi.emailHistory(50), 15_000);
   const enabled = Form.useWatch("enabled", form);
   const chosen = Form.useWatch("categories", form) ?? [];
@@ -89,6 +90,21 @@ export default function EmailAlertsPage() {
       message.error(e instanceof Error ? e.message : String(e), 8);
     } finally {
       setTesting(false);
+      void history.reload();
+    }
+  };
+
+  // Today's risk report, now: also when the daily one isn't chosen or went out already
+  const report = async () => {
+    if (!(await save(true))) return;
+    setReporting(true);
+    try {
+      await tradingApi.sendRiskReport();
+      message.success("Today's risk report is on its way (within about a minute): check your inbox");
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : String(e), 8);
+    } finally {
+      setReporting(false);
       void history.reload();
     }
   };
@@ -144,7 +160,7 @@ export default function EmailAlertsPage() {
                 tooltip="Ticked kinds come only from real-money bots. Paper bots' ones stay on the dashboard (the bell, each bot's page). Alerts that aren't about one bot (HALT ALL) still come."
               >
                 <Checkbox.Group style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {(cfg?.available ?? []).map((c) => (
+                  {(cfg?.available ?? []).filter((c) => c.key !== "report").map((c) => (
                     <Checkbox key={c.key} value={c.key} disabled={!chosen.includes(c.key)}>
                       <Tag color={CATEGORY_COLOR[c.key]}>{c.label}</Tag>
                     </Checkbox>
@@ -156,9 +172,17 @@ export default function EmailAlertsPage() {
                 <Tooltip title={cfg?.smtp_configured ? "Saves, then sends a test email to these addresses right away" : "Set up the mail server first"}>
                   <Button icon={<SendOutlined />} onClick={test} loading={testing} disabled={!cfg?.smtp_configured}>Send a test email</Button>
                 </Tooltip>
+                <Tooltip title={cfg?.smtp_configured ? "Saves, then builds today's risk report and emails it now (it takes about a minute: the news of each sector is read)" : "Set up the mail server first"}>
+                  <Button icon={<FileSearchOutlined />} onClick={report} loading={reporting} disabled={!cfg?.smtp_configured}>Send today's risk report</Button>
+                </Tooltip>
               </Space>
             </Form>
             <Typography.Paragraph style={{ fontSize: 12, color: MUTED, marginTop: 16, marginBottom: 0 }}>
+              The daily risk report comes on trading days at 9:27 New York, before the bots' first check: each sector your
+              bots trade rated HIGH, ELEVATED or NORMAL from its morning news, what moves with it and the CPI / jobs / Fed
+              calendar. It is information only: the bots don't follow it.
+            </Typography.Paragraph>
+            <Typography.Paragraph style={{ fontSize: 12, color: MUTED, marginTop: 8, marginBottom: 0 }}>
               Alerts that happen together (a stop-loss sale and its blacklisting) arrive as one email, within about 15 seconds.
               A failed send is tried again after 1, 5 and 30 minutes and 2 hours. For dip signals in the browser (sound, read
               aloud), use the bell at the top or the <Link to="/dip">Dip buyer</Link> page.

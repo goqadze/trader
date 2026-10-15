@@ -437,7 +437,7 @@ class DipStudySummaryOut(BaseModel):
     effects: list[EffectOut]
 
 
-NotifyCategory = Literal["trades", "risk", "problems", "signals"]  # models.NOTIFY_CATEGORIES
+NotifyCategory = Literal["trades", "risk", "problems", "signals", "report"]  # models.NOTIFY_CATEGORIES
 EMAIL = r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$"
 
 
@@ -486,6 +486,14 @@ class EmailAlertsOut(BaseModel):
     sender: str
     dashboard_url: str  # where the emails' links point (DASHBOARD_URL)
     available: list[NotifyCategoryOut]
+
+
+class RiskReportOut(BaseModel):
+    """The daily risk report (risk_report.py), as its email says it."""
+
+    subject: str
+    text: str
+    overall: str  # HIGH | ELEVATED | NORMAL
 
 
 class NotificationOut(BaseModel):

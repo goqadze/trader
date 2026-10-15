@@ -163,6 +163,18 @@ The mail server goes in `trading-service/.env` (`SMTP_HOST`, `SMTP_PORT`, `SMTP_
 address and an App Password (2-Step Verification on, then myaccount.google.com/apppasswords). Port 587 also works on
 a new Hetzner server, which blocks 25 and 465.
 
+**Daily risk report** (tick it under Email alerts; **Send today's risk report** sends one now): on each trading day
+at 9:27 New York, before the bots' first check, one email saying where trading looks risky today and how risky
+(`trading-service/app/risk_report.py`). For every sector the bots watch or hold: decision-service's LLM reads its
+headlines up to 9:25 (its ETFs' and biggest companies', `GET /news/sector`, judged against the market) and the
+market's (`GET /news/market`, `decision-service/app/market_news.py`); its ETF's moves yesterday and over 5 days; the
+symbols that move with it (correlation of daily returns with its ETF over 120 trading days, 0.6 or more); and the CPI,
+jobs report and Fed decision days (`trading-service/app/macro_dates.json`, from BLS and the Fed, to `known_through`:
+add the next year's dates before then). Each symbol is rated **HIGH** (its sector's news reads risk-off, or a sector
+it moves with does), **ELEVATED** (the market's news reads risk-off, or a release is due today) or **NORMAL**, and the
+report adds up what the live and the paper bots hold at each level. Information only: the bots don't follow it (as buy
+filters on 230 dip setups these signals cost more than they saved). `GET /risk-report` shows it without sending.
+
 How it's built (`trading-service/app/notify.py`): an outbox. The fill, the blacklisting or the error only queues a
 `notifications` row in its own transaction; a background loop sends whatever is queued every 15 s as one email (a
 stop-loss sale and its blacklisting arrive together), retrying a failed send after 1, 5, 30 and 120 minutes. A slow or

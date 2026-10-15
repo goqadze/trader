@@ -68,5 +68,7 @@ export const tradingApi = {
   emailAlerts: () => request<EmailAlerts>("GET", "/email-alerts"),
   saveEmailAlerts: (body: EmailAlertsSave) => request<EmailAlerts>("PUT", "/email-alerts", body),
   testEmail: () => request<EmailAlert>("POST", "/email-alerts/test"),
+  // Builds today's risk report (the market's and the sectors' news, a minute or so) and queues it as an email
+  sendRiskReport: () => request<{ status: string }>("POST", "/risk-report/send"),
   emailHistory: (limit = 50) => request<EmailAlert[]>("GET", `/email-alerts/history?limit=${limit}`),
 };

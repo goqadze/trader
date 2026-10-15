@@ -226,7 +226,7 @@ export interface TradingStatus {
 
 // --- Email alerts (trading-service notify.py, /email-alerts) ---
 
-export type NotifyCategory = "trades" | "risk" | "problems" | "signals";
+export type NotifyCategory = "trades" | "risk" | "problems" | "signals" | "report";
 
 export interface EmailAlertsSave {
   enabled: boolean;

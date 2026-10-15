@@ -14,23 +14,23 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session, defer
 
-from . import auth, dip, journal, notify, rotation, scheduler, studies
+from . import auth, dip, journal, notify, risk_report, rotation, scheduler, studies
 from .brokers import SHARED_ACCOUNT_BROKERS, BrokerError, catalog, get_broker
 from .config import settings
-from .db import get_session, init_db, utcnow
+from .db import SessionLocal, get_session, init_db, utcnow
 from .market import is_open, next_decision_time, ny_date, session_bounds
 from .models import (DIP, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPreset, DipStudy, DipTest, EquitySnapshot, Event,
                      Notification, Order, Signal, WatchItem)
 from .schemas import (BotCreate, BotOut, BotUpdate, CapitalAdd, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn, DipPresetOut,
                       DipStudyIn, DipStudyOut, DipStudySummaryOut, DipTestDetailOut, DipTestIn, DipTestPageOut,
-                      EmailAlertsIn, EmailAlertsOut, EventOut, HoldingOut, NotificationOut, NotifyCategoryOut, OrderOut,
+                      EmailAlertsIn, EmailAlertsOut, EventOut, HoldingOut, NotificationOut, RiskReportOut, NotifyCategoryOut, OrderOut,
                       PRESET_CONFIGS, RotationBotCreate, RotationPresetIn, SignalOut, SnapshotOut, StatusOut, StudyStrategy,
                       WatchItemOut, WatchSymbols, check_window)
 from .trader import (add_capital, benchmark_value, bot_equity, bot_lock, capital, close_position, evaluate, holdings,
@@ -51,8 +51,9 @@ async def lifespan(_app: FastAPI):
     init_db()
     auth.startup_checks()
     tasks = []
-    if settings.scheduler_enabled:  # the background work: the bots, and the email alerts they queue
-        tasks = [asyncio.create_task(scheduler.run_forever()), asyncio.create_task(notify.run_forever())]
+    if settings.scheduler_enabled:  # the background work: the bots, the email alerts they queue, the daily risk report
+        tasks = [asyncio.create_task(scheduler.run_forever()), asyncio.create_task(notify.run_forever()),
+                 asyncio.create_task(risk_report.run_forever())]
     yield
     for task in tasks:
         task.cancel()
@@ -946,6 +947,37 @@ def send_test_email(session: Session = Depends(get_session)):
         return notify.send_test(session, recipients, utcnow())
     except Exception as e:
         raise HTTPException(502, f"the mail server refused: {type(e).__name__}: {e}")
+
+
+@app.get("/risk-report", response_model=RiskReportOut)
+def get_risk_report(session: Session = Depends(get_session)):
+    """Today's risk report, built now (the market's and the sectors' news, their moves and links, the macro calendar):
+    what the daily email says, without sending it. Takes a little while (a news verdict per sector, once a day)."""
+    now = utcnow()
+    report = risk_report.build(session, ny_date(now), now)
+    session.commit()  # the sectors it looked up are kept
+    return RiskReportOut(subject=report["subject"], text=report["text"], overall=report["overall"])
+
+
+def _send_risk_report_now() -> None:
+    try:
+        with SessionLocal() as session:
+            risk_report.queue(session, utcnow())
+    except Exception:
+        logger.exception("the risk report asked for on the dashboard failed")
+
+
+@app.post("/risk-report/send", status_code=202)
+def send_risk_report(background: BackgroundTasks, session: Session = Depends(get_session)):
+    """Build today's risk report and email it, whether or not the daily one is chosen or went out already. Answers at
+    once; the report is built in the background (about a minute: each sector's news) and emailed when ready."""
+    if not notify.smtp_ready():
+        raise HTTPException(422, "no mail server set up: add SMTP_HOST (and the rest of SMTP_*) to trading-service/.env")
+    cfg = notify.load(session)
+    if not cfg["enabled"] or not cfg["recipients"]:
+        raise HTTPException(422, "turn the email alerts on and save an address to send to first")
+    background.add_task(_send_risk_report_now)
+    return {"status": "building"}
 
 
 @app.get("/email-alerts/history", response_model=list[NotificationOut])

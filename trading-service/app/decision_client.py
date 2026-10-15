@@ -48,3 +48,28 @@ def get_news(symbol: str, as_of: date, at: datetime | None = None) -> dict:
     if r.status_code != 200:
         return {"sentiment": "unavailable", "error": f"decision-service {r.status_code}: {r.text[:200]}"}
     return r.json()
+
+
+def get_sector_mood(sector: str, as_of: date) -> dict:
+    """get_market_mood for one sector (decision-service GET /news/sector), for the daily risk report."""
+    try:
+        r = httpx.get(f"{settings.decision_service_url}/news/sector", params={"sector": sector, "as_of": as_of.isoformat()},
+                      timeout=90)
+    except httpx.HTTPError as e:
+        return {"mood": "unavailable", "reason": f"decision-service unreachable: {e}"}
+    if r.status_code != 200:
+        return {"mood": "unavailable", "reason": f"decision-service {r.status_code}: {r.text[:200]}"}
+    return r.json()
+
+
+def get_market_mood(as_of: date) -> dict:
+    """decision-service's read of the market headlines up to 9:25 New York on as_of: {"mood": risk_off | neutral |
+    risk_on | unavailable, "reason"}, for the daily risk report (risk_report.py). Never raises: a failure is
+    "unavailable" with the reason, and the report says so."""
+    try:
+        r = httpx.get(f"{settings.decision_service_url}/news/market", params={"as_of": as_of.isoformat()}, timeout=90)
+    except httpx.HTTPError as e:
+        return {"mood": "unavailable", "reason": f"decision-service unreachable: {e}"}
+    if r.status_code != 200:
+        return {"mood": "unavailable", "reason": f"decision-service {r.status_code}: {r.text[:200]}"}
+    return r.json()

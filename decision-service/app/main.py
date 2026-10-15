@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
 from .agent import agent, news_rag  # the compiled LangGraph workflow, and its news step on its own
+from . import market_news
 from .futures import FUTURES
 from .intraday import bars_between
 from .intraday_strategies import HTF_HISTORY_DAYS, INTRADAY_STRATEGIES, plans as intraday_plans
@@ -129,6 +130,37 @@ def news_sentiment(symbol: str, as_of: date | None = None, decided_at: datetime 
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
     return NewsSentiment(symbol=symbol.upper(), as_of=as_of, sentiment=out.get("sentiment", "unavailable"),
                          headlines=out.get("headlines", []), catalysts=out.get("catalysts", []), steps=out.get("steps", []))
+
+
+class MarketMoodOut(BaseModel):
+    """Shape of /news/market: the market's mood before the open."""
+
+    as_of: date
+    mood: str  # risk_off | neutral | risk_on | unavailable (no keys, or the news / the LLM failed)
+    reason: str
+    headlines: list[str]
+
+
+@app.get("/news/market", response_model=MarketMoodOut)
+def news_market(as_of: date | None = None):
+    """Is as_of a risk-off day for the whole market, from the market headlines up to 9:25 New York? trading-service's
+    daily risk report asks (see market_news.py). A day is judged once and reused."""
+    as_of = as_of or datetime.now(ZoneInfo("America/New_York")).date()
+    out = market_news.market_mood(as_of)
+    return MarketMoodOut(as_of=as_of, mood=out["mood"], reason=out["reason"], headlines=out["headlines"])
+
+
+class SectorMoodOut(MarketMoodOut):
+    sector: str
+
+
+@app.get("/news/sector", response_model=SectorMoodOut)
+def news_sector(sector: str, as_of: date | None = None):
+    """Is as_of a risk-off day for one sector (Yahoo's name: Technology, Energy ...), from the headlines about its ETFs
+    and biggest companies up to 9:25 New York? trading-service's daily risk report asks for each sector its bots trade."""
+    as_of = as_of or datetime.now(ZoneInfo("America/New_York")).date()
+    out = market_news.sector_mood(sector, as_of)
+    return SectorMoodOut(sector=sector, as_of=as_of, mood=out["mood"], reason=out["reason"], headlines=out["headlines"])
 
 
 @app.post("/signal", response_model=Signal)

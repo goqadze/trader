@@ -37,6 +37,8 @@ CATEGORIES = {
     "risk": ("Stop-loss and risk", "Stop-loss sales, blacklisted symbols, the drawdown breaker, HALT ALL"),
     "problems": ("Problems", "Errors, and orders that failed or need a look (at most one per bot and kind an hour)"),
     "signals": ("Dip signals", "Every dip buyer signal: buy zone, turned up, back up, held too long, news veto (chatty)"),
+    "report": ("Daily risk report", "Before each trading day's open: which sectors look risky today and why (their news, "
+                                    "what moves with them, CPI / jobs / Fed days), and what your bots hold there"),
 }
 # live_only: the categories wanted from real-money bots only (a paper bot's stay on the dashboard; alerts without a bot
 # still come)
@@ -45,7 +47,8 @@ SEND_EVERY_S = 15
 MAX_PER_EMAIL = 50
 RETRY_AFTER = (timedelta(minutes=1), timedelta(minutes=5), timedelta(minutes=30), timedelta(hours=2))  # then "failed"
 PROBLEM_QUIET = timedelta(hours=1)  # a bot failing every check emails once an hour, not every 15 minutes
-COLORS = {"trades": "#4f8cff", "risk": "#ef5b6b", "problems": "#d4a72c", "signals": "#13c2c2", "test": "#33c088"}
+COLORS = {"trades": "#4f8cff", "risk": "#ef5b6b", "problems": "#d4a72c", "signals": "#13c2c2", "report": "#9254de",
+          "test": "#33c088"}
 REASONS = {"dip": "bought the dip", "signal": "buy signal", "target": "back at its target", "stop-loss": "stop-loss",
            "time": "held too long", "manual": "you asked", "rebalance": "rebalance", "top-up": "topped up with added money"}
 SIGNAL_HEADS = {"down": "in the buy zone", "rebound": "turned up from its low", "up": "is back up", "stop": "hit its stop",
@@ -294,12 +297,13 @@ def send_pending(now: datetime | None = None, send: Callable[[EmailMessage], Non
             return 0
         ids = {r.bot_id for r in rows if r.bot_id}
         bots = {b.id: b for b in session.scalars(select(Bot).where(Bot.id.in_(ids)))} if ids else {}
-        groups: dict[bool, list[Notification]] = {}
+        # Real-money alerts in an email of their own (first), the daily risk report in one of its own, the rest together
+        groups: dict[tuple[bool, bool], list[Notification]] = {}
         for r in rows:
-            groups.setdefault(is_live(bots.get(r.bot_id)), []).append(r)
+            groups.setdefault((is_live(bots.get(r.bot_id)), r.category == "report"), []).append(r)
         sent = 0
-        for live in sorted(groups, reverse=True):
-            batch = groups[live]
+        for key in sorted(groups, reverse=True):
+            batch = groups[key]
             try:
                 send(compose(batch, cfg["recipients"], bots))
             except Exception as e:

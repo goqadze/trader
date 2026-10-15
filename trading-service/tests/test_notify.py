@@ -222,7 +222,7 @@ def test_the_settings_api(api, monkeypatch):
     cfg = c.get("/email-alerts").json()
     assert (cfg["enabled"], cfg["recipients"], cfg["categories"], cfg["live_only"]) == (False, [], ["trades", "risk", "problems"], [])
     assert cfg["smtp_configured"] and cfg["smtp_server"] == "smtp.test:587 (starttls)" and cfg["sender"] == "bot@test.dev"
-    assert [x["key"] for x in cfg["available"]] == ["trades", "risk", "problems", "signals"]
+    assert [x["key"] for x in cfg["available"]] == ["trades", "risk", "problems", "signals", "report"]
 
     assert c.put("/email-alerts", json={"enabled": True, "recipients": [], "categories": []}).status_code == 422
     r = c.put("/email-alerts", json={"enabled": True, "recipients": ["me@test.dev", "nope"], "categories": ["trades"]})
