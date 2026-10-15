@@ -69,6 +69,7 @@ def test_a_risk_off_sector_and_what_moves_with_it_are_high(session, bots):
     assert r["overall"] == "HIGH"  # a live bot holds HIGH-risk symbols
     text = r["text"]
     assert "OVERALL: HIGH" in text and "Market news: NEUTRAL — Futures mixed." in text
+    assert "(news up to 09:25 New York)" in text  # built at 9:30: the news stops at decision-service's 9:25
     assert "Macro: nothing due today · this week: Fri Jun 6 jobs report" in text
     assert "HIGH      Technology — news risk-off" in text and "Chips sold off in Seoul." in text
     assert "Moving with it (correlation 0.6+): VRT 0.9" in text
@@ -131,15 +132,17 @@ SOURCES = dict(mood_fn=calm, sector_mood_fn=tech_off, closes_fn=lambda symbols, 
                sector_lookup=SECTORS.get)
 
 
-def test_it_is_sent_once_a_trading_day_after_9_27_when_chosen(session, bots, smtp):
+def test_it_is_sent_once_a_trading_day_at_8_45_when_chosen(session, bots, smtp):
     _wanted(session)
-    before = datetime(2025, 6, 2, 13, 20, tzinfo=timezone.utc)  # 9:20 New York
+    before = datetime(2025, 6, 2, 12, 40, tzinfo=timezone.utc)  # 8:40 New York
     assert not risk_report.run_once(before, **SOURCES)
-    assert risk_report.run_once(NOW, **SOURCES)
+    at = datetime(2025, 6, 2, 12, 45, 30, tzinfo=timezone.utc)  # 8:45 New York
+    assert risk_report.run_once(at, **SOURCES)
     assert not risk_report.run_once(NOW + timedelta(minutes=5), **SOURCES)  # once a day
     session.expire_all()
     rows = list(session.scalars(select(Notification).where(Notification.category == "report")))
     assert len(rows) == 1 and rows[0].subject.startswith("Risk report Jun 2: HIGH") and "OVERALL: HIGH" in rows[0].body
+    assert "(news up to 08:45 New York)" in rows[0].body  # what was published by then
     saturday = datetime(2025, 6, 7, 13, 30, tzinfo=timezone.utc)
     assert not risk_report.run_once(saturday, **SOURCES)
     late = datetime(2025, 6, 3, 19, 40, tzinfo=timezone.utc)  # 15:40 New York: too late for that day

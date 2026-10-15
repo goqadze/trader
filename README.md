@@ -163,10 +163,11 @@ The mail server goes in `trading-service/.env` (`SMTP_HOST`, `SMTP_PORT`, `SMTP_
 address and an App Password (2-Step Verification on, then myaccount.google.com/apppasswords). Port 587 also works on
 a new Hetzner server, which blocks 25 and 465.
 
-**Daily risk report** (tick it under Email alerts; **Send today's risk report** sends one now): on each trading day
-at 9:27 New York, before the bots' first check, one email saying where trading looks risky today and how risky
-(`trading-service/app/risk_report.py`). For every sector the bots watch or hold: decision-service's LLM reads its
-headlines up to 9:25 (its ETFs' and biggest companies', `GET /news/sector`, judged against the market) and the
+**Daily risk report** (tick it under Email alerts; **Send today's risk report** sends one now): on each trading day at
+8:45 New York (after the 8:30 CPI and jobs reports, 45 minutes before the open: time to pause a bot), one email saying
+where trading looks risky today and how risky (`trading-service/app/risk_report.py`). For every sector the bots watch
+or hold: decision-service's LLM reads its headlines published so far (up to 9:25 at most; its ETFs' and biggest
+companies', `GET /news/sector`, judged against the market; the email's first line says how far they go) and the
 market's (`GET /news/market`, `decision-service/app/market_news.py`); its ETF's moves yesterday and over 5 days; the
 symbols that move with it (correlation of daily returns with its ETF over 120 trading days, 0.6 or more); and the CPI,
 jobs report and Fed decision days (`trading-service/app/macro_dates.json`, from BLS and the Fed, to `known_through`:

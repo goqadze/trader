@@ -1,8 +1,9 @@
 """The daily risk report: an email before the open saying where trading looks risky today, and how risky.
 
 It reads, for every sector the bots watch or hold:
-  - the sector's own news: decision-service's LLM on the headlines about the sector's ETFs and biggest companies up to
-    9:25 New York (GET /news/sector), and the whole market's the same way (GET /news/market);
+  - the sector's own news: decision-service's LLM on the headlines about the sector's ETFs and biggest companies
+    published so far (up to 9:25 New York at most; GET /news/sector), and the whole market's the same way
+    (GET /news/market);
   - how the sector's ETF moved yesterday and over the last 5 days;
   - which symbols move with it: the correlation of their daily returns with the sector's ETF over the last 120 trading
     days (0.6 or more: grid stocks move with chips), so a symbol of a calm sector that moves with a sector in trouble
@@ -15,9 +16,10 @@ at each level.
 Information only: the bots trade as usual. Tested as buy filters on 230 dip setups (Oct 2026, Mac study "Dip sweep 4"),
 skipping buys on these signals cost more than it saved: on fearful days dip buying finds its best prices.
 
-Sent once per trading day at REPORT_AT (run_forever, started by main.py) as an email of the "report" category, when
-email alerts are on and that category is chosen; GET /risk-report shows the same report without sending it. Every
-function takes the day and the data sources as arguments, so tests build a report without the network."""
+Sent once per trading day at REPORT_AT, 8:45 New York (run_forever, started by main.py), as an email of the "report"
+category when email alerts are on and that category is chosen; its first line says how far the news goes. GET
+/risk-report shows the same report without sending it. Every function takes the day and the data sources as arguments,
+so tests build a report without the network."""
 
 import asyncio
 import json
@@ -42,7 +44,10 @@ from .rotation import yahoo_closes
 
 logger = logging.getLogger("trading-service.risk_report")
 
-REPORT_AT = time(9, 27)  # New York: the news is read up to 9:25; the bots' first checks are at 9:35-9:45
+# New York: after the 8:30 CPI and jobs reports, 45 minutes before the open (the bots' first checks: 9:35-9:45), so
+# there is time to pause a bot. The news is read up to the moment the report is built (decision-service stops at 9:25)
+REPORT_AT = time(8, 45)
+NEWS_CUTOFF = time(9, 25)  # decision-service market_news.CUTOFF
 LATE_UNTIL = time(15, 30)  # a service that was down at REPORT_AT still sends the day's report until then
 CHECK_EVERY_S = 60
 
@@ -272,8 +277,10 @@ def build(session: Session, today: date, now: datetime, mood_fn=None, sector_moo
         return "; ".join(f"{t} {_pct(mv[0])} yesterday, {_pct(mv[1])} in 5 days" for t, mv in etf_moves(tickers))
 
     # --- The email's text: the market, the calendar, your money, then each sector ---
-    lines = [f"Before the open, {_day(today)} {today.year} (news up to 9:25 New York). Information only: the bots trade "
-             "as usual.", "", f"OVERALL: {overall}"]
+    local = now.astimezone(NY)
+    seen = min(local.time(), NEWS_CUTOFF) if local.date() == today else NEWS_CUTOFF  # the news so far, up to the cutoff
+    lines = [f"Before the open, {_day(today)} {today.year} (news up to {seen:%H:%M} New York). Information only: "
+             "the bots trade as usual.", "", f"OVERALL: {overall}"]
     lines.append(f"Market news: {(market.get('mood') or 'unavailable').upper().replace('_', '-')}"
                  + (f" — {market['reason']}" if market.get("reason") else "")
                  + (f" ({moves_text(MARKET_ETFS)})" if moves_text(MARKET_ETFS) else ""))

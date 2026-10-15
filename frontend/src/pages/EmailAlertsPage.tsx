@@ -178,7 +178,8 @@ export default function EmailAlertsPage() {
               </Space>
             </Form>
             <Typography.Paragraph style={{ fontSize: 12, color: MUTED, marginTop: 16, marginBottom: 0 }}>
-              The daily risk report comes on trading days at 9:27 New York, before the bots' first check: each sector your
+              The daily risk report comes on trading days at 8:45 New York (after the 8:30 CPI or jobs numbers, 45 minutes
+              before the open, so there's time to pause a bot): each sector your
               bots trade rated HIGH, ELEVATED or NORMAL from its morning news, what moves with it and the CPI / jobs / Fed
               calendar. It is information only: the bots don't follow it.
             </Typography.Paragraph>
