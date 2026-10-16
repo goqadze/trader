@@ -61,6 +61,15 @@ export function MarketStatus({ status, bot }: { status: TradingStatus | null; bo
 
 const columns: ColumnsType<Bot> = [
   {
+    // The number reports, emails and Claude call a bot by ("#7"); the same as in its page's address
+    title: "ID",
+    key: "id",
+    width: 70,
+    sorter: (a, b) => a.id - b.id,
+    sortDirections: ["ascend", "descend"],
+    render: (_, b) => <Link to={`/trading/${b.id}`} style={{ color: "#8b98b5", whiteSpace: "nowrap" }}>#{b.id}</Link>,
+  },
+  {
     title: "Bot",
     key: "bot",
     render: (_, b) => (
@@ -161,7 +170,7 @@ function rememberBroker(broker: string) {
   }
 }
 
-// The bot table's sort (Return or Position, by a click on the column), remembered in this browser too
+// The bot table's sort (ID, Return or Position, by a click on the column), remembered in this browser too
 const SORT_KEY = "trading.botSort";
 type BotSort = { key: string; order: SortOrder };
 
