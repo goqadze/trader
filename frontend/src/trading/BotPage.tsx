@@ -12,6 +12,7 @@ import AddMoney from "./AddMoney";
 import { tradingApi } from "./api";
 import BotForm from "./BotForm";
 import { useConfirm } from "./confirm";
+import { SectorBadges } from "./sectors";
 import {
   ACTION_COLOR, ORDER_STATUS_COLOR, SENTIMENT_COLOR, STATUS_COLOR, botTitle, checkTimes, frac, holdsMany, isDip, isRotation, localTime, pct,
   pnlColor, slotTimes, usd,
@@ -297,6 +298,7 @@ export default function BotPage() {
             <span style={{ color: MUTED }}>{bot.name}</span>
             <Tag color={STATUS_COLOR[bot.status]}>{bot.status}</Tag>
             <Tag color={bot.live ? "red" : "blue"}>{bot.live ? "LIVE — real money" : bot.broker === "paper" ? "PAPER (simulated)" : bot.broker}</Tag>
+            <SectorBadges bot={bot} onChanged={page.reload} />
             {bot.pending_order && <Tag color="processing">order pending</Tag>}
             {bot.rebalancing && !bot.pending_order && <Tag color="processing">rebalancing</Tag>}
             {bot.top_up && (

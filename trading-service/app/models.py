@@ -83,6 +83,8 @@ class Bot(Base):
     symbol: Mapped[str] = mapped_column(String(16), index=True)
     broker: Mapped[str] = mapped_column(String(32))  # paper | alpaca-paper | alpaca-live (see brokers/)
     status: Mapped[str] = mapped_column(String(16), default="active")
+    # Sector badges set by hand (["Energy", "Chips"]); NULL = worked out from its symbols each time (see sectors.py)
+    sectors: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     # --- Strategy parameters: the same knobs as the backtest RunConfig, so a tested setup deploys 1:1 ---
     # Which decision-service strategy decides (see schemas.Strategy). server_default: existing bots, which

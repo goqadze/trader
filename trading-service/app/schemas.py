@@ -7,6 +7,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from . import sectors as badges
+
 # decision-service's strategies (its GET /strategies describes each). Keep in sync with
 # decision-service/app/strategies.py STRATEGIES.
 Strategy = Literal["sma_rsi", "trend_following", "momentum", "breakout", "mean_reversion", "range_trading",
@@ -615,6 +617,22 @@ class BotUpdate(BaseModel):
     fractional: bool | None = None  # rotation bots only (a dip bot's goes through PATCH /bots/{id}/dip)
 
 
+class SectorsIn(BaseModel):
+    """A bot's sector badges set by hand (PUT /bots/{id}/sectors): any names, the listed ones (GET /sectors) spelled
+    as listed. [] = no badge; null = back to automatic, worked out from its symbols."""
+
+    sectors: list[str] | None = Field(..., max_length=6)
+
+    @field_validator("sectors")
+    @classmethod
+    def _clean(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        if too_long := [n for n in v if len(" ".join(n.split())) > 24]:
+            raise ValueError(f"a badge is at most 24 characters: {too_long[0][:40]!r}")
+        return badges.clean(v)
+
+
 class HoldingOut(BaseModel):
     """One symbol a rotation or dip bot holds, valued at its last price."""
 
@@ -645,6 +663,9 @@ class BotOut(StrategyParams):
     broker: str
     live: bool
     status: str
+    sectors: list[str] = []  # sector badges, biggest first (see sectors.py)
+    sectors_auto: bool = True  # worked out from its symbols (False: set by hand)
+    sectors_from_symbols: list[str] = []  # what its symbols say, even when set by hand
     allocated_cash: float  # the starting capital
     added_cash: float | None = None  # money added since (None = none)
     cash: float

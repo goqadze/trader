@@ -82,6 +82,9 @@ export interface Bot extends Omit<StrategyParams, "strategy"> {
   broker: string;
   live: boolean;
   status: BotStatus;
+  sectors: string[]; // sector badges, biggest first (trading-service sectors.py)
+  sectors_auto: boolean; // worked out from its symbols; false = set by hand
+  sectors_from_symbols: string[]; // what its symbols say, even when set by hand
   allocated_cash: number; // the starting capital
   added_cash: number | null; // money added since (Add money); null = none
   capital: number; // what was put in: allocated_cash + added_cash; return_pct and buy_hold_return_pct are measured on it

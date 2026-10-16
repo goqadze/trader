@@ -302,6 +302,14 @@ this rotation** on the Rotation page) run the rotation backtest's rules on one b
 - Paper accounts only for now (the simulator or Alpaca paper). On Alpaca paper no other bot may trade a symbol of its
   universe, and the account is reconciled symbol by symbol.
 
+Sector badges (`trading-service/app/sectors.py`): each bot shows which parts of the market it trades (Energy, Chips,
+Defensive ...) in the bot table's Sectors column (filterable) and on its page. They're worked out from its symbols
+(a dip bot's watchlist, a rotation bot's universe, a single bot's symbol): each symbol has a sector (a hand-made list,
+else Yahoo's sector), and a sector holding at least a fifth of the symbols is a badge, three at most. 13 energy
+stocks give Energy; 8 chip makers and 4 consumer staples give Chips and Defensive; a list spread thinner is
+Diversified. The pencil next to them sets them by hand (`PUT /bots/{id}/sectors`, any names, up to 6) or back to
+automatic. Only a label: how the bot trades doesn't change.
+
 Safety built in:
 
 - **Paper by default.** Live needs an env flag, live keys, and an explicit confirmation per bot; setting the

@@ -10,6 +10,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { tradingApi } from "./api";
 import BotForm, { type BotFormInitial } from "./BotForm";
 import { useConfirm } from "./confirm";
+import { SectorTags } from "./sectors";
 import { dipRules } from "../dip/DipParts";
 import { strategyName } from "../strategies";
 import {
@@ -78,6 +79,13 @@ const columns: ColumnsType<Bot> = [
         <span style={{ color: "#8b98b5", fontSize: 12 }}>{b.name}</span>
       </Space>
     ),
+  },
+  {
+    // Which parts of the market it trades (filterable: the filter's choices come from the bots listed, see below)
+    title: "Sectors",
+    key: "sectors",
+    width: 150,
+    render: (_, b) => <SectorTags sectors={b.sectors} />,
   },
   {
     title: "Status",
@@ -242,7 +250,18 @@ export default function TradingPage() {
     ...brokers.map((n) => ({ label: `${brokerLabel(n)} (${list.filter((b) => b.broker === n).length})`, value: n })),
   ];
   const pickBroker = (v: string) => { setBrokerPick(v); rememberBroker(v); };
-  const sorted = useMemo(() => columns.map((c) => (c.sorter ? { ...c, sortOrder: c.key === sort.key ? sort.order : null } : c)), [sort]);
+  // The Sectors filter offers the badges of the bots listed, the most common first
+  const [sectorPick, setSectorPick] = useState<string[] | null>(null);
+  const sectorChoices = useMemo(() => {
+    const count = new Map<string, number>();
+    list.forEach((b) => b.sectors.forEach((s) => count.set(s, (count.get(s) ?? 0) + 1)));
+    return [...count].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0])).map(([s, n]) => ({ text: `${s} (${n})`, value: s }));
+  }, [list]);
+  const sorted = useMemo(() => columns.map((c) => (
+    c.key === "sectors"
+      ? { ...c, filters: sectorChoices, filteredValue: sectorPick, onFilter: (v: boolean | React.Key, b: Bot) => b.sectors.includes(String(v)) }
+      : c.sorter ? { ...c, sortOrder: c.key === sort.key ? sort.order : null } : c
+  )), [sort, sectorChoices, sectorPick]);
   const phone = Grid.useBreakpoint().sm === false; // undefined before the first measure: the desktop control
   const events = usePolling(() => tradingApi.allEvents(broker === "all" ? undefined : broker), 15_000, [broker]);
 
@@ -387,8 +406,9 @@ export default function TradingPage() {
           loading={bots.loading && !bots.data}
           pagination={false}
           size="middle"
-          scroll={{ x: 900 }}
-          onChange={(_, __, s) => {
+          scroll={{ x: 1050 }}
+          onChange={(_, filters, s) => {
+            setSectorPick((filters.sectors as string[] | null) ?? null);
             const one = Array.isArray(s) ? s[0] : s;
             const next = { key: one?.order ? String(one.columnKey) : "", order: one?.order ?? null };
             setSort(next);

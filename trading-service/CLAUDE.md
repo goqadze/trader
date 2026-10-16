@@ -16,7 +16,7 @@ grep -n "<column>" app/models.py app/schemas.py ../frontend/src/trading/types.ts
 
 | Module | What | Key symbols |
 |---|---|---|
-| `main.py` | All bot/dip/rotation/study/email endpoints | `_bot_out` (Bot → `BotOut`, adds equity, live, watchlist), `_get_bot`, `_symbol_clash` (who may share a symbol), `_broker_or_400`, `create_bot` / `create_dip_bot` / `create_rotation_bot`, `update_bot`, `update_dip_bot`, `add_bot_capital`, `halt_all`, `list_*` |
+| `main.py` | All bot/dip/rotation/study/email endpoints | `_bot_out` (Bot → `BotOut`, adds equity, live, watchlist, sector badges), `_get_bot`, `_symbol_clash` (who may share a symbol), `_broker_or_400`, `create_bot` / `create_dip_bot` / `create_rotation_bot`, `update_bot`, `update_dip_bot`, `add_bot_capital`, `halt_all`, `list_*` |
 | `schemas.py` | Every request/response shape + validation (422s) | `BotCreate`, `DipBotCreate`, `DipRules`, `DipBotUpdate`, `RotationBotCreate`, `BotUpdate`, `BotOut`, `StatusOut`, `DipTestIn`, `EmailAlertsIn/Out`, Journal* |
 | `models.py` | SQLAlchemy tables | `Bot` (all three kinds; `strategy` = a decision strategy, `"rotation"` or `"dip"`), `Holding` (multi-symbol positions), `WatchItem` (dip watchlist), `Order`, `Decision`, `EquitySnapshot`, `Event` (audit log), `Signal`, `DipPreset`, `DipStudy`/`DipTest`, `Notification`, `Setting`, `User`, `Journal*` |
 | `db.py` | Engine + startup schema fixes | `init_db`, `_add_missing_columns` (new columns appear on reload), `_relax_removed_columns`, `get_session` |
@@ -32,6 +32,7 @@ grep -n "<column>" app/models.py app/schemas.py ../frontend/src/trading/types.ts
 | `notify.py` | Email outbox | `enqueue`, `trade`, `from_event`, `dip_signal`, `compose` (HTML), `send_pending`, `run_forever`; links use `dashboard_url()/trading/{id}` |
 | `risk_report.py` | Daily pre-open risk email | `build`, `run_once`, `due`, `run_forever`; `macro_dates.json` |
 | `studies.py` | Test results grid (server-side paging) | `index`, `forget`, `page`, `sort_keys` |
+| `sectors.py` | Sector badges per bot (from its symbols, or set by hand: `Bot.sectors`) | `badges` (the rule), `SYMBOLS` (hand-made symbol → sector), `YAHOO` (fallback), `of_bot`, `clean`; endpoints `GET /sectors`, `PUT /bots/{id}/sectors` |
 | `journal.py` | Journal API (`/journal`, per signed-in user) | `list_trades`, `create_trade`, `apply`, `stats`, `import_bot_trades` |
 | `auth.py` | Sign-in, sessions, admin approval | `current_user`, `admin_user`, `issue_session`, `login`, `signup` |
 | others | | `splits.py` (`fetch`, `apply_all`), `shares.py` (`affordable`, `dollars`), `yahoo_cache.py` (`Shared`), `alpaca_prices.py` (`closes`: SIP fallback for Yahoo), `decision_client.py` (`get_signal`, moods), `config.py` (`Settings`), `manage.py` (admin CLI) |

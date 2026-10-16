@@ -22,6 +22,7 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session, defer
 
 from . import auth, dip, journal, notify, risk_report, rotation, scheduler, studies
+from . import sectors as badges
 from .brokers import SHARED_ACCOUNT_BROKERS, BrokerError, catalog, get_broker
 from .config import settings
 from .db import SessionLocal, get_session, init_db, utcnow
@@ -31,7 +32,7 @@ from .models import (DIP, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPrese
 from .schemas import (BotCreate, BotOut, BotUpdate, CapitalAdd, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn, DipPresetOut,
                       DipStudyIn, DipStudyOut, DipStudySummaryOut, DipTestDetailOut, DipTestIn, DipTestPageOut,
                       EmailAlertsIn, EmailAlertsOut, EventOut, HoldingOut, NotificationOut, RiskReportOut, NotifyCategoryOut, OrderOut,
-                      PRESET_CONFIGS, RotationBotCreate, RotationPresetIn, SignalOut, SnapshotOut, StatusOut, StudyStrategy,
+                      PRESET_CONFIGS, RotationBotCreate, RotationPresetIn, SectorsIn, SignalOut, SnapshotOut, StatusOut, StudyStrategy,
                       WatchItemOut, WatchSymbols, check_window)
 from .trader import (add_capital, benchmark_value, bot_equity, bot_lock, capital, close_position, evaluate, holdings,
                      log_event, open_orders, resting_stop)
@@ -79,7 +80,8 @@ def _get_bot(session: Session, bot_id: int) -> Bot:
     return bot
 
 
-def _bot_out(session: Session, bot: Bot) -> BotOut:
+def _bot_out(session: Session, bot: Bot, yahoo: dict[str, str] | None = None) -> BotOut:
+    """yahoo: the symbols' Yahoo sectors (sectors.yahoo_sectors), read once by a caller listing many bots."""
     price = bot.last_price or bot.entry_price or 0.0  # a rotation bot's "price": what its universe held equally is worth
     equity = bot_equity(session, bot, price)
     live = next((b["live"] for b in catalog() if b["name"] == bot.broker), False)
@@ -95,6 +97,8 @@ def _bot_out(session: Session, bot: Bot) -> BotOut:
                                entry_price=h.entry_price, reference_price=h.reference_price, target_price=h.target_price,
                                stop_price=h.stop_price, on_watchlist=bot.strategy != DIP or h.symbol in watched))
     held = {r.symbol for r in rows}
+    sector_badges, sectors_auto, from_symbols = badges.of_bot(bot, [i.symbol for i in items],
+                                                              badges.yahoo_sectors(session) if yahoo is None else yahoo)
 
     def zone(i) -> float | None:  # the fall that buys it: by the rules as they are now (a daily move: the last check's)
         return i.buy_drop if bot.drop_mode == "volatility" else dip.buy_fall(bot, i.reference_price)
@@ -108,6 +112,9 @@ def _bot_out(session: Session, bot: Bot) -> BotOut:
     return BotOut.model_validate({
         **{c: getattr(bot, c) for c in BotOut.model_fields if hasattr(bot, c)},
         "live": live,
+        "sectors": sector_badges,
+        "sectors_auto": sectors_auto,
+        "sectors_from_symbols": from_symbols,
         "equity": equity,
         "capital": capital(bot),
         "return_pct": round((equity / capital(bot) - 1) * 100, 2),
@@ -241,7 +248,27 @@ def list_bots(include_archived: bool = False, session: Session = Depends(get_ses
     q = select(Bot).order_by(Bot.created_at.desc())
     if not include_archived:
         q = q.where(Bot.status != "archived")
-    return [_bot_out(session, b) for b in session.scalars(q)]
+    yahoo = badges.yahoo_sectors(session)
+    return [_bot_out(session, b, yahoo) for b in session.scalars(q)]
+
+
+@app.get("/sectors", response_model=list[str])
+def list_sectors():
+    """The sector badges the dashboard offers when setting a bot's by hand (any other name works too)."""
+    return badges.BADGES
+
+
+@app.put("/bots/{bot_id}/sectors", response_model=BotOut)
+def set_bot_sectors(bot_id: int, body: SectorsIn, session: Session = Depends(get_session)):
+    """Sets a bot's sector badges by hand ([] = none), or with null hands them back to its symbols. Only a label:
+    nothing about how the bot trades changes, so it works on any bot, archived ones too."""
+    bot = _get_bot(session, bot_id)
+    if body.sectors != bot.sectors:
+        bot.sectors = body.sectors
+        said = "automatic (from its symbols)" if body.sectors is None else ", ".join(body.sectors) or "none"
+        log_event(session, bot.id, "params", f"Sector badges: {said}")
+        session.commit()
+    return _bot_out(session, bot)
 
 
 @app.post("/bots", response_model=BotOut, status_code=201)
