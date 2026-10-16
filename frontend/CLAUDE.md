@@ -16,7 +16,7 @@ grep -rn "<text on screen>" src --include='*.tsx'                     # the comp
 
 | Path | Page | Parts |
 |---|---|---|
-| `/` | `trading/TradingPage.tsx` (bot overview: totals, broker filter, bot table `columns` incl. the Sectors filter, activity feed, `MarketStatus`) | `trading/BotForm.tsx` (new single-symbol bot) |
+| `/` | `trading/TradingPage.tsx` (bot overview: totals, free cash per Alpaca account (`FreeCash`), broker filter, bot table `columns` incl. the Sectors filter, activity feed, `MarketStatus`) | `trading/BotForm.tsx` (new single-symbol bot) |
 | `/trading/:id` | `trading/BotPage.tsx` (one bot: chart, decisions, orders, events, Edit/Pause/Archive) | `dip/DipParts.tsx` (dip holdings, watchlist, rules, signals), `trading/RotationParts.tsx`, `trading/AddMoney.tsx` |
 | `/dip` | `pages/DipPage.tsx` (dip backtest + Test results tab) | `dip/` (`DipBacktestForm`, `DipBotForm`, `RulesFields`, `PresetPicker`, `SymbolChart`, `useDip`), `studies/TestResults.tsx` |
 | `/rotation` | `pages/RotationPage.tsx` | `rotation/` (`RotationForm`, `RotationResult`, `UniverseField`, `useRotation`), `trading/RotationBotForm.tsx` |

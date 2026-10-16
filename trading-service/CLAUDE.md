@@ -16,7 +16,7 @@ grep -n "<column>" app/models.py app/schemas.py ../frontend/src/trading/types.ts
 
 | Module | What | Key symbols |
 |---|---|---|
-| `main.py` | All bot/dip/rotation/study/email endpoints | `_bot_out` (Bot → `BotOut`, adds equity, live, watchlist, sector badges), `_get_bot`, `_symbol_clash` (who may share a symbol), `_broker_or_400`, `create_bot` / `create_dip_bot` / `create_rotation_bot`, `update_bot`, `update_dip_bot`, `add_bot_capital`, `halt_all`, `list_*` |
+| `main.py` | All bot/dip/rotation/study/email endpoints | `_bot_out` (Bot → `BotOut`, adds equity, live, watchlist, sector badges), `_get_bot`, `_symbol_clash` (who may share a symbol), `_broker_or_400`, `create_bot` / `create_dip_bot` / `create_rotation_bot`, `update_bot`, `update_dip_bot`, `add_bot_capital`, `halt_all`, `accounts` (free cash per Alpaca account, `_buying_power` 30 s cache), `list_*` |
 | `schemas.py` | Every request/response shape + validation (422s) | `BotCreate`, `DipBotCreate`, `DipRules`, `DipBotUpdate`, `RotationBotCreate`, `BotUpdate`, `BotOut`, `StatusOut`, `DipTestIn`, `EmailAlertsIn/Out`, Journal* |
 | `models.py` | SQLAlchemy tables | `Bot` (all three kinds; `strategy` = a decision strategy, `"rotation"` or `"dip"`), `Holding` (multi-symbol positions), `WatchItem` (dip watchlist), `Order`, `Decision`, `EquitySnapshot`, `Event` (audit log), `Signal`, `DipPreset`, `DipStudy`/`DipTest`, `Notification`, `Setting`, `User`, `Journal*` |
 | `db.py` | Engine + startup schema fixes | `init_db`, `_add_missing_columns` (new columns appear on reload), `_relax_removed_columns`, `get_session` |

@@ -10,8 +10,10 @@ import asyncio
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
@@ -29,8 +31,8 @@ from .db import SessionLocal, get_session, init_db, utcnow
 from .market import is_open, next_decision_time, ny_date, session_bounds
 from .models import (DIP, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPreset, DipStudy, DipTest, EquitySnapshot, Event,
                      Notification, Order, Signal, WatchItem)
-from .schemas import (BotCreate, BotOut, BotUpdate, CapitalAdd, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn, DipPresetOut,
-                      DipStudyIn, DipStudyOut, DipStudySummaryOut, DipTestDetailOut, DipTestIn, DipTestPageOut,
+from .schemas import (AccountOut, BotCreate, BotOut, BotUpdate, CapitalAdd, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn,
+                      DipPresetOut, DipStudyIn, DipStudyOut, DipStudySummaryOut, DipTestDetailOut, DipTestIn, DipTestPageOut,
                       EmailAlertsIn, EmailAlertsOut, EventOut, HoldingOut, NotificationOut, RiskReportOut, NotifyCategoryOut, OrderOut,
                       PRESET_CONFIGS, RotationBotCreate, RotationPresetIn, SectorsIn, SignalOut, SnapshotOut, StatusOut, StudyStrategy,
                       WatchItemOut, WatchSymbols, check_window)
@@ -237,6 +239,46 @@ def status(session: Session = Depends(get_session)):
         live_trading_allowed=settings.allow_live_trading,
         brokers=catalog(),
     )
+
+
+ACCOUNT_TTL = 30.0  # seconds one read of an account's buying power is reused: every open dashboard asks every 30 s
+_account_reads: dict[str, tuple[float, float | None, str, object]] = {}  # broker -> (monotonic time, bp, error, read at)
+
+
+def _buying_power(name: str) -> tuple[float | None, str, object]:
+    """The account's buying power (cash only, never margin: see AlpacaBroker.buying_power), an error if it couldn't be
+    read, and when it was read; at most one Alpaca request per account every ACCOUNT_TTL seconds."""
+    hit = _account_reads.get(name)
+    if hit and time.monotonic() - hit[0] < ACCOUNT_TTL:
+        return hit[1:]
+    try:
+        read = (get_broker(SimpleNamespace(broker=name)).buying_power(), "", utcnow())
+    except BrokerError as e:
+        read = (None, str(e), utcnow())
+    _account_reads[name] = (time.monotonic(), *read)
+    return read
+
+
+@app.get("/accounts", response_model=list[AccountOut])
+def accounts(session: Session = Depends(get_session)):
+    """Per real account (Alpaca paper, Alpaca live; only those with keys): its buying power minus the cash of every bot
+    on it that isn't archived (a paused bot keeps its cash for when it resumes). What's left belongs to no bot: room
+    for a new bot or Add money. The simulator has no account (each bot's cash is its own), so it isn't listed.
+    The Mac and the server keep separate bots on the same Alpaca paper account: each counts only its own."""
+    out = []
+    for b in catalog():
+        if b["name"] not in SHARED_ACCOUNT_BROKERS or not b["available"]:
+            continue
+        name = b["name"]
+        bots = list(session.scalars(select(Bot).where(Bot.broker == name, Bot.status != "archived")))
+        cash = round(sum(x.cash for x in bots), 2)
+        open_buys = session.scalar(select(func.count()).select_from(Order).join(Bot, Order.bot_id == Bot.id).where(
+            Bot.broker == name, Order.side == "BUY", Order.status.in_(OPEN_ORDER_STATUSES))) or 0
+        bp, error, at = _buying_power(name)
+        out.append(AccountOut(broker=name, label=b["label"], live=b["live"], buying_power=bp, bots_cash=cash,
+                              bots=len(bots), free=None if bp is None else round(bp - cash, 2), open_buys=open_buys,
+                              error=error, checked_at=at))
+    return out
 
 
 # ---------------------------------------------------------------------------

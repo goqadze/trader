@@ -808,6 +808,20 @@ class StatusOut(BaseModel):
     brokers: list[BrokerInfo]
 
 
+class AccountOut(BaseModel):
+    """One real broker account (Alpaca paper or live) and how much of its own money no bot holds (GET /accounts)."""
+    broker: str
+    label: str
+    live: bool
+    buying_power: float | None  # the account's own money it can spend now (no margin); None = it couldn't be read
+    bots_cash: float  # the cash of its bots that aren't archived (a paused bot keeps its cash for when it resumes)
+    bots: int
+    free: float | None  # buying_power - bots_cash: money no bot will spend (negative = the bots count on more than there is)
+    open_buys: int  # buy orders sent but not filled: the account already set their money aside, the bots' cash not yet
+    error: str = ""
+    checked_at: datetime | None
+
+
 # ---------------------------------------------------------------------------
 # Users and sign-in (auth.py)
 # ---------------------------------------------------------------------------

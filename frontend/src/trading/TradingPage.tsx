@@ -16,7 +16,7 @@ import { strategyName } from "../strategies";
 import {
   STATUS_COLOR, botTitle, checkTimes, holdsMany, isDip, isRotation, localTime, nyTime, pct, pnlColor, relative, rotationRules, slotTimes, usd,
 } from "./format";
-import type { Bot, BotCreate, TradingEvent, TradingStatus } from "./types";
+import type { AccountInfo, Bot, BotCreate, TradingEvent, TradingStatus } from "./types";
 import { usePolling } from "./usePolling";
 
 /** Market clock + scheduler heartbeat, shown on both trading pages. Given a bot, shows that bot's next decision. */
@@ -226,6 +226,31 @@ function ActivityFeed({ events, bots, title, emptyText }: { events: TradingEvent
   );
 }
 
+/** One real account's money that no bot holds: its buying power minus the cash of its bots that aren't archived. */
+function FreeCash({ a }: { a: AccountInfo }) {
+  const short = a.free != null && a.free < 0;
+  return (
+    <Card size="small">
+      <Statistic
+        title={
+          <Tooltip title="The account's own money it can spend now (its buying power, never margin) minus the cash of its bots that aren't archived (a paused bot keeps its cash for when it resumes). What's left belongs to no bot: room for a new bot or Add money. Read from the broker at most every 30 seconds.">
+            Free cash · {BROKER_LABEL[a.broker] ?? a.label}
+          </Tooltip>
+        }
+        value={usd(a.free)}
+        valueStyle={{ color: short ? "#ff4d4f" : undefined }}
+      />
+      <span style={{ color: "#8b98b5", fontSize: 12 }}>
+        {a.buying_power == null
+          ? `Buying power unknown${a.error ? `: ${a.error}` : ""}`
+          : `Buying power ${usd(a.buying_power)} − cash of ${a.bots} bot${a.bots === 1 ? "" : "s"} ${usd(a.bots_cash)}`}
+        {short && " · the bots count on more than the account has: their buys stop at what it can pay"}
+        {a.open_buys > 0 && ` · ${a.open_buys} buy order${a.open_buys === 1 ? "" : "s"} still open: settles once filled`}
+      </span>
+    </Card>
+  );
+}
+
 /** Overview of every trading bot: portfolio totals, the bot table, the kill switch and a live activity feed. */
 export default function TradingPage() {
   const { message } = AntApp.useApp();
@@ -239,6 +264,7 @@ export default function TradingPage() {
 
   const bots = usePolling(() => tradingApi.listBots(showArchived), 15_000, [showArchived]);
   const status = usePolling(tradingApi.status, 30_000);
+  const accounts = usePolling(tradingApi.accounts, 30_000);
   const list = bots.data ?? [];
   // The brokers the listed bots use, live first. The filter shows with two or more; a remembered pick with no bots listed
   // (any more), or with the filter hidden, shows them all (the pick holds while the list loads)
@@ -391,6 +417,10 @@ export default function TradingPage() {
             <Statistic title="Active bots" value={totals.active} suffix={`/ ${totals.count}`} />
           </Card>
         </Col>
+        {(accounts.data ?? []).filter((a) => broker === "all" || a.broker === broker)
+          .sort((x, y) => BROKER_ORDER.indexOf(x.broker) - BROKER_ORDER.indexOf(y.broker)).map((a) => (
+          <Col key={a.broker} xs={24} md={12}><FreeCash a={a} /></Col>
+        ))}
       </Row>
 
       <Card

@@ -310,6 +310,14 @@ stocks give Energy; 8 chip makers and 4 consumer staples give Chips and Defensiv
 Diversified. The pencil next to them sets them by hand (`PUT /bots/{id}/sectors`, any names, up to 6) or back to
 automatic. Only a label: how the bot trades doesn't change.
 
+Free cash (`GET /accounts`): under the totals, each Alpaca account (paper, live; only those with keys) shows the money
+no bot holds: the account's buying power (its own money, never margin) minus the cash of every bot on it that isn't
+archived. A paused bot keeps its cash for when it resumes; an archived one gives it back. E.g. $484.25 of buying
+power with bots holding $24.16 + $140 + $140 leaves $180.09 for a new bot or Add money. Red below zero: the bots
+count on more than the account has, and their buys stop at what it can pay. A buy order still open is set aside by
+the account but not yet by its bot, so the number settles once it fills. Read from Alpaca at most every 30 seconds.
+The Mac and the server keep separate bots on the same Alpaca paper account, so each counts only its own.
+
 Safety built in:
 
 - **Paper by default.** Live needs an env flag, live keys, and an explicit confirmation per bot; setting the
