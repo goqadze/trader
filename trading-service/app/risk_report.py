@@ -28,6 +28,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta
 from functools import lru_cache
+from html import escape
 from pathlib import Path
 
 import pandas as pd
@@ -394,12 +395,209 @@ def build(session: Session, today: date, now: datetime, mood_fn=None, sector_moo
                                     for tk, mv in etf_moves(tickers)],
                             "moves_with_it": [f"{s} {c:.2f}" for c, s in followers[:8]]})
     return {"subject": subject, "text": "\n".join(lines), "overall": overall, "market": market,
-            "news_until": f"{seen:%H:%M}", "macro": {"today": due_today, "tomorrow": due_tomorrow,
-                                                     "coming": [f"{d.isoformat()} {label}" for d, label in coming]},
+            "news_until": f"{seen:%H:%M}", "day": today,
+            "macro": {"today": due_today, "tomorrow": due_tomorrow,
+                      "coming": [f"{d.isoformat()} {label}" for d, label in coming],
+                      "next": [f"{d.isoformat()} {label}" for d, label in releases(today + timedelta(days=8),
+                                                                                  today + timedelta(days=60))[:1]]},
+            "paper_holding": sum(1 for b in bots if b.broker != "alpaca-live" and held.get(b.id)),
             "sector_info": sector_info, "live": live_out,
             "exposure": {kind: {lv: round(ex[lv], 2) for lv in RANK} for kind, ex in exposure.items()},
             "sectors": {g: {"level": lv, "why": why, "mood": moods.get(g, {}).get("mood")} for g, (lv, why) in group_rows.items()},
             "symbols": {s: {"level": lv, "why": why, "sector": g} for s, (lv, why, g) in sym_rows.items()}}
+
+
+# ---------------------------------------------------------------------------
+# The email's HTML: sections, colors and bold where it matters. Tables and inline styles only (mail apps drop
+# stylesheets); one column that fits a phone
+# ---------------------------------------------------------------------------
+
+COLORS = {"HIGH": "#cf1322", "ELEVATED": "#d48806", "NORMAL": "#389e0d"}
+TINTS = {"HIGH": "#fff1f0", "ELEVATED": "#fffbe6", "NORMAL": "#f6ffed"}
+MOOD_LEVEL = {"risk_off": "HIGH", "neutral": "NORMAL", "risk_on": "NORMAL"}
+INK, MUTED, LINE = "#1f1f1f", "#8c8c8c", "#f0f0f0"
+FONT = "-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif"
+NEAR_STOP = 0.05  # a slot this close to its stop-loss is shown in red
+
+
+def _e(x) -> str:
+    return escape(str(x))
+
+
+def _badge(level: str, text: str | None = None, big: bool = False) -> str:
+    size = "15px;padding:5px 12px" if big else "11px;padding:2px 7px"
+    return (f'<span style="display:inline-block;background:{COLORS.get(level, MUTED)};color:#ffffff;font-weight:700;'
+            f'font-size:{size};border-radius:4px;letter-spacing:.3px;white-space:nowrap">{_e(text or level)}</span>')
+
+
+def _signed(x: float | None, digits: int = 1, bold: bool = False) -> str:
+    if x is None:
+        return f'<span style="color:{MUTED}">—</span>'
+    shown = round(x * 100, digits)
+    if shown == 0:  # no "-0.0%" in red
+        return f'<span style="color:{INK};white-space:nowrap">{0:.{digits}f}%</span>'
+    color = "#389e0d" if shown > 0 else "#cf1322"
+    weight = "font-weight:700;" if bold else ""
+    return f'<span style="color:{color};{weight}white-space:nowrap">{shown:+.{digits}f}%</span>'
+
+
+def _mood(m: str | None) -> str:
+    return (m or "unavailable").replace("_", "-")
+
+
+def _section(title: str) -> str:
+    return (f'<tr><td style="padding:22px 0 8px;font-size:13px;font-weight:700;color:{MUTED};letter-spacing:1px;'
+            f'text-transform:uppercase;border-bottom:2px solid {LINE}">{_e(title)}</td></tr>')
+
+
+def _macro_html(macro: dict) -> str:
+    def when(item: str) -> str:
+        d, label = item.split(" ", 1)
+        return f"{_day(date.fromisoformat(d))} {_e(label)}"
+
+    parts = [(f'<b style="color:{COLORS["ELEVATED"]}">{_e(" + ".join(macro["today"]))} today</b>' if macro["today"]
+              else "nothing due today")]
+    if macro.get("tomorrow"):
+        parts.append(f'<b>{_e(" + ".join(macro["tomorrow"]))} tomorrow</b>')
+    if macro.get("coming"):
+        parts.append("this week: " + ", ".join(when(x) for x in macro["coming"]))
+    elif macro.get("next"):
+        parts.append("next: " + ", ".join(when(x) for x in macro["next"]))
+    return " · ".join(parts)
+
+
+def render_html(report: dict, dashboard_url: str = "") -> str:
+    """The report as an email page: the day at the top, then the real money slot by slot, the sectors to watch, the
+    paper bots and what the levels mean."""
+    overall, market = report["overall"], report["market"]
+    sectors = {s["sector"]: s for s in report["sector_info"]}
+    market_etf = sectors.get(MARKET, {}).get("etf", [])
+    rows = []
+
+    # The banner: the day's level, big
+    rows.append(
+        f'<tr><td style="background:{TINTS[overall]};border:1px solid {COLORS[overall]};border-radius:8px;padding:16px 18px">'
+        f'<div style="font-size:12px;color:{MUTED}">Risk report · before the open · news up to {_e(report["news_until"])} New York</div>'
+        f'<div style="font-size:22px;font-weight:700;color:{INK};margin:4px 0 10px">{_e(_day(report["day"]))} {report["day"].year}</div>'
+        f'{_badge(overall, f"OVERALL: {overall}", big=True)}'
+        f'<div style="font-size:13px;color:{INK};margin-top:10px">'
+        f'{sum(1 for s in report["sector_info"] if s["level"] == "HIGH" and s["sector"] != MARKET)} of '
+        f'{sum(1 for s in report["sector_info"] if s["sector"] != MARKET)} sectors HIGH · live bots hold '
+        f'<b style="color:{COLORS["HIGH"]}">{_money(report["exposure"]["live"]["HIGH"])} at HIGH</b></div></td></tr>')
+
+    # Today: the market and the calendar
+    rows.append(_section("Today"))
+    moves = " · ".join(f'{_e(e["ticker"])} {_signed(e["yesterday"])} yesterday, {_signed(e["five_days"])} in 5 days'
+                       for e in market_etf)
+    rows.append(
+        f'<tr><td style="padding:10px 0;font-size:14px;color:{INK};line-height:1.5">'
+        f'<b>Market news</b> {_badge(MOOD_LEVEL.get(market.get("mood"), "ELEVATED"), _mood(market.get("mood")).upper())}'
+        f'<div style="margin:6px 0">{_e(market.get("reason") or "")}</div>'
+        f'<div style="font-size:13px;color:{MUTED}">{moves}</div>'
+        f'<div style="margin-top:8px"><b>Macro</b> · {_macro_html(report["macro"])}</div></td></tr>')
+
+    # The real money, slot by slot
+    rows.append(_section("Your real money"))
+    if not report["live"]:
+        rows.append(f'<tr><td style="padding:10px 0;color:{MUTED}">No real-money bots.</td></tr>')
+    for b in report["live"]:
+        cells = []
+        for h in b["held"]:
+            near = h["stop_gap"] is not None and h["stop_gap"] > -NEAR_STOP
+            stop = (f'<span style="color:{COLORS["HIGH"] if near else INK};font-weight:{700 if near else 400};'
+                    f'white-space:nowrap">{"⚠ " if near else ""}{max(0.0, -h["stop_gap"]) * 100:.1f}% below</span>'
+                    if h["stop_gap"] is not None else f'<span style="color:{MUTED}">—</span>')
+            # "Technology · Technology news reads risk-off" says it twice: its own sector is "its news"
+            why = "; ".join(w.replace(f"{h['sector']} news reads", "its news reads") if h["sector"] else w
+                            for w in h["why"]) or "nothing flagged"
+            cells.append(
+                f'<tr><td style="padding:7px 6px 1px 0;font-weight:700;font-size:14px">{_e(h["symbol"])}</td>'
+                f'<td style="padding:7px 6px 1px;font-size:14px;text-align:right">{_money(h["value"])}</td>'
+                f'<td style="padding:7px 6px 1px;font-size:14px;text-align:right">{_signed(h["pnl_pct"])}</td>'
+                f'<td style="padding:7px 6px 1px;text-align:center">{_badge(h["level"])}</td>'
+                f'<td style="padding:7px 0 1px 6px;font-size:14px;text-align:right">{stop}</td></tr>'
+                f'<tr><td colspan="5" style="padding:0 0 7px;font-size:12px;color:{MUTED};border-bottom:1px solid {LINE}">'
+                f'{_e(h["sector"] or "sector unknown")} · {_e(why)}</td></tr>')
+        free = ""
+        if b["free_slots"]:
+            buyable = [w for w in b["watch"] if not w["blacklisted"]]
+            high = sorted(w["symbol"] for w in buyable if w["level"] == "HIGH")
+            counts = ", ".join(f"{sum(1 for w in buyable if w['level'] == lv)} {lv.lower()}" for lv in RANK
+                               if any(w["level"] == lv for w in buyable))
+            free = (f'<div style="margin-top:8px;padding:8px 10px;background:#fafafa;border-radius:6px;font-size:13px">'
+                    f'<b>{b["free_slots"]} free slot{"s" if b["free_slots"] > 1 else ""}</b> (cash ${b["cash"]:,.2f}): of what '
+                    f'it could buy from the first check (9:45 New York), {counts or "nothing"}'
+                    + (f'<br><span style="color:{COLORS["HIGH"]}">HIGH: <b>{_e(_more(high, 8))}</b></span>' if high else "")
+                    + "</div>")
+        blacklisted = [w["symbol"] for w in b["watch"] if w["blacklisted"]]
+        worst = max((RANK[h["level"]] for h in b["held"]), default=0)
+        edge = COLORS[[k for k, v in RANK.items() if v == worst][0]] if b["held"] else LINE
+        rows.append(
+            f'<tr><td style="padding:12px 0 4px"><div style="border:1px solid {LINE};border-left:4px solid {edge};'
+            f'border-radius:6px;padding:10px 12px">'
+            f'<div style="font-size:15px;font-weight:700;color:{INK}">#{b["id"]} {_e(b["name"])}'
+            f'<span style="font-weight:400;font-size:12px;color:{MUTED}"> · {len(b["held"])} of {b["slots"]} slots · cash '
+            f'${b["cash"]:,.2f}{" · " + _e(b["status"]) if b["status"] != "active" else ""}</span></div>'
+            + (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-top:6px">'
+               f'<tr><td style="font-size:11px;color:{MUTED};padding-bottom:2px">slot</td>'
+               f'<td style="font-size:11px;color:{MUTED};text-align:right">value</td>'
+               f'<td style="font-size:11px;color:{MUTED};text-align:right">from buy</td>'
+               f'<td style="font-size:11px;color:{MUTED};text-align:center">risk</td>'
+               f'<td style="font-size:11px;color:{MUTED};text-align:right">to stop</td></tr>{"".join(cells)}</table>'
+               if cells else f'<div style="font-size:13px;color:{MUTED};margin-top:6px">Holding cash only.</div>')
+            + free
+            + (f'<div style="font-size:12px;color:{MUTED};margin-top:6px">Blacklisted: {_e(", ".join(blacklisted))}</div>'
+               if blacklisted else "")
+            + "</div></td></tr>")
+    ex = report["exposure"]["live"]
+    if report["live"]:
+        rows.append(f'<tr><td style="padding:8px 0;font-size:13px">Live bots hold '
+                    + " · ".join(f'<b style="color:{COLORS[lv]}">{_money(ex[lv])} {lv.lower()}</b>' for lv in RANK)
+                    + "</td></tr>")
+
+    # The sectors: the HIGH ones as cards, the rest in a table
+    rows.append(_section("Sectors to watch"))
+    for s in report["sector_info"]:
+        if s["level"] != "HIGH" or s["sector"] == MARKET:
+            continue
+        etf = " · ".join(f'{_e(e["ticker"])} {_signed(e["yesterday"])} yesterday, {_signed(e["five_days"], bold=True)} in 5 days'
+                         for e in s["etf"])
+        rows.append(
+            f'<tr><td style="padding:10px 0 2px"><div style="border-left:4px solid {COLORS["HIGH"]};background:{TINTS["HIGH"]};'
+            f'border-radius:6px;padding:10px 12px">'
+            f'<div style="font-size:15px;font-weight:700;color:{INK}">{_e(s["sector"])} {_badge("HIGH")}</div>'
+            f'<div style="font-size:13px;margin:4px 0;color:{INK}">{etf}</div>'
+            f'<div style="font-size:13px;color:{INK}">{_e(s["reason"] or "")}</div>'
+            + (f'<div style="font-size:12px;color:{MUTED};margin-top:6px">Moves with it: {_e(", ".join(s["moves_with_it"]))}</div>'
+               if s["moves_with_it"] else "")
+            + "</div></td></tr>")
+    rest = [s for s in report["sector_info"] if s["level"] != "HIGH" and s["sector"] != MARKET]
+    if rest:
+        trs = "".join(
+            f'<tr><td style="padding:6px 6px 6px 0;font-size:13px;border-bottom:1px solid {LINE}">{_e(s["sector"])}</td>'
+            f'<td style="padding:6px;text-align:center;border-bottom:1px solid {LINE}">{_badge(s["level"])}</td>'
+            f'<td style="padding:6px;font-size:13px;text-align:right;border-bottom:1px solid {LINE}">'
+            f'{_signed(s["etf"][0]["five_days"]) if s["etf"] else ""}</td>'
+            f'<td style="padding:6px 0 6px 6px;font-size:12px;color:{MUTED};border-bottom:1px solid {LINE}">news {_e(_mood(s["news"]))}</td></tr>'
+            for s in rest)
+        rows.append(f'<tr><td style="padding:10px 0"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+                    f'style="border-collapse:collapse"><tr><td style="font-size:11px;color:{MUTED}">other sectors</td>'
+                    f'<td style="font-size:11px;color:{MUTED};text-align:center">risk</td>'
+                    f'<td style="font-size:11px;color:{MUTED};text-align:right">ETF 5 days</td><td></td></tr>{trs}</table></td></tr>')
+
+    # Paper bots and the small print
+    px = report["exposure"]["paper"]
+    rows.append(_section("Paper bots"))
+    rows.append(f'<tr><td style="padding:10px 0;font-size:13px">{report["paper_holding"]} bots holding something: '
+                + " · ".join(f'<b style="color:{COLORS[lv]}">{_money(px[lv])} {lv.lower()}</b>' for lv in RANK) + "</td></tr>")
+    legend = "".join(f'<div style="margin:3px 0">{_badge(k)} {_e(v)}.</div>' for k, v in LEVELS.items())
+    link = (f'<div style="margin-top:8px"><a href="{_e(dashboard_url)}" style="color:#4f8cff">Open the dashboard</a></div>'
+            if dashboard_url else "")
+    rows.append(f'<tr><td style="padding:18px 0 0;font-size:12px;color:{MUTED};border-top:2px solid {LINE}">{legend}'
+                f'<div style="margin-top:8px">Information only: the bots trade as usual. Tested as buy rules on 230 dip '
+                f'setups (2022-2026), skipping buys on these signals cost more than it saved.</div>{link}</td></tr>')
+    return (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;'
+            f'max-width:640px;font-family:{FONT};color:{INK}">{"".join(rows)}</table>')
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +619,7 @@ def queue(session: Session, now: datetime, **sources) -> Notification:
     """Build today's report and queue it as an email (notify sends it on its own, not merged with other alerts)."""
     report = build(session, ny_date(now), now, **sources)
     n = Notification(created_at=now, category="report", kind="risk-report", subject=report["subject"][:200],
-                     body=report["text"])
+                     body=report["text"], html=render_html(report, notify.dashboard_url()))
     session.add(n)
     session.commit()
     return n

@@ -249,6 +249,7 @@ def compose(rows: list[Notification], recipients: list[str], bots: dict[int, Bot
            'border-radius:6px;margin:0 0 14px">LIVE — real money<span style="font-weight:400"> · your Alpaca live '
            'account</span></div>') if live else ""
     blocks = "".join(
+        f'<div style="margin:0 0 14px">{r.html}</div>' if r.html else  # a designed one (the risk report) as it is
         f'<div style="border-left:4px solid {COLORS.get(r.category, "#888")};padding:8px 12px;margin:0 0 14px">'
         f'<div style="font-size:15px;font-weight:600">{pill(r)}{escape(r.subject)}</div>'
         f'<div style="color:#777;font-size:12px;margin:2px 0 8px">{escape(meta(r))}</div>'
@@ -256,7 +257,8 @@ def compose(rows: list[Notification], recipients: list[str], bots: dict[int, Bot
         f'<div style="margin-top:8px"><a href="{escape(_link(r))}">Open in the dashboard</a></div></div>'
         for r in rows)
     msg.add_alternative(
-        f'<!doctype html><html><head><meta charset="utf-8"></head><body>'
+        f'<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'</head><body>'
         f'<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:640px">{top}{blocks}'
         f'<div style="color:#999;font-size:11px">Trading dashboard email alerts. Choose what you get under Email alerts '
         f'on the dashboard.</div></div></body></html>', subtype="html")

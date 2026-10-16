@@ -336,6 +336,8 @@ class Notification(Base):
     kind: Mapped[str] = mapped_column(String(32))  # buy | sell | the event's kind | signal-<kind> | test
     subject: Mapped[str] = mapped_column(String(200))  # one line: "SELL AAPL +$345.60 (+7.0%)"
     body: Mapped[str] = mapped_column(Text, default="")
+    # A designed email of its own (the daily risk report); NULL: the body, as text, in the usual frame
+    html: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(12), default="pending", index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     next_attempt_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)  # after a failed send

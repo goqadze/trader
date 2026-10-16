@@ -238,3 +238,34 @@ def test_the_live_endpoint_is_small_and_has_the_slots(session, bots, monkeypatch
     assert set(body) == {"subject", "overall", "news_until", "market", "macro", "sectors", "live_bots", "paper_exposure"}
     assert body["live_bots"][0]["free_slots"] == 2 and body["sectors"][0]["sector"] == "Technology"
     assert len(json.dumps(body)) < 20_000
+
+
+def test_the_email_is_designed_in_sections_with_the_risky_parts_in_red(session, bots):
+    live, _ = bots
+    live.name = "live <b>dip</b>"
+    session.commit()
+    r = build(session)
+    page = risk_report.render_html(r, "https://trading.test")
+    for part in ("OVERALL: HIGH", "Today", "Your real money", "Sectors to watch", "Paper bots", "news up to 09:25 New York"):
+        assert part in page
+    assert "live &lt;b&gt;dip&lt;/b&gt;" in page and "<b>dip</b>" not in page  # names are escaped
+    assert "⚠ 4.2% below" in page  # MRVL: 230 under 240, inside 5%: red and flagged
+    assert "its news reads risk-off" in page and "Technology · Technology news" not in page
+    assert "2 free slots</b> (cash $50.00)" in page and "Blacklisted" not in page
+    assert page.count('border-left:4px solid #cf1322;background:#fff1f0') == 1  # one HIGH sector card: Technology
+    assert 'href="https://trading.test"' in page
+
+
+def test_the_report_email_uses_its_design_and_keeps_the_text(session, bots, smtp):
+    _wanted(session)
+    n = risk_report.queue(session, NOW, **SOURCES)
+    assert n.html and "Your real money" in n.html
+    msg = notify.compose([n], ["me@test.dev"])
+    html = msg.get_body(("html",)).get_content()
+    assert "Your real money" in html and "white-space:pre-wrap" not in html and 'name="viewport"' in html
+    assert "OVERALL: HIGH" in msg.get_body(("plain",)).get_content()  # the text version for mail apps without HTML
+
+
+def test_zero_moves_are_not_red():
+    assert risk_report._signed(-0.0001) == '<span style="color:#1f1f1f;white-space:nowrap">0.0%</span>'
+    assert "#cf1322" in risk_report._signed(-0.02) and "#389e0d" in risk_report._signed(0.02)
