@@ -98,8 +98,9 @@ cd frontend && npx tsc -p tsconfig.json --noEmit --incremental false   # fronten
 ## Deploy (only when the user asks)
 
 The server has no CI. Use the `deploy` skill: `scripts/deploy.sh --dry-run <services>`, then
-`scripts/deploy.sh --restart --expect "<new bundle text>" <services>`. It backs up the server DB, copies the committed
-HEAD (a `git archive`: uncommitted edits stay on the Mac; never `--delete`, which once deleted a server-only dump),
+`scripts/deploy.sh --at <sha the dry run printed> --restart --expect "<new bundle text>" <services>` (`--at` refuses if
+another session committed in between). It backs up the server DB, copies that commit
+(a `git archive`: uncommitted edits stay on the Mac; never `--delete`, which once deleted a server-only dump),
 builds, runs the trading-service tests in the new server image, restarts only at a quiet moment, and verifies
 (containers, 0 restarts, scheduler, live allowed, watchdog, logs, git clean, bundle).
 

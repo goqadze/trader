@@ -17,15 +17,17 @@ Real money runs on the server. Deploy only on the user's request, and only what 
    checkout's script).
 4. **Dry run**: `scripts/deploy.sh --dry-run <services>`. It shows the files that will change (only committed code
    goes: it copies a `git archive` of HEAD) and files the repo deleted since the server's commit (remove those on the
-   server by hand: a stale `.tsx` breaks the frontend build).
-5. **Deploy**: `scripts/deploy.sh --restart --expect "<a new string in the bundle>" <services>`. It does the backup,
-   copy, build, the trading-service tests in the new server image, then the restart and the checks.
+   server by hand: a stale `.tsx` breaks the frontend build). It ends with the command to deploy exactly that commit.
+5. **Deploy**: `scripts/deploy.sh --at <sha from the dry run> --restart --expect "<a new string in the bundle>" <services>`.
+   Always pass `--at`: another session may commit between the dry run and the deploy, and `--at` then refuses
+   ("HEAD moved since the dry run"). Look at what came in, tell the user, dry-run again. It does the backup, copy,
+   build, the trading-service tests in the new server image, then the restart and the checks.
    - Restarting trading-service or decision-service waits for a quiet moment and refuses otherwise. Quiet means the
      market is closed, or: not 10:00-10:30 or 15:30-16:00 New York, 5-12 min past a quarter hour, and no open
      orders. If it refuses, run `scripts/deploy.sh restart <services>` in a few minutes; it rebuilds nothing.
      `scripts/deploy.sh moment` asks without doing anything.
    - Frontend, backtest-service and watchdog restart at any time.
-   - Without `--restart` it stops after the build: `scripts/deploy.sh restart <services>` later.
+   - Without `--restart` it stops after the build: `scripts/deploy.sh restart --at <sha> <services>` later.
 6. **Report** with numbers from the output: files copied, tests passed, `verify: all ok` (14 containers, 0
    restarts, scheduler ticking, live trading allowed, 11 watchdog checks, git clean at the commit, bundle string).
 

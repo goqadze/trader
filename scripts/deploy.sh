@@ -6,23 +6,26 @@
 # --delete (it once deleted a server-only dump); files the repo deleted since the server's commit are listed, to be
 # removed on the server by hand.
 #
-#   scripts/deploy.sh --dry-run frontend                   what would change; touches nothing on the server
-#   scripts/deploy.sh frontend trading-service             backup, copy, build, tests; no restart
-#   scripts/deploy.sh --restart frontend trading-service   ...then restart them (refuses at a risky moment) and verify
+#   scripts/deploy.sh --dry-run frontend                   what would change; touches nothing; prints the commit
+#   scripts/deploy.sh --at <sha> frontend trading-service  backup, copy, build, tests; no restart
+#   scripts/deploy.sh --at <sha> --restart frontend ...    ...then restart them (refuses at a risky moment) and verify
 #   scripts/deploy.sh restart trading-service              only the restart + verify, after a deploy without --restart
 #   scripts/deploy.sh moment                               is now a quiet moment to restart trading-service?
 #   scripts/deploy.sh verify                               check the server
+# --at <sha>: the commit the dry run showed. Refuses if HEAD has moved since (another session committed in between),
+#   so what goes to the server is what the dry run listed. verify/restart --at <sha>: the commit the server must be at.
 # --expect "text" (with --restart, restart or verify): the new frontend bundle must contain that text.
 #
 # The server is $SERVER, or SERVER=user@host in the git-ignored .deploy.local (address: CLAUDE.local.md).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-if [ -f .deploy.local ]; then . ./.deploy.local; fi
+if [ -z "${SERVER:-}" ] && [ -f .deploy.local ]; then . ./.deploy.local; fi
 : "${SERVER:?set SERVER=user@host, or put SERVER=... in .deploy.local}"
 
 SERVICES="trading-service decision-service backtest-service frontend watchdog"
 LOGS="${TMPDIR:-/tmp}"
 EXPECT=""
+DEPLOYED=""  # full sha of the commit being deployed (--at, else HEAD): what verify expects on the server
 remote() { ssh -o BatchMode=yes "$SERVER" "cd trading && $1"; }
 say() { printf '\n== %s\n' "$*"; }
 die() { printf 'deploy: %b\n' "$*" >&2; exit 1; }
@@ -31,7 +34,7 @@ die() { printf 'deploy: %b\n' "$*" >&2; exit 1; }
 verify() {
   say "verify"
   local out
-  out=$(ssh -o BatchMode=yes "$SERVER" "EXPECT=$(printf %q "$EXPECT") HEAD_SHA=$(git rev-parse HEAD) bash -s" <<'EOF'
+  out=$(ssh -o BatchMode=yes "$SERVER" "EXPECT=$(printf %q "$EXPECT") HEAD_SHA=${DEPLOYED:-$(git rev-parse HEAD)} bash -s" <<'EOF'
 # Every docker command reads </dev/null: this script itself arrives on stdin, and `docker compose exec` would eat it
 cd trading
 bad=0
@@ -60,7 +63,7 @@ tb=$(docker compose logs --since 10m trading-service </dev/null 2>&1 | grep -c T
 if [ "$tb" = 0 ]; then echo "logs: no tracebacks in trading-service's last 10 min"; else fail "trading-service logs: $tb tracebacks in 10 min"; fi
 at=$(git rev-parse HEAD)
 extra=$(git status --porcelain | grep -vE '^\?\? (\.claude/|trading-[0-9-]+\.sql\.gz$)' || true)
-if [ "$at" = "$HEAD_SHA" ] && [ -z "$extra" ]; then echo "git: clean at ${at:0:7}"; else fail "git at ${at:0:7} (Mac HEAD ${HEAD_SHA:0:7}), changes: $extra"; fi
+if [ "$at" = "$HEAD_SHA" ] && [ -z "$extra" ]; then echo "git: clean at ${at:0:7}"; else fail "git at ${at:0:7} (expected ${HEAD_SHA:0:7}), changes: $extra"; fi
 if [ -n "$EXPECT" ]; then
   if docker compose exec -T frontend sh -c 'grep -lF "$1" /usr/share/nginx/html/assets/*.js' sh "$EXPECT" </dev/null >/dev/null; then
     echo "bundle: has \"$EXPECT\""
@@ -117,6 +120,7 @@ while [ $# -gt 0 ]; do
     --dry-run) dry=1 ;;
     --restart) again=1 ;;
     --expect) EXPECT=${2:?--expect needs a text}; shift ;;
+    --at) DEPLOYED=$(git rev-parse --verify --quiet "${2:?--at needs a commit}^{commit}") || die "--at $2: no such commit"; shift ;;
     -*) die "unknown option $1" ;;
     *) services+=("$1") ;;
   esac
@@ -132,19 +136,25 @@ check_services "${services[@]+"${services[@]}"}"
 say "preflight"
 git diff --cached --quiet || die "staged changes: commit or unstage them first (the server gets the Mac's git index)"
 head=$(git rev-parse HEAD)
+if [ -n "$DEPLOYED" ] && [ "$DEPLOYED" != "$head" ]; then
+  die "HEAD moved since the dry run: --at ${DEPLOYED:0:7}, HEAD is now ${head:0:7} ($(git log -1 --format=%s HEAD)).\n\
+Look at what came in (git log --oneline ${DEPLOYED:0:7}..HEAD), then dry-run again. Nothing was done."
+fi
+[ -n "$DEPLOYED" ] || [ $dry = 1 ] || echo "  note: no --at, so this deploys HEAD as it is now"
+DEPLOYED=$head  # from here on everything uses this sha, not HEAD, in case HEAD moves during the run
 GIT_TERMINAL_PROMPT=0 git fetch -q origin 2>/dev/null || echo "  note: couldn't fetch origin"
 upstream=$(git rev-parse '@{u}' 2>/dev/null || echo none)
 if [ "$upstream" != "$head" ]; then
   if [ $dry = 1 ]; then echo "  note: HEAD isn't pushed"; else die "HEAD ${head:0:7} isn't pushed: git push first"; fi
 fi
-echo "  deploying ${head:0:7} $(git log -1 --format=%s)"
+echo "  deploying ${head:0:7} $(git log -1 --format=%s "$head")"
 dirty=$(git status --porcelain --untracked-files=no | wc -l | tr -d ' ')
 [ "$dirty" = 0 ] || echo "  $dirty uncommitted file(s) stay on the Mac"
 old=$(remote "git rev-parse HEAD")
 extra=$(remote "git status --porcelain" | grep -vE '^\?\? (\.claude/|trading-[0-9-]+\.sql\.gz$)' || true)
 [ -z "$extra" ] || die "the server's checkout has changes nobody committed:\n$extra"
 echo "  server at ${old:0:7}, clean"
-gone=$(git diff --no-renames --name-only --diff-filter=D "$old" HEAD 2>/dev/null) \
+gone=$(git diff --no-renames --name-only --diff-filter=D "$old" "$head" 2>/dev/null) \
   || gone="(can't compare: ${old:0:7} isn't in the Mac's history)"
 
 if [ $dry = 0 ]; then
@@ -152,15 +162,16 @@ if [ $dry = 0 ]; then
   remote "./scripts/backup-trading-db.sh" | tail -n 1
 fi
 
-say "copy HEAD's files$([ $dry = 1 ] && echo ' (dry run)' || true)"
+say "copy the files of ${head:0:7}$([ $dry = 1 ] && echo ' (dry run)' || true)"
 tree=$(mktemp -d "$LOGS/deploy-tree.XXXXXX")
 trap 'rm -rf "$tree"' EXIT
 chmod 755 "$tree"  # rsync -p gives the server's trading/ the mode of this folder
-git archive HEAD | tar -x -C "$tree"
+git archive "$head" | tar -x -C "$tree"
 n=(); [ $dry = 0 ] || n=(--dry-run)
 log="$LOGS/deploy-${head:0:7}.log"
 # -c: compare by content (the exported files carry the commit's time, not the Mac's); no -t: keep the server's times
 rsync -rlpcz ${n[@]+"${n[@]}"} --itemize-changes --exclude .env "$tree/" "$SERVER:trading/" > "$log"
+# the refs too: if HEAD moved during the run, verify reports the server's git at a commit other than $head
 rsync -az ${n[@]+"${n[@]}"} .git/ "$SERVER:trading/.git/"
 changed=$(grep -E '^[<c][fL]' "$log" || true)
 echo "  $(printf '%s' "$changed" | grep -c . || true) file(s) to change (list: $log); nothing deleted (rsync never deletes)"
@@ -170,7 +181,11 @@ if [ -n "$gone" ]; then
   printf '%s\n' "$gone" | sed 's/^/    /'
   echo "  remove them by hand: ssh \$SERVER \"cd trading && rm <paths>\""
 fi
-if [ $dry = 1 ]; then printf '\ndry run: nothing changed on the server\n'; exit 0; fi
+if [ $dry = 1 ]; then
+  printf '\ndry run: nothing changed on the server. To deploy exactly this commit:\n  scripts/deploy.sh --at %s [--restart] [--expect "<text>"] %s\n' \
+    "${head:0:12}" "${services[*]}"
+  exit 0
+fi
 
 say "build ${services[*]}"
 remote "docker compose build ${services[*]}" > "$log.build" 2>&1 \
