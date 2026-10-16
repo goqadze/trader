@@ -150,6 +150,20 @@ def test_it_is_sent_once_a_trading_day_at_8_45_when_chosen(session, bots, smtp):
     assert not risk_report.run_once(late, **SOURCES)
 
 
+def test_one_sent_by_hand_before_8_45_doesnt_cancel_the_days_report(session, bots, smtp):
+    _wanted(session)
+    night = datetime(2025, 6, 2, 6, 0, tzinfo=timezone.utc)  # 2:00 New York: the dashboard's "Send today's risk report"
+    risk_report.queue(session, night, **SOURCES)
+    at = datetime(2025, 6, 2, 12, 45, 30, tzinfo=timezone.utc)  # 8:45 New York
+    assert risk_report.run_once(at, **SOURCES)  # the night's report read older news: the 8:45 one still comes
+    session.expire_all()
+    assert len(list(session.scalars(select(Notification).where(Notification.category == "report")))) == 2
+    # One sent by hand from 8:45 on is the day's report: the service catching up later doesn't send another
+    tuesday_9 = datetime(2025, 6, 3, 13, 0, tzinfo=timezone.utc)
+    risk_report.queue(session, tuesday_9, **SOURCES)
+    assert not risk_report.run_once(tuesday_9 + timedelta(minutes=5), **SOURCES)
+
+
 def test_it_isnt_sent_unless_chosen(session, bots, smtp):
     _wanted(session, categories=("trades",))
     assert not risk_report.run_once(NOW, **SOURCES)

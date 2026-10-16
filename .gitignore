@@ -21,6 +21,9 @@ dist/
 # --- Database backups (make backup-trading-db): real trading history, keep out of git ---
 backups/
 
+# --- Claude Code's daily risk summaries (scheduled routine, reports/risk/<date>.md): live bots' amounts ---
+reports/
+
 # --- OS / editor ---
 .DS_Store
 Thumbs.db

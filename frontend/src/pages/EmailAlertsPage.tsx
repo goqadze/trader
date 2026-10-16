@@ -172,7 +172,7 @@ export default function EmailAlertsPage() {
                 <Tooltip title={cfg?.smtp_configured ? "Saves, then sends a test email to these addresses right away" : "Set up the mail server first"}>
                   <Button icon={<SendOutlined />} onClick={test} loading={testing} disabled={!cfg?.smtp_configured}>Send a test email</Button>
                 </Tooltip>
-                <Tooltip title={cfg?.smtp_configured ? "Saves, then builds today's risk report and emails it now (it takes about a minute: the news of each sector is read)" : "Set up the mail server first"}>
+                <Tooltip title={cfg?.smtp_configured ? "Saves, then builds today's risk report and emails it now (it takes about a minute: the news of each sector is read). Sent before 8:45 New York, the 8:45 one still comes." : "Set up the mail server first"}>
                   <Button icon={<FileSearchOutlined />} onClick={report} loading={reporting} disabled={!cfg?.smtp_configured}>Send today's risk report</Button>
                 </Tooltip>
               </Space>

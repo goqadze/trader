@@ -610,7 +610,9 @@ def wanted(session: Session) -> bool:
 
 
 def sent_today(session: Session, today: date) -> bool:
-    start = datetime.combine(today, time(0, 0), tzinfo=NY)
+    """Has today's report gone out? Only one built from REPORT_AT on counts: a report sent by hand earlier in the
+    morning (the dashboard's button) read the night's news, so the 8:45 one still comes with the morning's."""
+    start = datetime.combine(today, REPORT_AT, tzinfo=NY)
     return session.scalar(select(Notification.id).where(Notification.category == "report",
                                                         Notification.created_at >= start).limit(1)) is not None
 
