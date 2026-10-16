@@ -967,6 +967,19 @@ def _send_risk_report_now() -> None:
         logger.exception("the risk report asked for on the dashboard failed")
 
 
+@app.get("/risk-report/live")
+def get_risk_report_live(session: Session = Depends(get_session)):
+    """Today's risk report as data, for a reader that sorts it out itself (the user's pre-open routine): the market and
+    the calendar, every sector's level, news and ETF moves, and each real-money bot's slots (held: sector, level, P&L,
+    distance to the stop; free: the watched symbols it could buy, with their levels). Small: under 20 kB."""
+    now = utcnow()
+    r = risk_report.build(session, ny_date(now), now)
+    session.commit()  # the sectors it looked up are kept
+    return {"subject": r["subject"], "overall": r["overall"], "news_until": r["news_until"],
+            "market": {"mood": r["market"].get("mood"), "reason": r["market"].get("reason")}, "macro": r["macro"],
+            "sectors": r["sector_info"], "live_bots": r["live"], "paper_exposure": r["exposure"]["paper"]}
+
+
 @app.post("/risk-report/send", status_code=202)
 def send_risk_report(background: BackgroundTasks, session: Session = Depends(get_session)):
     """Build today's risk report and email it, whether or not the daily one is chosen or went out already. Answers at

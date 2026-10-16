@@ -44,10 +44,11 @@ def calm(day):
 
 @pytest.fixture
 def bots(session):
-    live = make_bot(session, name="live dip", symbol="DIP", strategy=DIP, broker="alpaca-live", cash=50.0)
+    live = make_bot(session, name="live dip", symbol="DIP", strategy=DIP, broker="alpaca-live", cash=50.0, max_positions=4)
     for s in ("MRVL", "VRT", "XOM"):
         session.add(WatchItem(bot_id=live.id, symbol=s, status="watching"))
-    session.add(Holding(bot_id=live.id, symbol="MRVL", shares=1.0, cost_basis=250.0, last_price=240.0, entry_price=250.0))
+    session.add(Holding(bot_id=live.id, symbol="MRVL", shares=1.0, cost_basis=250.0, last_price=240.0, entry_price=250.0,
+                        stop_price=230.0))
     session.add(Holding(bot_id=live.id, symbol="VRT", shares=2.0, cost_basis=400.0, last_price=200.0, entry_price=200.0))
     paper = make_bot(session, name="paper one", symbol="AAPL", shares=10, last_price=100.0)
     session.commit()
@@ -202,3 +203,38 @@ def test_etf_categories_join_their_sectors_and_index_funds_follow_the_market(ses
     assert r["symbols"]["SPY"] == {"level": "HIGH", "why": ["the market's news reads risk-off"], "sector": "Whole market"}
     assert r["symbols"]["JPM"]["level"] == "ELEVATED"  # the market's risk-off raises the rest a step
     assert "Financial" not in asked and "Whole market" not in asked and asked.count("Financial Services") == 1
+
+
+def test_the_live_bots_slots_held_and_free(session, bots):
+    live, _ = bots
+    session.add(WatchItem(bot_id=live.id, symbol="AAPL", status="blacklisted"))
+    session.commit()
+    r = build(session)
+    (row,) = r["live"]
+    assert (row["id"], row["slots"], row["free_slots"], row["cash"]) == (live.id, 4, 2, 50.0)
+    mrvl, vrt = row["held"]
+    assert (mrvl["symbol"], mrvl["sector"], mrvl["level"], mrvl["pnl_pct"], mrvl["stop_gap"]) == ("MRVL", "Technology", "HIGH", -0.04, -0.0417)
+    assert vrt["stop_gap"] is None and vrt["why"][0].startswith("moves with Technology")
+    assert row["watch"] == [{"symbol": "AAPL", "level": "HIGH", "sector": "Technology", "blacklisted": True},
+                            {"symbol": "XOM", "level": "NORMAL", "sector": "Energy", "blacklisted": False}]  # held ones left out
+    assert "MRVL: Technology news reads risk-off; -4.2% to its stop" in r["text"]
+    assert "2 free slots: of what it can buy today, 1 NORMAL" in r["text"]  # AAPL is blacklisted
+    tech = next(s for s in r["sector_info"] if s["sector"] == "Technology")
+    assert tech["level"] == "HIGH" and tech["reason"] == "Chips sold off in Seoul." and tech["moves_with_it"][0].startswith("VRT 0.9")
+    assert [e["ticker"] for e in tech["etf"]] == ["XLK", "SMH"]
+    assert r["exposure"]["live"]["HIGH"] == 640.0 and r["exposure"]["paper"]["HIGH"] == 1000.0
+
+
+def test_the_live_endpoint_is_small_and_has_the_slots(session, bots, monkeypatch):
+    import json
+
+    monkeypatch.setattr(risk_report, "get_market_mood", calm)
+    monkeypatch.setattr(risk_report, "get_sector_mood", tech_off)
+    monkeypatch.setattr(risk_report, "yahoo_closes", lambda symbols, start: closes(symbols, start, date.today()))
+    monkeypatch.setattr(risk_report, "yahoo_sector", SECTORS.get)
+    r = TestClient(main.app).get("/risk-report/live")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert set(body) == {"subject", "overall", "news_until", "market", "macro", "sectors", "live_bots", "paper_exposure"}
+    assert body["live_bots"][0]["free_slots"] == 2 and body["sectors"][0]["sector"] == "Technology"
+    assert len(json.dumps(body)) < 20_000

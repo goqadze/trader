@@ -202,6 +202,38 @@ def positions(session: Session) -> tuple[list[Bot], dict[int, dict[str, float]],
     return bots, held, by_symbol
 
 
+def live_slots(session: Session, live: list[Bot], held: dict[int, dict[str, float]], sym_rows: dict) -> list[dict]:
+    """Per real-money bot: its slots (max_positions; a one-symbol bot has one), what each held one is worth, how far it
+    is from the buy and from its stop-loss, with its level; and the watched symbols its free slots could buy today."""
+    ids = [b.id for b in live]
+    holding = {(h.bot_id, h.symbol): h
+               for h in session.scalars(select(Holding).where(Holding.bot_id.in_(ids), Holding.shares > 0))}
+    watch = defaultdict(list)
+    for w in session.scalars(select(WatchItem).where(WatchItem.bot_id.in_(ids)).order_by(WatchItem.symbol)):
+        watch[w.bot_id].append(w)
+    out = []
+    for b in live:
+        items = held.get(b.id, {})
+        rows = []
+        for s, value in sorted(items.items()):
+            h = holding.get((b.id, s))
+            last = (h.last_price if h else b.last_price) or 0.0
+            entry = (h.entry_price if h else None) or 0.0
+            stop = h.stop_price if h else None
+            level, why, sector = sym_rows.get(s, ("NORMAL", [], None))
+            rows.append({"symbol": s, "value": round(value, 2), "sector": sector, "level": level, "why": why,
+                         "pnl_pct": round(last / entry - 1, 4) if entry and last else None,
+                         "stop_gap": round(stop / last - 1, 4) if stop and last else None})
+        slots = (b.max_positions or 1) if b.strategy == DIP else 1
+        out.append({"id": b.id, "name": b.name, "status": b.status, "cash": round(b.cash, 2), "slots": slots,
+                    "free_slots": max(0, slots - len(items)), "held": rows,
+                    "watch": [{"symbol": w.symbol, "level": sym_rows.get(w.symbol, ("NORMAL",))[0],
+                               "sector": sym_rows.get(w.symbol, (None, None, None))[2],
+                               "blacklisted": w.status == "blacklisted"}
+                              for w in watch[b.id] if w.symbol not in items]})
+    return out
+
+
 def _more(items: list[str], n: int) -> str:
     return ", ".join(items[:n]) + (f" +{len(items) - n} more" if len(items) > n else "")
 
@@ -292,18 +324,28 @@ def build(session: Session, today: date, now: datetime, mood_fn=None, sector_moo
     if calendar()["known_through"] < (today + timedelta(days=30)).isoformat():
         lines.append(f"(The macro calendar ends {calendar()['known_through']}: add the next dates to macro_dates.json.)")
 
+    live_out = live_slots(session, live, held, sym_rows)
     lines += ["", "REAL MONEY (live bots)"]
-    for b in live:
+    for b, row in zip(live, live_out):
         items = held.get(b.id, {})
-        if not items:
-            lines.append(f"#{b.id} {b.name}: holding cash only (${b.cash:,.2f}); a dip in a HIGH sector today would be bought")
-            continue
-        parts = [f"{s} {_money(v)} {sym_rows.get(s, ('NORMAL',))[0]}" for s, v in sorted(items.items())]
-        lines.append(f"#{b.id} {b.name}: " + ", ".join(parts) + f" · cash ${b.cash:,.2f}")
-        for s in sorted(items):
-            level, why, _ = sym_rows.get(s, ("NORMAL", [], None))
-            if level != "NORMAL" and why:
-                lines.append(f"          {s}: {'; '.join(why)}")
+        if items:
+            parts = [f"{s} {_money(v)} {sym_rows.get(s, ('NORMAL',))[0]}" for s, v in sorted(items.items())]
+            lines.append(f"#{b.id} {b.name}: " + ", ".join(parts) + f" · cash ${b.cash:,.2f}")
+        else:
+            lines.append(f"#{b.id} {b.name}: holding cash only (${b.cash:,.2f})")
+        for h in row["held"]:
+            if h["level"] != "NORMAL" and h["why"]:
+                gap = f"; {_pct(h['stop_gap'])} to its stop" if h["stop_gap"] is not None else ""
+                lines.append(f"          {h['symbol']}: {'; '.join(h['why'])}{gap}")
+        if row["free_slots"]:
+            by_level = defaultdict(list)
+            for w in row["watch"]:
+                if not w["blacklisted"]:
+                    by_level[w["level"]].append(w["symbol"])
+            counts = [f"{len(by_level[lv])} {lv}" + (f" ({_more(sorted(by_level[lv]), 6)})" if lv == "HIGH" else "")
+                      for lv in ("HIGH", "ELEVATED", "NORMAL") if by_level[lv]]
+            lines.append(f"          {row['free_slots']} free slot{'s' if row['free_slots'] > 1 else ''}: of what it can "
+                         f"buy today, {', '.join(counts) or 'nothing (all blacklisted)'}")
     if live:
         ex = exposure["live"]
         lines.append(f"Held by live bots: {_money(ex['HIGH'])} HIGH, {_money(ex['ELEVATED'])} elevated, "
@@ -340,7 +382,22 @@ def build(session: Session, today: date, now: datetime, mood_fn=None, sector_moo
 
     subject = (f"Risk report {today:%b} {today.day}: {overall} · market {(market.get('mood') or 'unavailable').replace('_', '-')}"
                f" · {n_high} of {len(real)} sectors high" + (f" · {' + '.join(due_today)} today" if due_today else ""))
+    sector_info = []
+    for g in sorted(groups, key=lambda g: (-RANK[group_rows[g][0]], worst_move(g), g)):
+        tickers = SECTOR_ETFS.get(g, MARKET_ETFS if g == MARKET else ())
+        followers = sorted(((c, s) for s, m2 in linked.items() for g2, c in m2.items()
+                            if g2 == g and sectors.get(s) != g and c >= LINK), reverse=True)
+        sector_info.append({"sector": g, "level": group_rows[g][0], "why": group_rows[g][1],
+                            "news": moods.get(g, {}).get("mood"),
+                            "reason": None if g == MARKET else moods.get(g, {}).get("reason"),
+                            "etf": [{"ticker": tk, "yesterday": round(mv[0], 4), "five_days": round(mv[1], 4)}
+                                    for tk, mv in etf_moves(tickers)],
+                            "moves_with_it": [f"{s} {c:.2f}" for c, s in followers[:8]]})
     return {"subject": subject, "text": "\n".join(lines), "overall": overall, "market": market,
+            "news_until": f"{seen:%H:%M}", "macro": {"today": due_today, "tomorrow": due_tomorrow,
+                                                     "coming": [f"{d.isoformat()} {label}" for d, label in coming]},
+            "sector_info": sector_info, "live": live_out,
+            "exposure": {kind: {lv: round(ex[lv], 2) for lv in RANK} for kind, ex in exposure.items()},
             "sectors": {g: {"level": lv, "why": why, "mood": moods.get(g, {}).get("mood")} for g, (lv, why) in group_rows.items()},
             "symbols": {s: {"level": lv, "why": why, "sector": g} for s, (lv, why, g) in sym_rows.items()}}
 

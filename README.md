@@ -174,7 +174,9 @@ jobs report and Fed decision days (`trading-service/app/macro_dates.json`, from 
 add the next year's dates before then). Each symbol is rated **HIGH** (its sector's news reads risk-off, or a sector
 it moves with does), **ELEVATED** (the market's news reads risk-off, or a release is due today) or **NORMAL**, and the
 report adds up what the live and the paper bots hold at each level. Information only: the bots don't follow it (as buy
-filters on 230 dip setups these signals cost more than they saved). `GET /risk-report` shows it without sending.
+filters on 230 dip setups these signals cost more than they saved). `GET /risk-report` shows it without sending;
+`GET /risk-report/live` gives it as data (each sector's level, news and ETF moves, and every live bot's slots: held
+ones with their distance to the stop, free ones with the watched symbols they could buy), for a pre-open routine.
 
 How it's built (`trading-service/app/notify.py`): an outbox. The fill, the blacklisting or the error only queues a
 `notifications` row in its own transaction; a background loop sends whatever is queued every 15 s as one email (a
