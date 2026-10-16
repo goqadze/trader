@@ -21,6 +21,20 @@ Mac for development and on a Hetzner server (Ubuntu, Docker) for the real bots.
   and phone width (375px), and after a deploy a check of the server. Say plainly what couldn't be tested.
 - Report results with numbers (tests passed, bots per broker), short.
 
+## Finding your way (read before searching)
+
+- Each service has a code map in its own `CLAUDE.md` (modules, key functions, recipes, test helpers):
+  `trading-service/`, `frontend/`, `decision-service/`, `backtest-service/`. It loads when you open a file there;
+  start from it instead of exploring.
+- Search by symbol, don't read whole files: `grep -nE "^(async def|def|class) " <file>`; endpoints:
+  `grep -nE "^@(app|router)\.(get|post|put|patch|delete)" trading-service/app/*.py`. Read big files (`main.py`,
+  `schemas.py`, `dip.py`, `journal.py`, `BotPage.tsx`) by line range.
+- Workflows are skills: `deploy` (`scripts/deploy.sh`), `ui-check` (`frontend/vite.harness.config.mjs`).
+  Mutation checks: `scripts/mutation-check.sh`. Read-only server checks: `bot-check.sh` (CLAUDE.local.md) and
+  `scripts/deploy.sh verify`.
+- Other Claude sessions may work in this checkout at the same time: commit only your own files (`git add <files>`,
+  never `-A`), and edit shared files such as `.claude/launch.json` instead of overwriting them.
+
 ## Safety (real money runs on the server)
 
 - Production is **read-only** unless the user asks for a change: GET the app's API only; no orders, no
@@ -42,7 +56,8 @@ Mac for development and on a Hetzner server (Ubuntu, Docker) for the real bots.
 | `backtest-service/` (:8001) | Replays history through decision-service; scans | `app/runner.py`, `engines/` (`simple`, `dip`, `rotation`, `intraday`), `scan.py`, `verdict.py`, `models.py` |
 | `frontend/` (:8080) | React 18 + TypeScript + antd 5, Vite build served by nginx | `src/App.tsx` (routes: `/` = live trading, `/backtest`, `/compare`, `/dip`, `/rotation`, `/scan`, `/journal`, `/alerts`, `/trading/:id`), `src/trading/`, `src/dip/`, `src/rotation/`, `src/studies/`, `src/journal/`, `nginx.conf` (auth_request on every API call), `public/guides/` |
 | `watchdog/` | Server only: emails when a service is down, the scheduler is stuck, disk is low, backup is old | `watchdog.py` |
-| `scripts/` | `backup-trading-db.sh` (server cron 22:30 UTC, keeps 7 days), `pull-server-backups.sh` (Mac launchd 09:00) | |
+| `scripts/` | `deploy.sh` (deploy + server checks), `mutation-check.sh`, `backup-trading-db.sh` (server cron 22:30 UTC, keeps 7 days), `pull-server-backups.sh` (Mac launchd 09:00) | |
+| `.claude/skills/` | Claude Code workflows: `deploy`, `ui-check` | |
 | `docker-compose.yml` | Mac: code bind-mounted, backends run with `--reload` | |
 | `docker-compose.server.yml` | Server: code baked into images, profiles (`news`, `backtest`, `monitoring`, `pgadmin`, `full`, `public`) | |
 
@@ -74,35 +89,28 @@ cd frontend && npx tsc -p tsconfig.json --noEmit --incremental false   # fronten
 - trading-service tests blank the Alpaca keys, turn the scheduler and live trading off, and refuse a
   `TEST_DATABASE_URL` whose DB name doesn't end in `_test` (`tests/conftest.py`). Without it they use a throwaway SQLite.
 - Brokers are faked in tests (`FakeBroker` in `trading-service/tests/conftest.py`). Never hit a real broker in a test.
-- Mutation check: copy the code to `/tmp/c` inside the container, `sed` the change away, run the one test; it must fail.
-- The full runbook (server-image tests, read-only API sweep, UI harness on server data) is in Claude's memory
-  (`testing-runbook`).
+- Mutation check: `scripts/mutation-check.sh <service> app/<file>.py '<sed that undoes the change>' tests/<file>.py -k <test>`
+  (runs on a copy inside the container; exit 0 = caught, 1 = survived).
+- Frontend: no unit tests; type check + the `ui-check` skill (desktop and 375px).
+- The full runbook (server-image tests on Postgres, read-only API sweep, live-bot data check, a writable DB copy for
+  the UI) is in Claude's memory (`testing-runbook`).
 
 ## Deploy (only when the user asks)
 
-The server has no CI. Deploying = rsync the working tree, rebuild, restart. Address and paths: `CLAUDE.local.md`.
+The server has no CI. Use the `deploy` skill: `scripts/deploy.sh --dry-run <services>`, then
+`scripts/deploy.sh --restart --expect "<new bundle text>" <services>`. It backs up the server DB, copies the committed
+HEAD (a `git archive`: uncommitted edits stay on the Mac; never `--delete`, which once deleted a server-only dump),
+builds, runs the trading-service tests in the new server image, restarts only at a quiet moment, and verifies
+(containers, 0 restarts, scheduler, live allowed, watchdog, logs, git clean, bundle).
 
-1. Run the tests; commit; `git push`.
-2. Back up the server DB: `ssh $SERVER "cd trading && ./scripts/backup-trading-db.sh"`.
-3. Copy the code, **never with `--delete`** (it once deleted a server-only dump), and keep the server's `.env` files:
-   ```bash
-   rsync -az --exclude node_modules --exclude .venv --exclude __pycache__ --exclude dist --exclude backups \
-     --exclude .env --exclude .claude --exclude .pytest_cache ./ $SERVER:trading/ --itemize-changes > <scratchpad>/rsync.log
-   ```
-   Check the log: nothing deleted. Don't pipe rsync through `head`. A file moved or deleted in the repo stays on the
-   server: remove it there by hand (a stale `.tsx` breaks `tsc -b` in the frontend build).
-4. Build first, restart later: `ssh $SERVER "cd trading && docker compose build trading-service frontend"` (only what
-   changed). Run the server-image tests if backend code changed.
-5. Restart in a quiet moment: after the close (16:00 New York) if possible; in market hours, between checks and with no
-   open orders. `docker compose up -d trading-service frontend`. A restart is safe (orders reconcile, last-decision
-   times live in the DB), but avoid 10:00-10:30 and 15:30-16:00 New York.
-6. Verify: `docker compose ps` (0 restarts), `curl -s localhost:8002/status` (scheduler running, live allowed),
-   `docker compose exec -T watchdog python watchdog.py --once` (every line "ok"), no tracebacks in
-   `docker compose logs --since 10m trading-service`, the new frontend bundle contains a new string, server
-   `git status` clean at the new commit.
-
-The server's `.env` sets `COMPOSE_FILE=docker-compose.server.yml`, so plain `docker compose` there uses the server file.
-When a new setting appears in a `.env.example`, add it to the server's `.env` by hand (ask the user for secrets).
+- Commit and push only the user's change first.
+- Restart trading-service after the close (16:00 New York) if possible; in market hours only between checks with no
+  open orders, never 10:00-10:30 or 15:30-16:00 (the script enforces this). A restart is safe: orders reconcile and
+  last-decision times live in the DB.
+- A file deleted or moved in the repo stays on the server (the script lists them): remove it there by hand, a stale
+  `.tsx` breaks `tsc -b` in the frontend build.
+- The server's `.env` sets `COMPOSE_FILE=docker-compose.server.yml`, so plain `docker compose` there uses the server
+  file. A new setting in a `.env.example` goes into the server's `.env` by hand (ask the user for secrets).
 
 ## Code conventions
 

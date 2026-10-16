@@ -26,3 +26,6 @@ backups/
 Thumbs.db
 .idea/
 .vscode/
+# Claude Code: permissions approved on this Mac, and each session's preview servers (ui-check skill lists the harness ones)
+.claude/settings.local.json
+.claude/launch.json
