@@ -38,6 +38,22 @@ def test_the_bots_spend_the_accounts_own_money_never_a_margin_loan(account, spen
     assert _broker(lambda req: httpx.Response(200, json=account)).buying_power() == spendable
 
 
+def test_funds_reads_the_account_once_for_its_cash_its_buying_powers_and_what_the_bots_may_spend():
+    seen = []
+
+    def handler(req):
+        seen.append(req.url.path)
+        # After Friday's close: the cash counts the day's sales, the non-margin buying power not until they settle
+        return httpx.Response(200, json={"cash": "484.25", "non_marginable_buying_power": "78.56", "buying_power": "484.25"})
+
+    b = _broker(handler, live=True)
+    assert b.funds() == {"cash": 484.25, "buying_power": 484.25, "non_marginable_buying_power": 78.56, "spendable": 78.56}
+    assert seen == ["/v2/account"]
+    assert b.buying_power() == 78.56  # the bots' limit stays the smallest of the three
+    assert _broker(lambda req: httpx.Response(200, json={"buying_power": "800"})).funds() == {
+        "cash": None, "buying_power": 800.0, "non_marginable_buying_power": None, "spendable": 800.0}
+
+
 def test_submit_sends_a_day_market_order_with_our_client_id():
     sent = {}
 

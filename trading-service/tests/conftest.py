@@ -85,6 +85,7 @@ class FakeBroker(Broker):
         self.submitted: list[tuple[str, int]] = []
         self.sent: list[tuple[str, str, int]] = []  # (side, symbol, qty)
         self.bp: float | None = None
+        self.account: dict | None = None  # funds(): a real account's cash and buying powers (GET /accounts)
         self.held: int | None = None
         self.held_by: dict[str, int] | None = None  # a real account's positions per symbol (rotation bots)
         self.whole_only: set[str] = set()  # symbols it can't split into fractions of a share
@@ -160,6 +161,9 @@ class FakeBroker(Broker):
 
     def buying_power(self):
         return self.bp
+
+    def funds(self):
+        return self.account
 
     def position_qty(self, symbol, cached=False):
         self.position_asks.append((symbol, cached))

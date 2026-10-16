@@ -226,27 +226,36 @@ function ActivityFeed({ events, bots, title, emptyText }: { events: TradingEvent
   );
 }
 
-/** One real account's money that no bot holds: its buying power minus the cash of its bots that aren't archived. */
+/** One real account's money that no bot holds: its cash minus the cash of its bots that aren't archived. Under it,
+ * when the bots can't spend all of the cash right now, how much they can and which of Alpaca's figures caps it. */
 function FreeCash({ a }: { a: AccountInfo }) {
   const short = a.free != null && a.free < 0;
+  const capped = a.cash != null && a.spendable != null && a.spendable < a.cash - 0.005;
+  const cap = a.spendable === a.non_marginable_buying_power ? "non-margin buying power" : "buying power";
   return (
     <Card size="small">
       <Statistic
         title={
-          <Tooltip title="The account's own money it can spend now (its buying power, never margin) minus the cash of its bots that aren't archived (a paused bot keeps its cash for when it resumes). What's left belongs to no bot: room for a new bot or Add money. Read from the broker at most every 30 seconds.">
+          <Tooltip title="The account's cash minus the cash of its bots that aren't archived (a paused bot keeps its cash for when it resumes). What's left belongs to no bot: room for a new bot or Add money. Read from the broker at most every 30 seconds.">
             Free cash · {BROKER_LABEL[a.broker] ?? a.label}
           </Tooltip>
         }
         value={usd(a.free)}
         valueStyle={{ color: short ? "#ff4d4f" : undefined }}
       />
-      <span style={{ color: "#8b98b5", fontSize: 12 }}>
-        {a.buying_power == null
-          ? `Buying power unknown${a.error ? `: ${a.error}` : ""}`
-          : `Buying power ${usd(a.buying_power)} − cash of ${a.bots} bot${a.bots === 1 ? "" : "s"} ${usd(a.bots_cash)}`}
+      <div style={{ color: "#8b98b5", fontSize: 12 }}>
+        {a.cash == null
+          ? `Account unknown${a.error ? `: ${a.error}` : ""}`
+          : `Cash ${usd(a.cash)} − cash of ${a.bots} bot${a.bots === 1 ? "" : "s"} ${usd(a.bots_cash)}`}
         {short && " · the bots count on more than the account has: their buys stop at what it can pay"}
-        {a.open_buys > 0 && ` · ${a.open_buys} buy order${a.open_buys === 1 ? "" : "s"} still open: settles once filled`}
-      </span>
+      </div>
+      {capped && (
+        <Tooltip title="The bots never buy on margin: they spend at most the smallest of the cash, Alpaca's buying power and its non-margin buying power. After the close the non-margin buying power leaves out the day's sales until they settle (the next trading day), and open orders hold some back.">
+          <div style={{ color: "#8b98b5", fontSize: 12 }}>
+            {`The bots can spend ${usd(a.spendable)} now (Alpaca's ${cap}): the rest once trades settle${a.open_buys > 0 ? ` and ${a.open_buys} open buy order${a.open_buys === 1 ? "" : "s"} fill` : ""}`}
+          </div>
+        </Tooltip>
+      )}
     </Card>
   );
 }

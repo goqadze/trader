@@ -16,7 +16,7 @@ grep -n "<column>" app/models.py app/schemas.py ../frontend/src/trading/types.ts
 
 | Module | What | Key symbols |
 |---|---|---|
-| `main.py` | All bot/dip/rotation/study/email endpoints | `_bot_out` (Bot → `BotOut`, adds equity, live, watchlist, sector badges), `_get_bot`, `_symbol_clash` (who may share a symbol), `_broker_or_400`, `create_bot` / `create_dip_bot` / `create_rotation_bot`, `update_bot`, `update_dip_bot`, `add_bot_capital`, `halt_all`, `accounts` (free cash per Alpaca account, `_buying_power` 30 s cache), `list_*` |
+| `main.py` | All bot/dip/rotation/study/email endpoints | `_bot_out` (Bot → `BotOut`, adds equity, live, watchlist, sector badges), `_get_bot`, `_symbol_clash` (who may share a symbol), `_broker_or_400`, `create_bot` / `create_dip_bot` / `create_rotation_bot`, `update_bot`, `update_dip_bot`, `add_bot_capital`, `halt_all`, `accounts` (free cash = account cash − bots' cash, `_funds` 30 s cache), `list_*` |
 | `schemas.py` | Every request/response shape + validation (422s) | `BotCreate`, `DipBotCreate`, `DipRules`, `DipBotUpdate`, `RotationBotCreate`, `BotUpdate`, `BotOut`, `StatusOut`, `DipTestIn`, `EmailAlertsIn/Out`, Journal* |
 | `models.py` | SQLAlchemy tables | `Bot` (all three kinds; `strategy` = a decision strategy, `"rotation"` or `"dip"`), `Holding` (multi-symbol positions), `WatchItem` (dip watchlist), `Order`, `Decision`, `EquitySnapshot`, `Event` (audit log), `Signal`, `DipPreset`, `DipStudy`/`DipTest`, `Notification`, `Setting`, `User`, `Journal*` |
 | `db.py` | Engine + startup schema fixes | `init_db`, `_add_missing_columns` (new columns appear on reload), `_relax_removed_columns`, `get_session` |
@@ -24,7 +24,7 @@ grep -n "<column>" app/models.py app/schemas.py ../frontend/src/trading/types.ts
 | `trader.py` | Signal → orders, fills, stops, money | `evaluate` (single-symbol decision), `submit_order`, `sync_pending`, `apply_broker_state`, `reconcile` (account vs records → pause), `protect`/`release_stop` (broker stop), `watch` (stop/target check), `mark_to_market`, `bot_equity`, `capital`, `add_capital`, `others_hold`, `_refusal` (shared-account guard), `bot_lock`/`account_lock` |
 | `dip.py` | Dip buyer rules | `check` (one pass over a watchlist), `signal`, `stand` (7-day high vs last), `buy_fall`, `end_fall`, `due`/`next_check_at`, `watchlist`, `blacklist`/`reenable`, `top_up`, `sell_one`, `yahoo_bars`/`history_start`/`window_bars` |
 | `rotation.py` | Momentum rotation | `momentum` (keep in sync with backtest-service `engines/rotation.py`), `rank`, `rebalance`, `step`, `watch`, `reconcile`, `close_all`, `next_rebalance_at` |
-| `brokers/base.py` | Broker interface | `Broker` (`quote`, `submit`, `lookup`, `submit_stop`, `cancel`, `buying_power`, `position_qty`, `supports_notional`), `Quote`, `BrokerOrder`, `BrokerError` |
+| `brokers/base.py` | Broker interface | `Broker` (`quote`, `submit`, `lookup`, `submit_stop`, `cancel`, `buying_power`, `funds`, `position_qty`, `supports_notional`), `Quote`, `BrokerOrder`, `BrokerError` |
 | `brokers/alpaca.py` | Alpaca paper + live | `AlpacaBroker`, `shared_round` (one snapshot per pass), `_Budget`/`_rate_wait` (200/min, 429 wait), `_snapshot_price` (IEX midpoint) |
 | `brokers/paper.py` | Built-in simulator | `PaperBroker`, `yahoo_quote` |
 | `brokers/__init__.py` | Which brokers exist / are usable | `catalog`, `get_broker` |

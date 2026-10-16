@@ -59,6 +59,11 @@ class Broker(ABC):
         (simulator): the bot's own cash is the limit."""
         return None
 
+    def funds(self) -> dict | None:
+        """A real account's cash, buying power, non-margin buying power and `spendable` (= buying_power()), from one
+        read, for the dashboard. None = no real account (simulator)."""
+        return None
+
     def position_qty(self, symbol: str, cached: bool = False) -> float | None:
         """Shares the real account holds. None = nothing to reconcile against (simulator). cached=True: may come from a
         scheduler pass's one read of the whole account (Alpaca's shared_round), so a caller that would act on a

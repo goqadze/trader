@@ -273,23 +273,25 @@ def _order(session, bot, side, status, n):
     session.commit()
 
 
-def test_free_cash_is_the_buying_power_minus_the_cash_of_bots_not_archived(client, broker, session, accounts_on):
+def test_free_cash_is_the_accounts_cash_minus_the_cash_of_bots_not_archived(client, broker, session, accounts_on):
     from conftest import make_bot
 
-    broker.bp = 484.25
+    # The live account after Friday's close: its cash counts the day's sales, its non-margin buying power doesn't yet
+    broker.account = {"cash": 484.25, "buying_power": 484.25, "non_marginable_buying_power": 78.56, "spendable": 78.56}
     live = make_bot(session, broker="alpaca-live", symbol="OIH", cash=24.16)
     make_bot(session, broker="alpaca-live", symbol="SLV", cash=140.0)
     make_bot(session, broker="alpaca-live", symbol="URA", cash=140.0, status="paused")  # keeps its cash for its resume
     make_bot(session, broker="alpaca-live", symbol="UGA", cash=200.0, status="archived")  # gave its cash back
     make_bot(session, broker="alpaca-paper", symbol="MSFT", cash=50.0)
     make_bot(session, broker="paper", symbol="NVDA", cash=1000.0)  # the simulator: no account
-    _order(session, live, "BUY", "submitted", 1)  # still open: the account set its money aside already
+    _order(session, live, "BUY", "submitted", 1)  # still open
     _order(session, live, "BUY", "filled", 2)
     _order(session, live, "SELL", "submitted", 3)
     rows = {a["broker"]: a for a in client.get("/accounts").json()}
     assert set(rows) == {"alpaca-paper", "alpaca-live"}
     a = rows["alpaca-live"]
-    assert (a["buying_power"], a["bots_cash"], a["bots"], a["free"], a["open_buys"], a["live"]) == (484.25, 304.16, 3, 180.09, 1, True)
+    assert (a["cash"], a["bots_cash"], a["bots"], a["free"], a["open_buys"], a["live"]) == (484.25, 304.16, 3, 180.09, 1, True)
+    assert (a["buying_power"], a["non_marginable_buying_power"], a["spendable"]) == (484.25, 78.56, 78.56)
     assert (rows["alpaca-paper"]["bots_cash"], rows["alpaca-paper"]["free"], rows["alpaca-paper"]["open_buys"]) == (50.0, 434.25, 0)
 
 
@@ -303,18 +305,18 @@ def test_an_account_is_read_at_most_every_30_seconds_and_a_failed_read_shows_why
     reads, clock = [], {"t": 1000.0}
     monkeypatch.setattr(main.time, "monotonic", lambda: clock["t"])
 
-    def buying_power():
+    def funds():
         reads.append(1)
         if len(reads) > 2:
             raise BrokerError("Alpaca account 500: try later")
-        return 400.0
+        return {"cash": 400.0, "buying_power": 400.0, "non_marginable_buying_power": 400.0, "spendable": 400.0}
 
-    broker.buying_power = buying_power
+    broker.funds = funds
     client.get("/accounts")
     clock["t"] += 29
     assert [a["free"] for a in client.get("/accounts").json()] == [400.0, 400.0]
     assert len(reads) == 2  # one per account, the second call reused both
     clock["t"] += 2
     rows = client.get("/accounts").json()
-    assert len(reads) == 4 and [(a["free"], a["buying_power"]) for a in rows] == [(None, None), (None, None)]
+    assert len(reads) == 4 and [(a["free"], a["cash"], a["spendable"]) for a in rows] == [(None, None, None)] * 2
     assert rows[0]["error"] == "Alpaca account 500: try later"

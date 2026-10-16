@@ -232,11 +232,14 @@ export interface AccountInfo {
   broker: string;
   label: string;
   live: boolean;
-  buying_power: number | null; // its own money it can spend now (never margin); null = couldn't be read
+  cash: number | null; // the account's cash, today's unsettled trades included; null = couldn't be read
+  buying_power: number | null; // Alpaca's buying power and non-margin buying power, as it gives them
+  non_marginable_buying_power: number | null;
+  spendable: number | null; // what the bots may spend now: the smallest of cash and those two (never margin)
   bots_cash: number; // the cash of its bots that aren't archived
   bots: number;
-  free: number | null; // buying_power - bots_cash
-  open_buys: number; // buy orders sent but not filled yet
+  free: number | null; // cash - bots_cash
+  open_buys: number; // buy orders sent but not filled yet (they hold back buying power, not cash)
   error: string;
   checked_at: string | null;
 }

@@ -813,11 +813,14 @@ class AccountOut(BaseModel):
     broker: str
     label: str
     live: bool
-    buying_power: float | None  # the account's own money it can spend now (no margin); None = it couldn't be read
+    cash: float | None  # the account's cash, today's unsettled trades included (None = it couldn't be read)
+    buying_power: float | None  # Alpaca's buying power and non-margin buying power, as it gives them
+    non_marginable_buying_power: float | None
+    spendable: float | None  # what the bots may spend now: the smallest of those three (never margin, see buying_power())
     bots_cash: float  # the cash of its bots that aren't archived (a paused bot keeps its cash for when it resumes)
     bots: int
-    free: float | None  # buying_power - bots_cash: money no bot will spend (negative = the bots count on more than there is)
-    open_buys: int  # buy orders sent but not filled: the account already set their money aside, the bots' cash not yet
+    free: float | None  # cash - bots_cash: money no bot holds (negative = the bots count on more than there is)
+    open_buys: int  # buy orders sent but not filled: they hold back buying power, not cash
     error: str = ""
     checked_at: datetime | None
 

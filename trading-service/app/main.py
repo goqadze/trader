@@ -241,18 +241,18 @@ def status(session: Session = Depends(get_session)):
     )
 
 
-ACCOUNT_TTL = 30.0  # seconds one read of an account's buying power is reused: every open dashboard asks every 30 s
-_account_reads: dict[str, tuple[float, float | None, str, object]] = {}  # broker -> (monotonic time, bp, error, read at)
+ACCOUNT_TTL = 30.0  # seconds one read of an account is reused: every open dashboard asks every 30 s
+_account_reads: dict[str, tuple[float, dict | None, str, object]] = {}  # broker -> (monotonic time, funds, error, read at)
 
 
-def _buying_power(name: str) -> tuple[float | None, str, object]:
-    """The account's buying power (cash only, never margin: see AlpacaBroker.buying_power), an error if it couldn't be
-    read, and when it was read; at most one Alpaca request per account every ACCOUNT_TTL seconds."""
+def _funds(name: str) -> tuple[dict | None, str, object]:
+    """The account's cash and buying powers (Broker.funds), an error if it couldn't be read, and when it was read; at
+    most one Alpaca request per account every ACCOUNT_TTL seconds."""
     hit = _account_reads.get(name)
     if hit and time.monotonic() - hit[0] < ACCOUNT_TTL:
         return hit[1:]
     try:
-        read = (get_broker(SimpleNamespace(broker=name)).buying_power(), "", utcnow())
+        read = (get_broker(SimpleNamespace(broker=name)).funds(), "", utcnow())
     except BrokerError as e:
         read = (None, str(e), utcnow())
     _account_reads[name] = (time.monotonic(), *read)
@@ -261,23 +261,29 @@ def _buying_power(name: str) -> tuple[float | None, str, object]:
 
 @app.get("/accounts", response_model=list[AccountOut])
 def accounts(session: Session = Depends(get_session)):
-    """Per real account (Alpaca paper, Alpaca live; only those with keys): its buying power minus the cash of every bot
-    on it that isn't archived (a paused bot keeps its cash for when it resumes). What's left belongs to no bot: room
-    for a new bot or Add money. The simulator has no account (each bot's cash is its own), so it isn't listed.
-    The Mac and the server keep separate bots on the same Alpaca paper account: each counts only its own."""
+    """Per real account (Alpaca paper, Alpaca live; only those with keys): its cash minus the cash of every bot on it
+    that isn't archived (a paused bot keeps its cash for when it resumes). What's left belongs to no bot: room for a
+    new bot or Add money. Cash, not buying power: after the close Alpaca's non-margin buying power leaves out the day's
+    sales until they settle (T+1), and open orders hold some back, so it can dip under the cash for a night without any
+    money being gone. It still caps the bots' buys, so it comes along as `spendable`.
+    The simulator has no account (each bot's cash is its own), so it isn't listed. The Mac and the server keep separate
+    bots on the same Alpaca paper account: each counts only its own."""
     out = []
     for b in catalog():
         if b["name"] not in SHARED_ACCOUNT_BROKERS or not b["available"]:
             continue
         name = b["name"]
         bots = list(session.scalars(select(Bot).where(Bot.broker == name, Bot.status != "archived")))
-        cash = round(sum(x.cash for x in bots), 2)
+        held = round(sum(x.cash for x in bots), 2)
         open_buys = session.scalar(select(func.count()).select_from(Order).join(Bot, Order.bot_id == Bot.id).where(
             Bot.broker == name, Order.side == "BUY", Order.status.in_(OPEN_ORDER_STATUSES))) or 0
-        bp, error, at = _buying_power(name)
-        out.append(AccountOut(broker=name, label=b["label"], live=b["live"], buying_power=bp, bots_cash=cash,
-                              bots=len(bots), free=None if bp is None else round(bp - cash, 2), open_buys=open_buys,
-                              error=error, checked_at=at))
+        funds, error, at = _funds(name)
+        f = funds or {}
+        cash = f.get("cash")
+        out.append(AccountOut(broker=name, label=b["label"], live=b["live"], cash=cash, buying_power=f.get("buying_power"),
+                              non_marginable_buying_power=f.get("non_marginable_buying_power"), spendable=f.get("spendable"),
+                              bots_cash=held, bots=len(bots), free=None if cash is None else round(cash - held, 2),
+                              open_buys=open_buys, error=error, checked_at=at))
     return out
 
 

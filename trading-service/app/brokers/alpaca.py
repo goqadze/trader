@@ -361,19 +361,34 @@ class AlpacaBroker(Broker):
             _forget_positions(self.live)  # it filled (or ended): the round's read of the account may be from before
         return order
 
-    def buying_power(self) -> float | None:
-        """The account's own money only, never a margin loan. Every Alpaca account is a margin account, and from $2,000
-        of equity its buying_power counts borrowed money (2x, more intraday). So: the smallest of the cash, the
-        non-margin buying power and the buying power (open orders and settlement rules included). Negative cash (a loan
-        already taken) buys nothing."""
+    def _account(self) -> dict:
         r = self._get(self._api, "/v2/account")
         if r.status_code != 200:
             raise BrokerError(f"Alpaca account {r.status_code}: {r.text[:200]}")
-        a = r.json()
+        return r.json()
+
+    @staticmethod
+    def _spendable(a: dict) -> float:
+        """See buying_power: the smallest of the cash, the non-margin buying power and the buying power."""
         found = [float(a[k]) for k in ("cash", "non_marginable_buying_power", "buying_power") if a.get(k) is not None]
         if not found:
             raise BrokerError("Alpaca account: no cash or buying power in the answer")
         return min(found)
+
+    def buying_power(self) -> float | None:
+        """The account's own money only, never a margin loan. Every Alpaca account is a margin account, and from $2,000
+        of equity its buying_power counts borrowed money (2x, more intraday). So: the smallest of the cash, the
+        non-margin buying power and the buying power (open orders and settlement rules included). Negative cash (a loan
+        already taken) buys nothing. After the close the non-margin buying power leaves out the day's sales until they
+        settle (T+1), so it can sit well under the cash overnight."""
+        return self._spendable(self._account())
+
+    def funds(self) -> dict | None:
+        """One read of the account for the dashboard's free cash: its cash, Alpaca's buying power and non-margin buying
+        power as it gives them (None when missing), and what the bots may spend of it (`spendable`, as buying_power)."""
+        a = self._account()
+        num = {k: float(a[k]) if a.get(k) is not None else None for k in ("cash", "buying_power", "non_marginable_buying_power")}
+        return num | {"spendable": self._spendable(a)}
 
     def position_qty(self, symbol: str, cached: bool = False) -> float | None:
         if cached and (rd := _round) is not None:

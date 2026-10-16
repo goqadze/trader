@@ -311,12 +311,14 @@ Diversified. The pencil next to them sets them by hand (`PUT /bots/{id}/sectors`
 automatic. Only a label: how the bot trades doesn't change.
 
 Free cash (`GET /accounts`): under the totals, each Alpaca account (paper, live; only those with keys) shows the money
-no bot holds: the account's buying power (its own money, never margin) minus the cash of every bot on it that isn't
-archived. A paused bot keeps its cash for when it resumes; an archived one gives it back. E.g. $484.25 of buying
-power with bots holding $24.16 + $140 + $140 leaves $180.09 for a new bot or Add money. Red below zero: the bots
-count on more than the account has, and their buys stop at what it can pay. A buy order still open is set aside by
-the account but not yet by its bot, so the number settles once it fills. Read from Alpaca at most every 30 seconds.
-The Mac and the server keep separate bots on the same Alpaca paper account, so each counts only its own.
+no bot holds: the account's cash minus the cash of every bot on it that isn't archived. A paused bot keeps its cash for
+when it resumes; an archived one gives it back. E.g. $484.25 of cash with bots holding $24.16 + $140 + $140 leaves
+$180.09 for a new bot or Add money. Red below zero: the bots count on more than the account has. A second line shows
+when the bots can't spend all of the cash right now: they never buy on margin, so they spend at most the smallest of
+the cash, Alpaca's buying power and its non-margin buying power, and after the close the non-margin buying power
+leaves out the day's sales until they settle (T+1). After the Oct 16 sales it read $78.56 against $484.25 of cash: no
+money gone, it counts again once they settle. Read from Alpaca at most every 30 seconds. The Mac and the server keep
+separate bots on the same Alpaca paper account, so each counts only its own.
 
 Safety built in:
 
