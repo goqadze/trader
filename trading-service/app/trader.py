@@ -124,15 +124,29 @@ def others_hold(session: Session, bot: Bot, symbol: str) -> tuple[float, dict[in
     return tidy(sum(per.values())), per
 
 
-def _crossing(session: Session, bot: Bot, side: str, symbol: str) -> Order | None:
+def _crossing(session: Session, bot: Bot, broker: Broker, side: str, symbol: str) -> Order | None:
     """Another bot's order on the other side of `symbol` still working on this account: a market order, or (when
     buying) a stop-loss resting at the broker. Alpaca rejects an order while one like that is open (wash-trade
-    protection)."""
+    protection). A market order sent but not booked yet is asked about first: a scheduled dip check on the paper account
+    doesn't wait for its fills (brokers.alpaca.scheduled), so it has usually filled already; it is booked by its own bot."""
     opposite = "SELL" if side == "BUY" else "BUY"
     types = ("market", "stop") if side == "BUY" else ("market",)
-    return session.scalars(select(Order).join(Bot, Bot.id == Order.bot_id).where(
-        Bot.broker == bot.broker, Bot.id != bot.id, Order.side == opposite, Order.order_type.in_(types),
-        Order.status.in_(OPEN_ORDER_STATUSES), func.coalesce(Order.symbol, Bot.symbol) == symbol).limit(1)).first()
+    for other in session.scalars(select(Order).join(Bot, Bot.id == Order.bot_id).where(
+            Bot.broker == bot.broker, Bot.id != bot.id, Order.side == opposite, Order.order_type.in_(types),
+            Order.status.in_(OPEN_ORDER_STATUSES), func.coalesce(Order.symbol, Bot.symbol) == symbol).order_by(Order.id)):
+        if other.order_type == "market" and other.status == "submitted" and _finished_at_broker(broker, other):
+            continue
+        return other
+    return None
+
+
+def _finished_at_broker(broker: Broker, order: Order) -> bool:
+    """Has the broker finished this order (filled, canceled...) though our records still say it works? Unknown: no."""
+    try:
+        bo = broker.lookup(order.client_order_id)
+    except BrokerError:
+        return False
+    return bo is not None and bo.status != "submitted"
 
 
 def _refusal(session: Session, bot: Bot, broker: Broker, side: str, qty: float, symbol: str) -> tuple[str, bool] | None:
@@ -143,7 +157,7 @@ def _refusal(session: Session, bot: Bot, broker: Broker, side: str, qty: float, 
       theirs, or sell short. This bot's records are off: paused, like the account check does."""
     if bot.broker not in SHARED_ACCOUNT_BROKERS:
         return None
-    if (other := _crossing(session, bot, side, symbol)) is not None:
+    if (other := _crossing(session, bot, broker, side, symbol)) is not None:
         what = "stop-loss order" if other.order_type == "stop" else other.side
         return (f"bot #{other.bot_id}'s {what} of {symbol} is still working at the broker, which rejects an order on "
                 "the other side of the same symbol meanwhile; tries again at the next check", False)
@@ -376,13 +390,15 @@ def _set_dip_levels(bot: Bot, h: Holding, qty: float, price: float, reference: f
         h.target_price = h.reference_price
 
 
-def sync_pending(session: Session, bot: Bot, broker: Broker, now: datetime) -> None:
-    """Resolve orders we sent but haven't seen finish (slow fills, a crash mid-submit) -- and notice when the
-    stop order resting at the broker has filled, which books that sale like any other."""
+def sync_pending(session: Session, bot: Bot, broker: Broker, now: datetime, cached: bool = False) -> None:
+    """Resolve orders we sent but haven't seen finish (slow fills, a crash mid-submit, a scheduled dip check's orders
+    that didn't wait) -- and notice when the stop order resting at the broker has filled, which books that sale like any
+    other. cached=True (the scheduler's pass): the states may come from the pass's one read of the account's orders;
+    an order missing from it is asked about on its own, so "never reached the broker" is only ever the broker's answer."""
     unfinished = select(Order).where(Order.bot_id == bot.id, Order.status.in_(OPEN_ORDER_STATUSES))
     for order in session.scalars(unfinished).all():
         try:
-            bo = broker.lookup(order.client_order_id)
+            bo = broker.lookup(order.client_order_id, cached=cached)
         except BrokerError as e:
             logger.warning("bot=%s lookup %s failed: %s", bot.id, order.client_order_id, e)
             continue  # broker unreachable: try again next tick
@@ -659,7 +675,7 @@ def _describe(order: Order | None) -> str:
         return "No order."
     if order.status in ("filled", "partially_filled"):
         return f"{order.side} {fmt_qty(order.filled_qty)} sh {order.status} @ ${order.avg_price:.2f}"
-    what = f"${order.notional:,.2f} of" if order.notional is not None else f"{fmt_qty(order.qty)} sh"
+    what = f"${order.notional:,.2f} of {order.symbol}" if order.notional is not None else f"{fmt_qty(order.qty)} sh"
     if order.status in ("new", "submitted"):
         return f"{order.side} {what} sent; waiting for the fill."
     return f"{order.side} {what} {order.status}: {order.error or ''}".strip()

@@ -51,8 +51,10 @@ class Broker(ABC):
         then polls lookup()."""
 
     @abstractmethod
-    def lookup(self, client_order_id: str) -> BrokerOrder | None:
-        """Current state of an order we sent, by OUR id. None = the broker never received it."""
+    def lookup(self, client_order_id: str, cached: bool = False) -> BrokerOrder | None:
+        """Current state of an order we sent, by OUR id. None = the broker never received it. cached=True: may come
+        from a scheduler pass's one read of the account's recent orders (Alpaca's shared_round), up to half a minute
+        old; None is still only ever the broker's own answer for that order."""
 
     def buying_power(self) -> float | None:
         """The account's own money it can spend right now, never borrowed (no margin). None = no real account

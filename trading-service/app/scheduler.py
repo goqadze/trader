@@ -23,16 +23,16 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta
 
-from sqlalchemy import select, union
+from sqlalchemy import func, select, union
 
 from .brokers import SHARED_ACCOUNT_BROKERS, BrokerError, get_broker
-from .brokers.alpaca import shared_round
+from .brokers.alpaca import scheduled, shared_round
 from .config import settings
 from .db import SessionLocal, utcnow
 from .decision_client import get_signal
 from .market import NY, is_open, ny_date, session_bounds, sessions_since, slot_window
 from . import dip, rotation, splits
-from .models import DIP, HOLDINGS_STRATEGIES, ROTATION, Bot, Holding, WatchItem
+from .models import DIP, HOLDINGS_STRATEGIES, OPEN_ORDER_STATUSES, ROTATION, Bot, Holding, Order, WatchItem
 from .trader import bot_lock, evaluate, log_event, protect, reconcile, sync_pending, watch
 
 logger = logging.getLogger("trading-service")
@@ -46,6 +46,8 @@ state: dict = {"last_tick": None, "running": False, "started_at": None, "last_er
 
 SIGNAL_RETRY = timedelta(minutes=5)
 ERROR_LOG_EVERY = timedelta(hours=1)
+ORDERS_LOOKBACK = timedelta(hours=1)  # a pass reads the paper account's orders this far back at most (older: one by one)
+ORDERS_MARGIN = timedelta(minutes=1)  # Alpaca stamps an order when it gets it, after our pass's `now`; clocks differ a bit
 
 
 # Bot.decide_at -> its slots, in time order
@@ -135,7 +137,7 @@ def process_bot(bot_id: int, now: datetime, signal_fn=get_signal, broker_factory
                 return
             try:
                 broker = broker_factory(bot)
-                sync_pending(session, bot, broker, now)
+                sync_pending(session, bot, broker, now, cached=True)
                 if bot.strategy == ROTATION:
                     _process_rotation(session, bot, broker, now, closes_fn)
                     session.commit()
@@ -198,7 +200,8 @@ def _process_dip(session, bot: Bot, broker, now: datetime, closes_fn, fns: dict)
         rotation.watch(session, bot, broker, now, closes_fn)
     if dip.due(bot, now) and now >= _retry_after.get(bot.id, now):
         before = bot.last_decision_at
-        dip.check(session, bot, broker, now, "scheduled", **fns)
+        with scheduled():  # its paper orders don't wait for their fills: the next pass books them
+            dip.check(session, bot, broker, now, "scheduled", **fns)
         if bot.last_decision_at == before:  # the price download failed
             _retry_after[bot.id] = now + SIGNAL_RETRY
 
@@ -228,12 +231,23 @@ def round_symbols(session) -> list[str]:
         select(Bot.symbol).where(*on_alpaca, Bot.strategy.not_in(HOLDINGS_STRATEGIES))))))
 
 
+def round_orders_since(session, now: datetime) -> datetime | None:
+    """From when a pass reads the paper account's orders for the bots' lookups (brokers.alpaca.shared_round): the
+    oldest market order still working there by our records, a minute earlier, at most ORDERS_LOOKBACK back. None:
+    nothing working (a stop-loss resting at the broker for days is looked up on its own)."""
+    oldest = session.scalar(select(func.min(Order.created_at)).join(Bot, Bot.id == Order.bot_id).where(
+        Bot.broker == "alpaca-paper", Order.order_type == "market", Order.status.in_(OPEN_ORDER_STATUSES)))
+    return None if oldest is None else max(oldest, now - ORDERS_LOOKBACK) - ORDERS_MARGIN
+
+
 def tick(now: datetime, signal_fn=get_signal, broker_factory=get_broker) -> None:
     """One pass over every non-archived bot, a few in parallel (LLM decisions can take seconds each), the real-money
     ones first: many paper bots waiting for their price downloads (one at a time, yahoo_cache) never delay them.
     Stock splits first, one bot after another: dip bots sharing a symbol must all have them before any compares with
     the account. The pass reads Alpaca's prices and each account's positions once for all the bots (shared_round): one
-    request per bot and symbol would go over Alpaca's 200 a minute with ~100 bots."""
+    request per bot and symbol would go over Alpaca's 200 a minute with ~100 bots. So are the paper account's buying
+    power and its orders still working by our records (round_orders_since): a burst of dip buys sends them without
+    waiting for their fills, and the next pass books them all from one read."""
     try:
         splits.apply_all(now)
     except Exception:
@@ -242,7 +256,8 @@ def tick(now: datetime, signal_fn=get_signal, broker_factory=get_broker) -> None
         ids = list(session.scalars(select(Bot.id).where(Bot.status != "archived")
                                    .order_by((Bot.broker == "alpaca-live").desc(), Bot.id)))
         symbols = round_symbols(session)
-    with shared_round(symbols), ThreadPoolExecutor(max_workers=4) as pool:
+        orders_since = round_orders_since(session, now)
+    with shared_round(symbols, orders_since), ThreadPoolExecutor(max_workers=4) as pool:
         list(pool.map(lambda i: process_bot(i, now, signal_fn, broker_factory), ids))
     state["last_tick"] = now
 

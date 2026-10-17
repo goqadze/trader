@@ -52,7 +52,7 @@ class PaperBroker(Broker):
         self._orders[client_order_id] = order
         return order
 
-    def lookup(self, client_order_id: str) -> BrokerOrder | None:
+    def lookup(self, client_order_id: str, cached: bool = False) -> BrokerOrder | None:
         # Paper orders fill inside submit(), so an order left "new" in the DB never reached us
         return self._orders.get(client_order_id)
 

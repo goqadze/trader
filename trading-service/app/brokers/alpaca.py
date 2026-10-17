@@ -8,8 +8,16 @@ own), and 200 a minute for the market data on the free plan, ONE budget for the 
 the Alpaca user). Over it Alpaca answers 429. So: every request waits and goes again on a 429 (_send), the paper keys
 leave the last DATA_KEEP_FOR_LIVE data requests of a minute to the live bots, and a scheduler pass reads the prices and
 each account's positions once for all its bots (shared_round) instead of one request per bot and symbol.
+
+The paper account carries 130+ dip bots, and a check where many of them buy at once sends a few hundred orders. So on
+that account: an asset's "fractionable" is read once a day, a pass reads the account once and takes each buy it sends
+off what the bots may spend, a scheduled dip check's orders don't wait for their fills (the next pass books them, from
+one read of the account's recent orders), and its trading requests wait for the next minute below PAPER_KEEP_FREE.
+A buy then costs about one request instead of four, and doesn't hold the account for a second. The live account keeps
+its fresh reads and waits for its fills: a few orders a day.
 """
 
+import contextvars
 import threading
 import time
 from collections.abc import Iterable, Iterator
@@ -19,7 +27,7 @@ from datetime import date, datetime, timedelta, timezone
 import httpx
 
 from ..config import settings
-from ..market import to_utc
+from ..market import ny_date, to_utc
 from .base import Broker, BrokerError, BrokerOrder, Quote
 
 PAPER_URL = "https://paper-api.alpaca.markets"
@@ -33,6 +41,10 @@ DATA_KEEP_FOR_LIVE = 40  # of the market data's 200 a minute (shared with the li
 MAX_RATE_WAIT = 60.0  # seconds; Alpaca's budgets start over every minute
 SNAPSHOT_CHUNK = 200  # symbols per snapshots request (220 came back in one answer of ~130 KB, 2026-10-14)
 ROUND_TTL = 30.0  # seconds a pass's prices and positions are used; a longer pass (a check waiting on Yahoo) asks again
+PAPER_KEEP_FREE = 10  # of the paper account's 200 trading requests a minute: below this its requests wait for the next one
+BUY_COST_MARGIN = 0.02  # a buy by shares may fill this much above the pass's price (what it takes off the buying power)
+ORDERS_PAGE = 500  # orders per request when a pass reads the paper account's recent orders (Alpaca's most)
+ORDERS_MAX_PAGES = 4  # older ones are looked up one by one, as before
 
 # Alpaca order states that mean "still working" vs "finished"
 _TERMINAL = {"filled", "canceled", "expired", "rejected", "done_for_day", "stopped", "suspended"}
@@ -80,10 +92,33 @@ def _rate_wait(headers: httpx.Headers) -> float:
 
 
 def reset_rate_state() -> None:
-    """Forget what Alpaca said about the budgets (tests start from a clean slate)."""
+    """Forget what Alpaca said about the budgets and the assets (tests start from a clean slate)."""
     with _budgets_lock:
         for b in _budgets.values():
             b.left, b.reset = None, 0.0
+    _assets.clear()
+
+
+_assets: dict[str, tuple[date, bool]] = {}  # the paper account: symbol -> (the New York day it was read, fractionable?)
+
+
+def _today() -> date:
+    return ny_date(datetime.now(timezone.utc))
+
+
+_scheduled: contextvars.ContextVar[bool] = contextvars.ContextVar("alpaca_scheduled", default=False)
+
+
+@contextmanager
+def scheduled() -> Iterator[None]:
+    """Inside (the scheduler's dip check of one bot, in its own thread): the paper account's orders don't wait for their
+    fills. The order is saved as sent; the next pass books its fill (trader.sync_pending). Orders sent from the API, and
+    the live account's, still wait, so the dashboard shows the fill at once."""
+    token = _scheduled.set(True)
+    try:
+        yield
+    finally:
+        _scheduled.reset(token)
 
 
 class _Round:
@@ -91,15 +126,24 @@ class _Round:
     positions every few minutes. One request per bot and symbol would be ~8 a bot (38 bots: ~260 at once, over the 200 a
     minute at ~100 bots). Within a round the first price asked reads ALL the symbols the bots need (`symbols`) in one
     snapshots request (a few for many symbols: SNAPSHOT_CHUNK), and the first cached position asked reads the account's
-    whole positions list in one request; the rest are answered from those for ROUND_TTL seconds. An order sent or seen
-    filling on an account drops that account's positions (asked again on the next read); prices aren't affected."""
+    whole positions list in one request; the rest are answered from those for ROUND_TTL seconds. An order seen filling
+    (or ending) on an account drops that account's positions (asked again on the next read); prices aren't affected.
+    An order still working doesn't: while it works, the account checks leave its symbol alone (trader.others_hold),
+    and its fill is only booked through a lookup, which drops them.
+    The paper account also gets (see the module's doc): one read of what the bots may spend, less each buy sent since,
+    and one read of its orders since `orders_since` (the oldest one still working by our records) for the lookups."""
 
-    def __init__(self, symbols: Iterable[str]) -> None:
+    def __init__(self, symbols: Iterable[str], orders_since: datetime | None = None) -> None:
         self.symbols = sorted(set(symbols))
+        self.orders_since = orders_since
         self._prices: dict[str, tuple[float, Quote | None, bool]] = {}  # symbol -> (read at, its price, in the answer?)
         self._positions: dict[bool, tuple[float, dict[str, float]]] = {}  # live? -> (read at, shares per symbol)
+        self._spendable: tuple[float, float] | None = None  # the paper account: (read at, what the bots may still spend)
+        self._orders: tuple[float, dict[str, BrokerOrder]] | None = None  # the paper account: (read at, by our order id)
         self._prices_lock = threading.Lock()
         self._positions_locks = {False: threading.Lock(), True: threading.Lock()}  # one per account: neither waits for the other
+        self._account_lock = threading.Lock()
+        self._orders_lock = threading.Lock()
 
     @staticmethod
     def _fresh(at: float) -> bool:
@@ -142,16 +186,52 @@ class _Round:
         with self._positions_locks[live]:
             self._positions.pop(live, None)
 
+    def price_of(self, symbol: str) -> float | None:
+        """The pass's price of `symbol`, if it read one."""
+        kept = self._prices.get(symbol)
+        return kept[1].price if kept and kept[1] is not None else None
+
+    def spendable(self, broker: "AlpacaBroker") -> float:
+        """The paper account's buying_power: read once, then less each buy sent since (spent), for ROUND_TTL seconds.
+        It never says more than a fresh read would: Alpaca's own figure already counts the orders still open when it
+        was read, each buy since comes off at what it may cost, and a sale's money only counts at the next read."""
+        with self._account_lock:  # held while reading: a buy sent meanwhile comes off after the read, never before it
+            if self._spendable is None or not self._fresh(self._spendable[0]):
+                self._spendable = (time.monotonic(), broker._spendable(broker._account()))
+            return self._spendable[1]
+
+    def spent(self, cost: float | None) -> None:
+        """A buy went out on the paper account: take what it may cost off. None: unknown (the account is read again)."""
+        with self._account_lock:
+            if self._spendable is not None:
+                self._spendable = None if cost is None else (self._spendable[0], self._spendable[1] - cost)
+
+    def order(self, broker: "AlpacaBroker", client_order_id: str) -> BrokerOrder | None:
+        """A paper order's state from the pass's one read of the account's orders since `orders_since`, or None when it
+        isn't there (older, sent after the read, or the read failed): the caller then looks that one up."""
+        if self.orders_since is None:
+            return None
+        with self._orders_lock:
+            if self._orders is None or not self._fresh(self._orders[0]):
+                try:
+                    found = broker._recent_orders(self.orders_since)
+                except BrokerError:
+                    found = {}  # each order is looked up on its own, as before; the list is tried again in half a minute
+                self._orders = (time.monotonic(), found)
+            return self._orders[1].get(client_order_id)
+
 
 _round: _Round | None = None
 
 
 @contextmanager
-def shared_round(symbols: Iterable[str]) -> Iterator[None]:
+def shared_round(symbols: Iterable[str], orders_since: datetime | None = None) -> Iterator[None]:
     """Inside: the bots' prices, and the positions they ask for with cached=True, come from one read for all (_Round).
-    `symbols`: every symbol the bots may ask a price of (their holdings and watchlists); another one is read on its own."""
+    `symbols`: every symbol the bots may ask a price of (their holdings and watchlists); another one is read on its own.
+    `orders_since`: when the paper account's oldest order still working by our records was made (None: none is), so
+    the lookups with cached=True come from one read of its orders since then."""
     global _round
-    _round = _Round(symbols)
+    _round = _Round(symbols, orders_since)
     try:
         yield
     finally:
@@ -198,13 +278,16 @@ class AlpacaBroker(Broker):
 
     def _send(self, client: httpx.Client, method: str, path: str, **kw) -> httpx.Response:
         """Every request to Alpaca. A 429 (over the rate) waits for the next minute and goes again, RETRIES_429 times;
-        the paper keys' market data requests wait while fewer than DATA_KEEP_FOR_LIVE are left (see the module's doc).
-        Network errors (httpx.HTTPError) are the caller's to word."""
+        the paper keys' market data requests wait while fewer than DATA_KEEP_FOR_LIVE are left, and the paper account's
+        trading requests while fewer than PAPER_KEEP_FREE are (see the module's doc): a burst of orders slows down to the
+        rate instead of running into 429s. Network errors (httpx.HTTPError) are the caller's to word."""
         name = "data" if client is self._data else "live" if self.live else "paper"
         retried = 0
         while True:
             if name == "data" and not self.live:
                 _make_room("data", DATA_KEEP_FOR_LIVE)
+            elif name == "paper":
+                _make_room("paper", PAPER_KEEP_FREE)
             r = client.request(method, path, **kw)
             _note(name, r.headers)
             if r.status_code != 429 or retried == RETRIES_429:
@@ -285,18 +368,45 @@ class AlpacaBroker(Broker):
     def submit(self, symbol: str, side: str, qty: float, client_order_id: str, notional: float | None = None) -> BrokerOrder:
         # A dollar amount, or shares (a fraction too: Alpaca takes both on market orders good for the day, like this
         # one). By dollars the fill can't cost more than that even when the price moved since the quote
-        size = {"notional": f"{notional:.2f}"} if notional is not None and side == "BUY" else {"qty": _qty(qty)}
-        order = self._post_order({
-            "symbol": symbol,
-            **size,
-            "side": side.lower(),
-            "type": "market",
-            "time_in_force": "day",  # an unfilled order expires at the close instead of lingering overnight
-            "client_order_id": client_order_id,
-        })
+        notional = notional if notional is not None and side == "BUY" else None
+        size = {"notional": f"{notional:.2f}"} if notional is not None else {"qty": _qty(qty)}
+        try:
+            order = self._post_order({
+                "symbol": symbol,
+                **size,
+                "side": side.lower(),
+                "type": "market",
+                "time_in_force": "day",  # an unfilled order expires at the close instead of lingering overnight
+                "client_order_id": client_order_id,
+            })
+        except BrokerError:
+            if side == "BUY":
+                self._spent(symbol, qty, notional, None)  # it may have gone out: the account is read again
+            raise
+        if side == "BUY" and order.status != "rejected":
+            self._spent(symbol, qty, notional, order)
+        if not self.live and _scheduled.get():
+            return order  # a scheduled dip check on the paper account: the next pass books the fill (see scheduled)
         # Market orders usually fill within a second or two; wait briefly so the UI shows the fill at once.
         # Anything still open after that is picked up by the scheduler's pending-order sync.
         return self._wait(client_order_id, order)
+
+    def _spent(self, symbol: str, qty: float, notional: float | None, order: BrokerOrder | None) -> None:
+        """A paper buy went out in a pass: what it may cost comes off the pass's buying power (_Round.spendable): the
+        dollars, or the shares at the pass's price plus BUY_COST_MARGIN, or what it did cost once filled. Unknown
+        (sent without a price, or maybe not sent at all): the account is read again."""
+        if self.live or (rd := _round) is None:
+            return
+        price = rd.price_of(symbol)
+        if order is not None and order.filled_qty > 0 and order.avg_price:
+            cost = order.filled_qty * order.avg_price
+        elif order is None:
+            cost = None
+        elif notional is not None:
+            cost = notional
+        else:
+            cost = qty * price * (1 + BUY_COST_MARGIN) if price else None
+        rd.spent(cost)
 
     def submit_stop(self, symbol: str, qty: int, stop_price: float, client_order_id: str) -> BrokerOrder:
         # A stop (market) order: once a trade prints at or below stop_price it becomes a market sell.
@@ -335,12 +445,15 @@ class AlpacaBroker(Broker):
             # We don't know whether Alpaca got it. Raise: the order stays "new" and the scheduler
             # later asks lookup(client_order_id) -- never blindly resend.
             raise BrokerError(f"Alpaca unreachable while submitting: {e}") from e
-        _forget_positions(self.live)  # the account may hold something else in a moment
         if r.status_code in (403, 422):  # e.g. insufficient buying power, market closed, bad symbol
             return BrokerOrder(status="rejected", error=f"Alpaca {r.status_code}: {r.text[:300]}")
         if r.status_code >= 300:
+            _forget_positions(self.live)  # it may have gone out after all
             raise BrokerError(f"Alpaca submit {r.status_code}: {r.text[:300]}")
-        return self._parse(r.json())
+        order = self._parse(r.json())
+        if order.status != "submitted" or order.filled_qty > 0:
+            _forget_positions(self.live)  # filled at once: the account holds something else (still working: see _Round)
+        return order
 
     def _wait(self, client_order_id: str, order: BrokerOrder) -> BrokerOrder:
         """Poll for up to fill_wait_seconds while the order is still working; return the latest state."""
@@ -350,16 +463,38 @@ class AlpacaBroker(Broker):
             order = self.lookup(client_order_id) or order
         return order
 
-    def lookup(self, client_order_id: str) -> BrokerOrder | None:
-        r = self._get(self._api, "/v2/orders:by_client_order_id", client_order_id=client_order_id)
-        if r.status_code == 404:
-            return None
-        if r.status_code != 200:
-            raise BrokerError(f"Alpaca order lookup {r.status_code}: {r.text[:200]}")
-        order = self._parse(r.json())
+    def lookup(self, client_order_id: str, cached: bool = False) -> BrokerOrder | None:
+        order = None
+        if cached and not self.live and (rd := _round) is not None:
+            order = rd.order(self, client_order_id)  # the pass's one read of the paper account's recent orders
+        if order is None:
+            r = self._get(self._api, "/v2/orders:by_client_order_id", client_order_id=client_order_id)
+            if r.status_code == 404:
+                return None  # Alpaca never got it (only this request says so: a list without it doesn't)
+            if r.status_code != 200:
+                raise BrokerError(f"Alpaca order lookup {r.status_code}: {r.text[:200]}")
+            order = self._parse(r.json())
         if order.status != "submitted" or order.filled_qty > 0:
             _forget_positions(self.live)  # it filled (or ended): the round's read of the account may be from before
         return order
+
+    def _recent_orders(self, since: datetime) -> dict[str, BrokerOrder]:
+        """The account's orders submitted after `since`, by our client_order_id, oldest first, ORDERS_PAGE a request
+        (at most ORDERS_MAX_PAGES: the rest are looked up one by one)."""
+        out: dict[str, BrokerOrder] = {}
+        after = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for _ in range(ORDERS_MAX_PAGES):
+            r = self._get(self._api, "/v2/orders", status="all", after=after, direction="asc", limit=ORDERS_PAGE)
+            if r.status_code != 200:
+                raise BrokerError(f"Alpaca orders {r.status_code}: {r.text[:200]}")
+            page = r.json() or []
+            for o in page:
+                if o.get("client_order_id"):
+                    out[o["client_order_id"]] = self._parse(o)
+            if len(page) < ORDERS_PAGE or not page[-1].get("submitted_at"):
+                break
+            after = page[-1]["submitted_at"]  # the next page: after the last one (Alpaca's own timestamp, as it gave it)
+        return out
 
     def _account(self) -> dict:
         r = self._get(self._api, "/v2/account")
@@ -380,7 +515,10 @@ class AlpacaBroker(Broker):
         of equity its buying_power counts borrowed money (2x, more intraday). So: the smallest of the cash, the
         non-margin buying power and the buying power (open orders and settlement rules included). Negative cash (a loan
         already taken) buys nothing. After the close the non-margin buying power leaves out the day's sales until they
-        settle (T+1), so it can sit well under the cash overnight."""
+        settle (T+1), so it can sit well under the cash overnight.
+        In a scheduler pass the paper account is read once, less each buy sent since (_Round.spendable)."""
+        if not self.live and (rd := _round) is not None:
+            return rd.spendable(self)
         return self._spendable(self._account())
 
     def funds(self) -> dict | None:
@@ -408,10 +546,18 @@ class AlpacaBroker(Broker):
         return {p["symbol"]: float(p["qty"]) for p in r.json()}
 
     def fractionable(self, symbol: str) -> bool:
+        """Asked once a day per symbol on the paper account (a stale yes only gets a dollar order rejected); every time
+        on the live one."""
+        today = _today()
+        if not self.live and (kept := _assets.get(symbol)) is not None and kept[0] == today:
+            return kept[1]
         r = self._get(self._api, f"/v2/assets/{symbol}")
         if r.status_code != 200:
             raise BrokerError(f"Alpaca asset {symbol}: {r.status_code} {r.text[:200]}")
-        return bool(r.json().get("fractionable"))
+        split = bool(r.json().get("fractionable"))
+        if not self.live:
+            _assets[symbol] = (today, split)
+        return split
 
     @staticmethod
     def _parse(o: dict) -> BrokerOrder:

@@ -91,6 +91,7 @@ class FakeBroker(Broker):
         self.whole_only: set[str] = set()  # symbols it can't split into fractions of a share
         self.round_held: dict[str, float] | None = None  # what a cached position read answers (else the same as held)
         self.position_asks: list[tuple[str, bool]] = []  # (symbol, cached)
+        self.lookups: list[tuple[str, bool]] = []  # (client_order_id, cached)
 
     def quote(self, symbol):
         return Quote(self.prices.get(symbol, self.price), self.quote_at or self.now or datetime.now(timezone.utc))
@@ -123,7 +124,8 @@ class FakeBroker(Broker):
             self.held_by[symbol] = self.held_by.get(symbol, 0) + (qty if side == "BUY" else -qty)
         return o
 
-    def lookup(self, client_order_id):
+    def lookup(self, client_order_id, cached=False):
+        self.lookups.append((client_order_id, cached))
         return self.orders.get(client_order_id)
 
     def submit_stop(self, symbol, qty, stop_price, client_order_id):

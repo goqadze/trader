@@ -243,3 +243,64 @@ def test_a_pass_reads_alpaca_once_for_every_symbol_its_bots_may_price(session, m
     scheduler.tick(at(15, 0))
     assert seen and all(s == ["BE", "GLD", "MSFT", "NVT", "URA"] for s in seen)
     assert alpaca._round is None  # over with the pass
+
+
+def test_a_pass_looks_up_the_paper_orders_still_working_from_one_read_of_the_account(session, monkeypatch):
+    from app.brokers import alpaca
+    from app.models import OPEN_ORDER_STATUSES
+
+    paper = make_bot(session, broker="alpaca-paper", symbol="DIP", strategy="dip_buyer")
+    live = make_bot(session, broker="alpaca-live", symbol="DIP", strategy="dip_buyer")
+    single = make_bot(session, broker="alpaca-paper", symbol="MSFT")
+    now = at(15, 0)
+
+    def order(bot, created, status="submitted", kind="market"):
+        session.add(Order(bot_id=bot.id, side="BUY", symbol="A", qty=1, reason="dip", status=status, order_type=kind,
+                          client_order_id=f"bot{bot.id}-{created:%H%M}-{status}-{kind}", created_at=created, updated_at=created))
+        session.commit()
+
+    assert scheduler.round_orders_since(session, now) is None  # nothing working: no list to read
+    order(live, at(14, 0))  # the live account's: looked up on its own
+    order(single, at(13, 50), kind="stop")  # a stop resting for days: on its own too
+    order(paper, at(14, 10), status="filled")
+    assert scheduler.round_orders_since(session, now) is None
+    order(paper, at(14, 45))
+    order(single, at(14, 50), status="new")
+    assert scheduler.round_orders_since(session, now) == at(14, 44)  # the oldest working one, a minute earlier
+    order(paper, at(12, 0))  # one stuck for hours: the list goes back an hour at most, older ones on their own
+    assert scheduler.round_orders_since(session, now) == at(13, 59)
+    assert "submitted" in OPEN_ORDER_STATUSES
+
+    seen = []
+    monkeypatch.setattr(scheduler, "process_bot", lambda bot_id, *a: seen.append(alpaca._round.orders_since))
+    scheduler.tick(now)
+    assert seen and all(s == at(13, 59) for s in seen)
+
+
+def test_a_scheduled_dip_check_sends_its_orders_without_waiting_and_books_them_from_the_passs_read(session, monkeypatch):
+    from app import dip
+    from app.brokers import alpaca
+
+    bot = make_bot(session, broker="alpaca-paper", symbol="DIP", strategy="dip_buyer", interval="15m")
+    waiting = []
+
+    class Recording(FakeBroker):
+        def submit(self, *a, **kw):
+            waiting.append(not alpaca._scheduled.get())
+            return super().submit(*a, **kw)
+
+    broker = Recording(now=at(15, 0))
+    session.add(Order(bot_id=bot.id, side="BUY", symbol="A", qty=1, reason="dip", status="submitted",
+                      client_order_id="sent", created_at=at(14, 45), updated_at=at(14, 45)))
+    session.commit()
+
+    def check(session, bot, broker, now, kind, **fns):
+        broker.submit("A", "BUY", 1, f"{kind}-1")
+
+    monkeypatch.setattr(dip, "check", check)
+    scheduler.process_bot(bot.id, at(15, 0), broker_factory=lambda b: broker)
+    assert waiting == [False]  # the scheduled check: no wait for the fill
+    assert ("sent", True) in broker.lookups  # its earlier order: from the pass's read of the account's orders
+    with SessionLocal() as s:
+        dip.check(s, s.get(Bot, bot.id), broker, at(15, 0), "manual")  # "Run now" from the API waits, as before
+    assert waiting == [False, True] and not alpaca._scheduled.get()

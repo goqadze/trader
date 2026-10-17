@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 import pandas as pd
 import pytest
-from conftest import FakeBroker, at, make_bot
+from conftest import IS_POSTGRES, FakeBroker, at, make_bot
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -971,6 +971,113 @@ def test_a_buy_waits_while_the_other_bots_sale_of_that_stock_is_still_filling(se
     tick(T15 + timedelta(minutes=15), 106.0)  # 11:30: bot #1 books its sale, then bot #2 buys
     assert broker.sent[-1] == ("BUY", "A", 23) and broker.held_by == {"A": 23}
     assert (_held(session, one), _held(session, two)) == (0, 23) and (one.status, two.status) == ("active", "active")
+
+
+def test_a_buy_goes_out_once_the_broker_has_filled_the_other_bots_sale(session, monkeypatch):
+    """A scheduled check on the paper account doesn't wait for its fills (brokers.alpaca.scheduled): bot #1's sale is
+    still "sent" in its records when bot #2 wants to buy in the same pass. Alpaca has filled it by then, so bot #2's buy
+    goes out at once instead of 15 minutes later; bot #1's records are its own to book."""
+    one, two, broker, tick = _two_dip_bots(session, monkeypatch)
+    tick(T, 103.0)
+    broker.submit_mode = "pending"  # bot #1's sale goes out without waiting for its fill ...
+    real, asked = broker.lookup, []
+
+    def lookup(client_order_id, cached=False):  # ... and has filled at Alpaca by the time anyone asks about it
+        asked.append(client_order_id)
+        o = real(client_order_id, cached)
+        if o is not None and o.status == "submitted":
+            broker.orders[client_order_id] = o = BrokerOrder(status="filled", filled_qty=48, avg_price=106.0, broker_order_id="b")
+            broker.held_by["A"] = 0
+        return o
+
+    monkeypatch.setattr(broker, "lookup", lookup)
+    tick(T15, 106.0)
+    sale = session.scalars(select(Order).where(Order.bot_id == one.id, Order.side == "SELL")).one()
+    assert broker.sent == [("BUY", "A", 48), ("SELL", "A", 48), ("BUY", "A", 23)] and asked == [sale.client_order_id]
+    assert sale.status == "submitted" and _held(session, one) == 48  # booked by bot #1 itself, at its next pass
+    assert not session.scalars(select(Order).where(Order.status == "rejected")).all()
+
+
+def test_a_burst_of_paper_buys_costs_about_one_alpaca_request_each(session, monkeypatch):
+    """30 paper dip bots buy 3 dips each in one scheduler pass (as 80 bots bought 277 on 2026-10-15), through the real
+    scheduler, check and Alpaca adapter on a mocked Alpaca. Before: per order the asset, the POST, a lookup after a
+    second's wait, and per bot the account and the positions again (~3.7 an order, one order every 1.2 s). Now: the
+    POSTs, one account read, one asset read per symbol, one positions read; the next pass books every fill from one
+    list of the account's orders. Nothing waits for a fill."""
+    import threading
+
+    import httpx
+
+    from app.brokers.alpaca import AlpacaBroker
+    import app.brokers.alpaca as alpaca
+
+    bots = [make_dip(session, symbols=("A", "B", "C"), broker="alpaca-paper", max_positions=4, fractional=True)
+            for _ in range(30)]
+    for bot in bots:  # each holds 1 H from before, which the account check compares with the account
+        session.add(Holding(bot_id=bot.id, symbol="H", shares=1.0, cost_basis=10.0, entry_price=10.0, last_price=10.0,
+                            opened_at=T - timedelta(days=1)))
+    session.commit()
+    fall = bars(A=[110] * 5 + [103], B=[55] * 5 + [50], C=[22] * 5 + [20], H=[10] * 6)
+    monkeypatch.setattr(dip, "yahoo_bars", lambda symbols, interval, start: fall.reindex(columns=symbols))
+    monkeypatch.setattr(rotation, "yahoo_closes", lambda symbols, start: pd.DataFrame(
+        {s: [10.0] for s in symbols}, index=pd.DatetimeIndex(["2025-06-02"])))
+    waits = []
+    monkeypatch.setattr(alpaca.time, "sleep", waits.append)
+    prices, sent, seen, lock = {**QUOTES, "H": 10.0}, {}, [], threading.Lock()
+
+    def handler(req):
+        import json
+
+        path = req.url.path
+        with lock:
+            seen.append(f"{req.method} {path}" if req.url.host != "data.alpaca.markets" else "data")
+        if path == "/v2/stocks/snapshots":
+            return httpx.Response(200, json={s: {"latestTrade": {"p": prices[s], "t": T.isoformat()}}
+                                             for s in req.url.params["symbols"].split(",")})
+        if path == "/v2/account":
+            return httpx.Response(200, json={"cash": "1000000", "non_marginable_buying_power": "1000000",
+                                             "buying_power": "2000000"})
+        if path.startswith("/v2/assets/"):
+            return httpx.Response(200, json={"fractionable": True})
+        if path == "/v2/positions":
+            return httpx.Response(200, json=[{"symbol": "H", "qty": "30"}])
+        if path == "/v2/orders" and req.method == "POST":
+            body = json.loads(req.content)
+            with lock:
+                sent[body["client_order_id"]] = body
+            return httpx.Response(200, json={"id": body["client_order_id"], "client_order_id": body["client_order_id"],
+                                             "status": "accepted", "filled_qty": "0"})
+        if path == "/v2/orders":  # the account's orders: every one sent has filled by now, at the quote
+            return httpx.Response(200, json=[
+                {"id": cid, "client_order_id": cid, "status": "filled", "submitted_at": T.isoformat(),
+                 "filled_qty": str(round(float(b["notional"]) / prices[b["symbol"]], 9)),
+                 "filled_avg_price": str(prices[b["symbol"]])} for cid, b in sent.items()])
+        raise AssertionError(f"not expected: {req.method} {path}")
+
+    transport = httpx.MockTransport(handler)
+    factory = lambda bot: AlpacaBroker("key", "secret", transport=transport)  # a new one per bot, as get_broker does
+    if not IS_POSTGRES:  # SQLite takes one writer at a time: the bots one after the other (Postgres: 4 at once, as live)
+        pool = scheduler.ThreadPoolExecutor
+        monkeypatch.setattr(scheduler, "ThreadPoolExecutor", lambda max_workers: pool(max_workers=1))
+    scheduler.tick(T, broker_factory=factory)  # 11:00:20 New York: every bot's check is due
+    trading = [x for x in seen if x != "data"]
+    assert len(sent) == 90 and waits == []
+    assert sorted(set(trading)) == ["GET /v2/account", "GET /v2/assets/A", "GET /v2/assets/B", "GET /v2/assets/C",
+                                    "GET /v2/positions", "POST /v2/orders"]
+    assert len(trading) == 90 + 5  # 90 orders, 1 account, 3 assets, 1 positions (was ~330)
+    assert seen.count("data") == 1  # every bot's prices in one snapshots request
+    steps = session.scalars(select(Decision).where(Decision.bot_id == bots[0].id)).one().steps
+    assert any(x.endswith("bought: BUY $2,502.50 of B sent; waiting for the fill.") for x in steps)  # the symbol, too
+    seen.clear()
+    scheduler.tick(T + timedelta(seconds=30), broker_factory=factory)  # the next pass books the fills
+    assert seen == ["GET /v2/orders"]
+    session.expire_all()
+    orders = list(session.scalars(select(Order)))
+    assert len(orders) == 90 and {o.status for o in orders} == {"filled"}
+    assert all(sorted(h.symbol for h in holdings(session, b)) == ["A", "B", "C", "H"] for b in bots)
+    slot = (10_000 + 10) / 4  # a quarter of the equity each
+    assert all(b.status == "active" and b.cash == pytest.approx(10_000 - 3 * slot, abs=0.05)
+               for b in (session.get(Bot, b.id) for b in bots))
 
 
 def test_orders_on_one_account_go_out_one_at_a_time(session, monkeypatch):

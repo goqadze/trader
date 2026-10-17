@@ -104,17 +104,29 @@ def test_a_fraction_of_a_share_is_sent_and_read_back_as_a_fraction():
     assert _broker(lambda req: httpx.Response(200, json={"qty": "0.5"})).position_qty("AAPL") == 0.5
 
 
-def test_fractionable_asks_the_asset():
-    seen = []
+def test_fractionable_asks_the_asset_once_a_day_on_the_paper_account(monkeypatch):
+    import datetime as dt
+
+    import app.brokers.alpaca as alpaca
+
+    seen, day = [], {"d": dt.date(2025, 6, 2)}
+    monkeypatch.setattr(alpaca, "_today", lambda: day["d"])
 
     def handler(req):
-        seen.append(req.url.path)
+        seen.append(f"{req.url.host.split('.')[0]} {req.url.path}")
         return httpx.Response(200, json={"symbol": "BRK.A", "fractionable": req.url.path.endswith("/AAPL")})
 
-    assert _broker(handler).fractionable("AAPL") is True and _broker(handler).fractionable("BRK.A") is False
-    assert seen == ["/v2/assets/AAPL", "/v2/assets/BRK.A"]
+    paper, live = _broker(handler), _broker(handler, live=True)
+    assert paper.fractionable("AAPL") is True and paper.fractionable("BRK.A") is False
+    assert seen == ["paper-api /v2/assets/AAPL", "paper-api /v2/assets/BRK.A"]
+    assert [paper.fractionable("AAPL"), _broker(handler).fractionable("BRK.A")] == [True, False]
+    assert len(seen) == 2  # the rest of the day: from memory, for every paper bot
+    assert live.fractionable("AAPL") and live.fractionable("AAPL") and seen[2:] == ["api /v2/assets/AAPL"] * 2
+    day["d"] = dt.date(2025, 6, 3)
+    assert paper.fractionable("AAPL") and seen[-1] == "paper-api /v2/assets/AAPL"  # the next day: asked again
     with pytest.raises(BrokerError):
-        _broker(lambda req: httpx.Response(500, text="oops")).fractionable("AAPL")
+        _broker(lambda req: httpx.Response(500, text="oops")).fractionable("MSFT")
+    assert "MSFT" not in alpaca._assets  # a failed ask leaves nothing behind
 
 
 def test_rejection_is_returned_not_raised():
@@ -433,9 +445,9 @@ def test_over_the_rate_alpaca_is_asked_again_once_its_minute_starts_over(monkeyp
 
     import app.brokers.alpaca as alpaca
 
-    waits = []
-    monkeypatch.setattr(alpaca.time, "sleep", waits.append)
-    monkeypatch.setattr(alpaca.time, "time", lambda: 1000.0)
+    waits, clock = [], {"t": 1000.0}
+    monkeypatch.setattr(alpaca.time, "sleep", lambda s: (waits.append(s), clock.update(t=clock["t"] + s)))
+    monkeypatch.setattr(alpaca.time, "time", lambda: clock["t"])
     too_many = lambda: httpx.Response(429, json={"message": "too many requests"},
                                       headers={"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1012"})
     answers = iter([too_many(), httpx.Response(200, json={"qty": "3"})])
@@ -520,3 +532,186 @@ def test_a_paper_bot_waiting_for_room_never_holds_up_a_live_bots_prices_or_posit
         assert seen == ["live /v2/stocks/snapshots", "live /v2/stocks/snapshots"]
         paper.position_qty("A", cached=True)
         live.position_qty("A", cached=True)
+
+
+# --- The paper account in a scheduler pass: a burst of orders costs about one request each -------------------------
+
+def _account_and_orders(seen, post):
+    """An Alpaca that answers the account, the pass's prices ($10), positions, and orders (POST: `post(body)`)."""
+    import json
+
+    def handler(req):
+        account = "live" if req.url.host == "api.alpaca.markets" else "paper"
+        seen.append(f"{account} {req.method} {req.url.path}")
+        if req.url.path == "/v2/account":
+            return httpx.Response(200, json={"cash": "1000", "non_marginable_buying_power": "900", "buying_power": "2000"})
+        if req.url.path == "/v2/stocks/snapshots":
+            return httpx.Response(200, json=_priced(req.url.params["symbols"].split(",")))
+        if req.url.path == "/v2/positions":
+            return httpx.Response(200, json=[{"symbol": "A", "qty": "1"}])
+        if req.method == "POST":
+            return post(json.loads(req.content))
+        return httpx.Response(200, json=_order("filled", "1", "10"))
+
+    return handler
+
+
+def test_a_pass_reads_the_paper_account_once_and_takes_each_buy_it_sends_off_it(monkeypatch):
+    import app.brokers.alpaca as alpaca
+
+    seen, answer = [], {"post": lambda body: httpx.Response(200, json=_order("accepted"))}
+    clock = {"t": 100.0}
+    monkeypatch.setattr(alpaca.time, "monotonic", lambda: clock["t"])
+    handler = _account_and_orders(seen, lambda body: answer["post"](body))
+    paper, live = _broker(handler), _broker(handler, live=True)
+    with alpaca.shared_round(["A"]):
+        assert paper.buying_power() == 900 and _broker(handler).buying_power() == 900  # every paper bot: one read
+        assert live.buying_power() == 900 and live.buying_power() == 900  # real money: the account itself, each time
+        assert seen == ["paper GET /v2/account", "live GET /v2/account", "live GET /v2/account"]
+        paper.submit("A", "BUY", 2.9, "n", notional=30.0)  # by dollars: never more than that
+        assert paper.buying_power() == 870
+        paper.quote("A")  # $10 in this pass
+        paper.submit("A", "BUY", 5, "q")  # 5 shares: $50 at the pass's price, plus 2% in case the fill is higher
+        assert paper.buying_power() == pytest.approx(819)
+        paper.submit("A", "SELL", 5, "s")  # a sale's money counts at the next read, not before
+        answer["post"] = lambda body: httpx.Response(200, json=_order("filled", "2", "10.5"))
+        paper.submit("A", "BUY", 2, "f")  # filled at once: what it cost
+        answer["post"] = lambda body: httpx.Response(403, text="insufficient buying power")
+        paper.submit("A", "BUY", 1, "r")  # refused: nothing spent
+        live.submit("A", "BUY", 1, "l")  # the live account's buys are its own
+        assert paper.buying_power() == pytest.approx(798)
+        assert [x for x in seen if x.endswith("/v2/account")].count("paper GET /v2/account") == 1
+        answer["post"] = lambda body: httpx.Response(200, json=_order("accepted"))
+        paper.submit("B", "BUY", 3, "b")  # by shares with no price in the pass: what it costs is unknown
+        assert paper.buying_power() == 900 and seen[-1] == "paper GET /v2/account"  # so the account is read again
+
+        def down(body):
+            raise httpx.ConnectError("down")
+
+        answer["post"] = down
+        with pytest.raises(BrokerError):
+            paper.submit("A", "BUY", 1, "x", notional=10.0)  # it may have gone out
+        assert paper.buying_power() == 900 and seen[-1] == "paper GET /v2/account"
+        seen.clear()
+        paper.buying_power()
+        clock["t"] += alpaca.ROUND_TTL  # half a minute later: read again
+        paper.buying_power()
+        assert seen == ["paper GET /v2/account"]
+    paper.buying_power()  # outside a pass: the account itself
+    assert seen[-1] == "paper GET /v2/account" and len(seen) == 2
+
+
+def test_a_scheduled_dip_checks_paper_orders_dont_wait_for_their_fills(monkeypatch):
+    import app.brokers.alpaca as alpaca
+
+    seen, waits = [], []
+    monkeypatch.setattr(alpaca.time, "sleep", waits.append)
+    handler = _account_and_orders(seen, lambda body: httpx.Response(200, json=_order("accepted")))
+    paper = AlpacaBroker("key", "secret", transport=httpx.MockTransport(handler), fill_wait_seconds=10)
+    live = AlpacaBroker("key", "secret", live=True, transport=httpx.MockTransport(handler), fill_wait_seconds=10)
+    with alpaca.scheduled():
+        assert paper.submit("A", "BUY", 1, "p").status == "submitted"  # sent; the next pass books its fill
+        assert seen == ["paper POST /v2/orders"] and waits == []
+        assert live.submit("A", "BUY", 1, "l").status == "filled"  # real money waits for its fill, as before
+        assert seen[1:] == ["live POST /v2/orders", "live GET /v2/orders:by_client_order_id"] and waits == [1]
+    assert paper.submit("A", "BUY", 1, "q").status == "filled"  # from the API: the dashboard shows the fill at once
+    assert seen[-1] == "paper GET /v2/orders:by_client_order_id" and waits == [1, 1]
+
+
+def test_a_pass_looks_the_paper_orders_up_in_one_read_of_the_account(monkeypatch):
+    import datetime as dt
+
+    import app.brokers.alpaca as alpaca
+
+    seen, lists, clock = [], [], {"t": 100.0}
+    monkeypatch.setattr(alpaca.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(alpaca, "ORDERS_PAGE", 2)
+    down = {"list": False}
+
+    def mine(cid, status, at, filled="0"):
+        return {"id": f"alp-{cid}", "client_order_id": cid, "status": status, "filled_qty": filled,
+                "filled_avg_price": "10" if filled != "0" else None, "submitted_at": at}
+
+    pages = {"2025-06-02T14:59:00Z": [mine("o1", "filled", "2025-06-02T15:00:01.5Z", "1"),
+                                      mine("o2", "accepted", "2025-06-02T15:00:02.25Z")],
+             "2025-06-02T15:00:02.25Z": [mine("o3", "canceled", "2025-06-02T15:00:03Z")]}
+
+    def handler(req):
+        account = "live" if req.url.host == "api.alpaca.markets" else "paper"
+        if req.url.path == "/v2/orders":
+            lists.append(dict(req.url.params))
+            return httpx.Response(500, text="oops") if down["list"] else httpx.Response(200, json=pages[req.url.params["after"]])
+        seen.append(f"{account} {req.url.path} {req.url.params.get('client_order_id', '')}".strip())
+        if req.url.path == "/v2/positions":
+            return httpx.Response(200, json=[{"symbol": "A", "qty": "1"}])
+        if req.url.params.get("client_order_id") == "lost":
+            return httpx.Response(404, json={"message": "order not found"})
+        return httpx.Response(200, json=_order("filled", "1", "10"))
+
+    paper, live = _broker(handler), _broker(handler, live=True)
+    since = dt.datetime(2025, 6, 2, 14, 59, tzinfo=dt.timezone.utc)
+    with alpaca.shared_round([], orders_since=since):
+        paper.position_qty("A", cached=True)
+        assert paper.lookup("o2", cached=True).status == "submitted"  # still working: the positions read stays
+        paper.position_qty("A", cached=True)
+        assert lists == [{"status": "all", "after": "2025-06-02T14:59:00Z", "direction": "asc", "limit": "2"},
+                         {"status": "all", "after": "2025-06-02T15:00:02.25Z", "direction": "asc", "limit": "2"}]
+        o1 = paper.lookup("o1", cached=True)
+        assert (o1.status, o1.filled_qty, o1.avg_price) == ("filled", 1, 10)
+        assert paper.lookup("o3", cached=True).status == "canceled"
+        assert seen == ["paper /v2/positions"] and len(lists) == 2  # three orders, two requests, both pages
+        paper.position_qty("A", cached=True)  # a fill seen: the account holds something else, read again
+        assert paper.lookup("old", cached=True).status == "filled"  # not in the list: asked on its own
+        assert paper.lookup("lost", cached=True) is None  # only Alpaca's own answer says it never got an order
+        assert live.lookup("o1", cached=True).status == "filled" and paper.lookup("o1").status == "filled"
+        assert seen == ["paper /v2/positions", "paper /v2/positions", "paper /v2/orders:by_client_order_id old",
+                        "paper /v2/orders:by_client_order_id lost", "live /v2/orders:by_client_order_id o1",
+                        "paper /v2/orders:by_client_order_id o1"]
+        clock["t"] += alpaca.ROUND_TTL
+        down["list"] = True  # half a minute later the list is read again, and fails: each order on its own, as before
+        seen.clear()
+        assert paper.lookup("o1", cached=True).status == "filled" and paper.lookup("o2", cached=True).status == "filled"
+        assert len(lists) == 3 and seen == ["paper /v2/orders:by_client_order_id o1", "paper /v2/orders:by_client_order_id o2"]
+    with alpaca.shared_round([]):  # nothing working by our records: no list
+        paper.lookup("o1", cached=True)
+    assert len(lists) == 3
+
+
+def test_an_order_still_working_keeps_the_pass_read_of_the_positions():
+    import app.brokers.alpaca as alpaca
+
+    seen, answer = [], {"status": "accepted"}
+    handler = _account_and_orders(seen, lambda body: httpx.Response(200, json=_order(answer["status"], "0")))
+    paper = _broker(handler)
+    with alpaca.shared_round([]):
+        paper.position_qty("A", cached=True)
+        paper.submit("A", "BUY", 1, "w")  # working: the account checks leave A alone until its fill is booked
+        paper.position_qty("A", cached=True)
+        assert seen == ["paper GET /v2/positions", "paper POST /v2/orders"]
+        answer["status"] = "filled"
+        paper.submit("A", "BUY", 1, "f")  # filled at once: booked now, so the read is from before it
+        paper.position_qty("A", cached=True)
+        assert seen[2:] == ["paper POST /v2/orders", "paper GET /v2/positions"]
+
+
+def test_the_paper_account_paces_its_trading_requests_to_the_minutes_budget(monkeypatch):
+    import app.brokers.alpaca as alpaca
+
+    waits, left, clock = [], {"n": "10"}, {"t": 1000.0}
+    monkeypatch.setattr(alpaca.time, "sleep", lambda s: (waits.append(s), clock.update(t=clock["t"] + s)))
+    monkeypatch.setattr(alpaca.time, "time", lambda: clock["t"])
+
+    def handler(req):  # each answer: requests left of this account's budget, and its minute ends in 20 s
+        return httpx.Response(200, json={"qty": "1"},
+                              headers={"x-ratelimit-remaining": left["n"], "x-ratelimit-reset": str(clock["t"] + 20)})
+
+    paper, live = _broker(handler), _broker(handler, live=True)
+    paper.position_qty("A")
+    paper.position_qty("A")  # 10 left: it goes on
+    left["n"] = "9"
+    paper.position_qty("A")
+    live.position_qty("A")
+    live.position_qty("A")  # the live account has its own budget and never waits for the paper bots
+    assert waits == []
+    paper.position_qty("A")  # 9 left: a burst of paper orders waits for the next minute instead of running into 429s
+    assert waits == [20.0] and clock["t"] == 1020.0

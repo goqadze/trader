@@ -127,6 +127,14 @@ once a day before the close) it:
    that low, bearish turned bullish, still under the reference (a `rebound` signal). Back at the reference first =
    that dip is over. Dip bots created before the option keep buying at once.
 
+On the Alpaca paper account (130+ dip bots on one account, a few hundred buys in one check, and Alpaca allows 200
+trading requests a minute per account) a scheduled check sends its orders without waiting for their fills: the
+check says "BUY $x of SYM sent; waiting for the fill", and the next scheduler pass, 30 seconds later, books the fills
+(holding, price, trade email) from one read of the account's orders. A pass also reads the account's buying power
+once and takes each buy off it, and asks whether a symbol can be split once a day; the paper requests slow to the
+minute's budget instead of being refused. A buy costs about one request (four before) and a burst of 277 buys should
+take about 2 minutes instead of 6.5. "Run now" and the live account still wait for each fill.
+
 The backtest replays every check on intraday bars from decision-service (Alpaca, years of history; 15-minute bars
 were added for this) or on Yahoo daily closes, with practice and exam windows and the usual recommendation. It counts
 the blacklist too: `reenable_days` stands in for you re-enabling a symbol (0 = never, like a bot you never touch).
@@ -342,7 +350,8 @@ Safety built in:
   Each books only its own fills and sells only its own shares; the account check adds up all their records; a sale
   bigger than what the account holds beyond the other bots' shares isn't sent (it would sell theirs, or sell short)
   and pauses the bot; orders on one account go out one at a time, and none while another bot's order on the other
-  side of that symbol is still working (Alpaca's wash-trade protection would reject it): it's retried at the next check. Rotation and
+  side of that symbol is still working (Alpaca's wash-trade protection would reject it): it's retried at the next check.
+  An order sent but not booked yet is asked about first: once Alpaca has filled it, the other side goes out. Rotation and
   single-symbol bots keep their symbols to themselves: a single-symbol bot's stop-loss rests at Alpaca as an open sell
   order, and Alpaca rejects buys of that symbol meanwhile.
 - **Restart-safe**: the time of the last decision is stored in the database, so a restart never repeats a
