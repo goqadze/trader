@@ -1195,6 +1195,25 @@ def test_bots_sharing_a_symbol_all_get_a_split_before_any_compares_with_the_acco
     assert rotation.reconcile(session, one, broker, T3) and rotation.reconcile(session, two, broker, T3)
 
 
+def test_the_live_pass_and_the_others_each_apply_the_splits_of_their_own_bots(session, monkeypatch):
+    """The live account's bots have a pass of their own (scheduler.run_forever), and so a split pass of their own:
+    bots sharing a symbol share an account, so each pass still has all of theirs before any compares with it."""
+    one, two, broker = _sharing(session)  # two paper bots: 48 + 24 A
+    live = make_dip(session, broker="alpaca-live")
+    session.add(Holding(bot_id=live.id, symbol="A", shares=10.0, cost_basis=1030.0, entry_price=103.0, last_price=103.0,
+                        opened_at=T))
+    session.commit()
+    done, real = [], splits.apply
+    monkeypatch.setattr(splits, "apply", lambda s, bot, *a, **kw: (done.append(bot.id), real(s, bot, *a, **kw))[1])
+    splits.apply_all(T3, two_for_one("A"), live=True)
+    session.expire_all()
+    assert (_held(session, one), _held(session, two), _held(session, live)) == (48, 24, 20) and done == [live.id]
+    splits.apply_all(T3, two_for_one("A"), live=False)
+    session.expire_all()
+    assert (_held(session, one), _held(session, two), _held(session, live)) == (96, 48, 20)
+    assert done == [live.id, one.id, two.id]  # the others' pass leaves the live bot alone
+
+
 # --- The API --------------------------------------------------------------------------------------------
 
 CLOSED, OPEN = at(23, 0), T  # Monday 19:00 and 11:00 New York

@@ -304,3 +304,71 @@ def test_a_scheduled_dip_check_sends_its_orders_without_waiting_and_books_them_f
     with SessionLocal() as s:
         dip.check(s, s.get(Bot, bot.id), broker, at(15, 0), "manual")  # "Run now" from the API waits, as before
     assert waiting == [False, True] and not alpaca._scheduled.get()
+
+
+def test_the_live_bots_have_a_pass_of_their_own(session, monkeypatch):
+    from app.brokers import alpaca
+    from app.models import Holding
+
+    bots = {broker: make_bot(session, broker=broker, symbol=symbol)
+            for broker, symbol in (("paper", "AAPL"), ("alpaca-paper", "MSFT"), ("alpaca-live", "GLD"))}
+    make_bot(session, broker="alpaca-live", symbol="URA", status="archived")
+    session.add(Holding(bot_id=bots["alpaca-paper"].id, symbol="NVT", shares=1.0, cost_basis=150.0))
+    session.commit()
+    assert scheduler.round_symbols(session, live=True) == ["GLD"]
+    assert scheduler.round_symbols(session, live=False) == ["MSFT", "NVT"]
+    assert scheduler.round_symbols(session) == ["GLD", "MSFT", "NVT"]
+
+    seen, splits_for = [], []
+    monkeypatch.setattr(scheduler, "process_bot", lambda bot_id, *a: seen.append((bot_id, alpaca._round.symbols)))
+    monkeypatch.setattr(scheduler.splits, "apply_all", lambda now, live=None: splits_for.append(live))
+    monkeypatch.setattr(scheduler, "state", dict(scheduler.state, last_tick=None, live_tick=None))
+    scheduler.tick(at(15, 0), live=True)
+    assert seen == [(bots["alpaca-live"].id, ["GLD"])] and splits_for == [True]
+    assert (scheduler.state["live_tick"], scheduler.state["last_tick"]) == (at(15, 0), None)
+    seen.clear()
+    scheduler.tick(at(15, 1), live=False)
+    assert sorted(i for i, _ in seen) == [bots["paper"].id, bots["alpaca-paper"].id] and splits_for == [True, False]
+    assert (scheduler.state["live_tick"], scheduler.state["last_tick"]) == (at(15, 0), at(15, 1))
+    seen.clear()
+    scheduler.tick(at(15, 2))  # every bot, the real-money one first
+    assert [i for i, _ in seen][0] == bots["alpaca-live"].id and len(seen) == 3
+    assert (scheduler.state["live_tick"], scheduler.state["last_tick"]) == (at(15, 2), at(15, 2))
+
+
+def test_a_long_pass_of_the_other_bots_never_holds_the_live_ones_back(monkeypatch):
+    """run_forever: the live account's bots get a pass every TICK_SECONDS while the others' pass (a burst of paper
+    orders: minutes) is still going; the others' next pass starts once that one is over."""
+    import asyncio
+    import threading
+
+    passes, release = [], threading.Event()
+
+    def tick(now, live=None):
+        passes.append(live)
+        n = passes.count(False)
+        if live is False and n == 1:
+            release.wait(2)
+        if live is False and n == 2:
+            raise RuntimeError("Yahoo down")  # a failed pass is written down; the loop goes on
+
+    monkeypatch.setattr(scheduler, "tick", tick)
+    monkeypatch.setattr(scheduler, "settings", scheduler.settings.__class__(tick_seconds=0))
+    monkeypatch.setattr(scheduler, "state", dict(scheduler.state))
+
+    async def run():
+        loop = asyncio.create_task(scheduler.run_forever())
+        while passes.count(True) < 5:
+            await asyncio.sleep(0.01)
+        during = passes.count(False)
+        release.set()
+        while passes.count(False) < 3:
+            await asyncio.sleep(0.01)
+        loop.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await loop
+        return during
+
+    assert asyncio.run(run()) == 1  # five live passes while the others' first one was still going
+    assert passes[:2] == [True, False]
+    assert scheduler.state["running"] is False and scheduler.state["last_error"] == "RuntimeError: Yahoo down"

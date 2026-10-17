@@ -1,4 +1,5 @@
-"""The background loop that runs every bot. It wakes every TICK_SECONDS and, for each bot:
+"""The background loop that runs every bot. It wakes every TICK_SECONDS and runs a pass of the real-money bots, then
+one of all the others unless the last one is still going (see run_forever). For each bot:
 
   1. resolves orders still pending at the broker          (any time)
      and keeps the stop-loss resting at the broker         (brokers that can hold one: Alpaca)
@@ -42,7 +43,7 @@ _last_watch: dict[int, datetime] = {}
 _retry_after: dict[int, datetime] = {}  # a failed signal call is retried after a pause, not every tick
 _last_error: dict[tuple[int, str], datetime] = {}  # don't write the same error to the audit log every 30s
 # The heartbeat /health reads: when the loop started, the last tick that finished, and the last tick that failed
-state: dict = {"last_tick": None, "running": False, "started_at": None, "last_error": None}
+state: dict = {"last_tick": None, "live_tick": None, "running": False, "started_at": None, "last_error": None}
 
 SIGNAL_RETRY = timedelta(minutes=5)
 ERROR_LOG_EVERY = timedelta(hours=1)
@@ -221,10 +222,15 @@ def _log_error_throttled(session, bot_id: int, e: Exception, now: datetime) -> N
         logger.exception("could not write error event")
 
 
-def round_symbols(session) -> list[str]:
+def _which(live: bool | None) -> tuple:
+    """The bots of one pass: the live account's (True), all the others (False), or every bot (None)."""
+    return () if live is None else ((Bot.broker == "alpaca-live") if live else (Bot.broker != "alpaca-live"),)
+
+
+def round_symbols(session, live: bool | None = None) -> list[str]:
     """Every symbol the bots on Alpaca may ask a price of in a pass: what they hold, what the dip bots watch, and the
     single-symbol bots' symbols. The pass reads them all in one go (brokers.alpaca.shared_round)."""
-    on_alpaca = (Bot.status != "archived", Bot.broker.in_(SHARED_ACCOUNT_BROKERS))
+    on_alpaca = (Bot.status != "archived", Bot.broker.in_(SHARED_ACCOUNT_BROKERS), *_which(live))
     return sorted(set(session.scalars(union(
         select(Holding.symbol).join(Bot, Bot.id == Holding.bot_id).where(*on_alpaca),
         select(WatchItem.symbol).join(Bot, Bot.id == WatchItem.bot_id).where(*on_alpaca),
@@ -240,39 +246,56 @@ def round_orders_since(session, now: datetime) -> datetime | None:
     return None if oldest is None else max(oldest, now - ORDERS_LOOKBACK) - ORDERS_MARGIN
 
 
-def tick(now: datetime, signal_fn=get_signal, broker_factory=get_broker) -> None:
-    """One pass over every non-archived bot, a few in parallel (LLM decisions can take seconds each), the real-money
-    ones first: many paper bots waiting for their price downloads (one at a time, yahoo_cache) never delay them.
+def tick(now: datetime, signal_fn=get_signal, broker_factory=get_broker, live: bool | None = None) -> None:
+    """One pass over the non-archived bots, a few in parallel (LLM decisions can take seconds each): the live account's
+    (live=True), all the others (False), or every one, the real-money ones first (None). run_forever runs the first two
+    side by side, so many paper bots waiting for their price downloads (one at a time, yahoo_cache) or sending a burst
+    of orders never delay the live ones.
     Stock splits first, one bot after another: dip bots sharing a symbol must all have them before any compares with
     the account. The pass reads Alpaca's prices and each account's positions once for all the bots (shared_round): one
     request per bot and symbol would go over Alpaca's 200 a minute with ~100 bots. So are the paper account's buying
     power and its orders still working by our records (round_orders_since): a burst of dip buys sends them without
     waiting for their fills, and the next pass books them all from one read."""
     try:
-        splits.apply_all(now)
+        splits.apply_all(now, live=live)
     except Exception:
         logger.exception("split pass failed")
     with SessionLocal() as session:
-        ids = list(session.scalars(select(Bot.id).where(Bot.status != "archived")
+        ids = list(session.scalars(select(Bot.id).where(Bot.status != "archived", *_which(live))
                                    .order_by((Bot.broker == "alpaca-live").desc(), Bot.id)))
-        symbols = round_symbols(session)
-        orders_since = round_orders_since(session, now)
+        symbols = round_symbols(session, live)
+        orders_since = None if live else round_orders_since(session, now)
     with shared_round(symbols, orders_since), ThreadPoolExecutor(max_workers=4) as pool:
         list(pool.map(lambda i: process_bot(i, now, signal_fn, broker_factory), ids))
-    state["last_tick"] = now
+    if live is not False:
+        state["live_tick"] = now
+    if live is not True:
+        state["last_tick"] = now
+
+
+def _pass(live: bool) -> None:
+    try:
+        tick(utcnow(), live=live)
+    except Exception as e:
+        state["last_error"] = f"{type(e).__name__}: {e}"[:300]
+        logger.exception("scheduler tick failed")
 
 
 async def run_forever() -> None:
-    """Started by main.py on startup; cancelled on shutdown."""
+    """Started by main.py on startup; cancelled on shutdown. Every TICK_SECONDS: a pass of the live account's bots (a
+    few seconds), awaited; then a pass of all the others in the background, unless the last one is still going (a burst
+    of paper orders, slow Yahoo downloads). The live bots' account check, prices and checks never wait behind it, and
+    at a check moment their downloads go first."""
     state["running"], state["started_at"] = True, utcnow()
     logger.info("scheduler started (tick every %ss)", settings.tick_seconds)
+    others: asyncio.Future | None = None
     try:
         while True:
-            try:
-                await asyncio.to_thread(tick, utcnow())
-            except Exception as e:
-                state["last_error"] = f"{type(e).__name__}: {e}"[:300]
-                logger.exception("scheduler tick failed")
+            await asyncio.to_thread(_pass, True)
+            if others is None or others.done():
+                others = asyncio.ensure_future(asyncio.to_thread(_pass, False))
             await asyncio.sleep(settings.tick_seconds)
     finally:
+        if others is not None:
+            others.cancel()  # its thread finishes the bot it is on, and the pass, on its own
         state["running"] = False

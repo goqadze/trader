@@ -715,3 +715,29 @@ def test_the_paper_account_paces_its_trading_requests_to_the_minutes_budget(monk
     assert waits == []
     paper.position_qty("A")  # 9 left: a burst of paper orders waits for the next minute instead of running into 429s
     assert waits == [20.0] and clock["t"] == 1020.0
+
+
+def test_two_passes_at_once_share_one_round():
+    """The live bots' pass and the others' run side by side (scheduler.run_forever): one round, priced together, over
+    once both are."""
+    import datetime as dt
+
+    import app.brokers.alpaca as alpaca
+
+    seen = []
+
+    def handler(req):
+        seen.append(req.url.params["symbols"])
+        return httpx.Response(200, json=_priced(req.url.params["symbols"].split(",")))
+
+    early, late = (dt.datetime(2025, 6, 2, h, tzinfo=dt.timezone.utc) for h in (14, 15))
+    with alpaca.shared_round(["GLD"]):  # the live bots' pass
+        first = alpaca._round
+        with alpaca.shared_round(["A", "GLD"], orders_since=late):  # the others' pass starts meanwhile
+            assert alpaca._round is first and first.symbols == ["A", "GLD"] and first.orders_since == late
+            _broker(handler).quote("A")
+            assert seen == ["A,GLD"]  # both passes' symbols in one request
+            with alpaca.shared_round([], orders_since=early):
+                assert first.orders_since == early  # the orders are read from the earlier moment
+        assert alpaca._round is first  # the live pass is still inside
+    assert alpaca._round is None

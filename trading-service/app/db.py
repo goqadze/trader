@@ -42,8 +42,8 @@ def make_engine(url: str):
     return create_engine(
         url,
         pool_pre_ping=True,  # test each pooled connection first, so a Postgres restart doesn't break the next request
-        # Up to 4 scheduler threads + concurrent API requests each hold a connection; the default
-        # (5 + 10 overflow) could make a busy moment wait. Postgres allows 100 connections by default.
+        # Up to 8 scheduler threads (two passes side by side) + concurrent API requests each hold a connection; the
+        # default (5 + 10 overflow) could make a busy moment wait. Postgres allows 100 connections by default.
         pool_size=10,
         max_overflow=10,
         pool_timeout=30,

@@ -186,6 +186,15 @@ class _Round:
         with self._positions_locks[live]:
             self._positions.pop(live, None)
 
+    def join(self, symbols: Iterable[str], orders_since: datetime | None) -> None:
+        """A second pass at the same time (scheduler.run_forever) uses this round too: its symbols are priced with the
+        rest, and the paper orders are read from the earlier of the two moments."""
+        with self._prices_lock:
+            self.symbols = sorted(set(self.symbols) | set(symbols))
+        with self._orders_lock:
+            if orders_since is not None and (self.orders_since is None or orders_since < self.orders_since):
+                self.orders_since, self._orders = orders_since, None
+
     def price_of(self, symbol: str) -> float | None:
         """The pass's price of `symbol`, if it read one."""
         kept = self._prices.get(symbol)
@@ -222,6 +231,8 @@ class _Round:
 
 
 _round: _Round | None = None
+_round_users = 0  # the passes inside it: the live bots' and the others' run side by side (scheduler.run_forever)
+_round_guard = threading.Lock()
 
 
 @contextmanager
@@ -229,13 +240,23 @@ def shared_round(symbols: Iterable[str], orders_since: datetime | None = None) -
     """Inside: the bots' prices, and the positions they ask for with cached=True, come from one read for all (_Round).
     `symbols`: every symbol the bots may ask a price of (their holdings and watchlists); another one is read on its own.
     `orders_since`: when the paper account's oldest order still working by our records was made (None: none is), so
-    the lookups with cached=True come from one read of its orders since then."""
-    global _round
-    _round = _Round(symbols, orders_since)
+    the lookups with cached=True come from one read of its orders since then.
+    A pass that starts while another is inside joins its round (_Round.join); the last one out ends it. Every read in
+    it is re-done after ROUND_TTL anyway, however long the passes together keep it."""
+    global _round, _round_users
+    with _round_guard:
+        if _round is None:
+            _round = _Round(symbols, orders_since)
+        else:
+            _round.join(symbols, orders_since)
+        _round_users += 1
     try:
         yield
     finally:
-        _round = None
+        with _round_guard:
+            _round_users -= 1
+            if _round_users == 0:
+                _round = None
 
 
 def _forget_positions(live: bool) -> None:

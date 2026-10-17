@@ -204,13 +204,20 @@ def health(session: Session = Depends(get_session)):
     st = scheduler.state
     if settings.scheduler_enabled:
         since = st["last_tick"] or st["started_at"]
+        live_since = st.get("live_tick") or st["started_at"]  # the live account's bots have a pass of their own
         late = max(TICK_LATE, timedelta(seconds=10 * settings.tick_seconds))
+        error = f" (last error: {st['last_error']})" if st["last_error"] else ""
         if not st["running"]:
             problems.append("the scheduler isn't running: the bots don't check or trade")
-        elif since is not None and utcnow() - since > late:
-            minutes = int((utcnow() - since).total_seconds() // 60)
-            problems.append(f"the scheduler hasn't finished a round for {minutes} minutes: the bots don't check or trade"
-                            + (f" (last error: {st['last_error']})" if st["last_error"] else ""))
+        else:
+            if since is not None and utcnow() - since > late:
+                minutes = int((utcnow() - since).total_seconds() // 60)
+                problems.append(f"the scheduler hasn't finished a round for {minutes} minutes: the bots don't check or "
+                                f"trade{error}")
+            if live_since is not None and utcnow() - live_since > late:
+                minutes = int((utcnow() - live_since).total_seconds() // 60)
+                problems.append(f"the live bots' pass hasn't finished for {minutes} minutes: the real-money bots don't "
+                                f"check or trade{error}")
     return JSONResponse({"status": "down" if problems else "ok", "problems": problems,
                          "last_tick": st["last_tick"].isoformat() if st["last_tick"] else None},
                         status_code=503 if problems else 200)

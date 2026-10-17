@@ -504,6 +504,10 @@ out.label  # a typed object, not free text</code></pre>
         <li>At its slot (30 min after the open and/or before the close): ask decision-service and trade.</li>
       </ol>
       <p class="muted">Restart-safe: “which slots are done” comes from the database, never from memory.</p>
+      <p class="muted">Two passes side by side: the live account's bots every 30 s, then all the others, whose pass
+        can run for minutes (a burst of paper orders, slow Yahoo) without holding the live ones back. On the paper
+        account a scheduled dip check doesn't wait for its fills: the next pass books them from one read of the
+        account's orders, so a buy costs about one Alpaca request.</p>
     </div>
     <div class="card">
       <h3>Brokers and safety</h3>

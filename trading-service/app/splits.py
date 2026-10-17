@@ -152,13 +152,15 @@ def apply(session: Session, bot: Bot, today: date, splits_fn=None, now: datetime
     return {s for s, found in known.items() if any(ex == today for ex, _ in found)}
 
 
-def apply_all(now: datetime, splits_fn=None) -> None:
+def apply_all(now: datetime, splits_fn=None, live: bool | None = None) -> None:
     """Every dip bot's records, before a scheduler tick handles the bots in parallel: so the account check of one bot
     sharing a symbol never compares the account with another bot's records from before a split. A bot busy elsewhere
-    (an API action) is done at the next tick, or by its own check."""
+    (an API action) is done at the next tick, or by its own check. live: only the live account's bots (True), only the
+    others (False): each pass does its own, the bots sharing a symbol always share an account."""
     today = ny_date(now)
+    which = () if live is None else ((Bot.broker == "alpaca-live") if live else (Bot.broker != "alpaca-live"),)
     with SessionLocal() as session:
-        ids = list(session.scalars(select(Bot.id).where(Bot.strategy == DIP, Bot.status != "archived")))
+        ids = list(session.scalars(select(Bot.id).where(Bot.strategy == DIP, Bot.status != "archived", *which)))
         for bot_id in ids:
             lock = bot_lock(bot_id)
             if not lock.acquire(blocking=False):

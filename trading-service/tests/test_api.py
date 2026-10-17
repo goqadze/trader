@@ -231,7 +231,7 @@ def test_status_reports_market_clock_and_brokers(client):
 def test_health_says_when_the_scheduler_is_stuck_or_stopped(client, clock, monkeypatch):
     assert client.get("/health").json() == {"status": "ok", "problems": [], "last_tick": None}  # scheduler off in tests
     monkeypatch.setattr(main, "settings", main.settings.__class__(scheduler_enabled=True, tick_seconds=30))
-    state = {"running": True, "started_at": at(22, 50), "last_tick": at(22, 58), "last_error": None}
+    state = {"running": True, "started_at": at(22, 50), "last_tick": at(22, 58), "live_tick": at(22, 59), "last_error": None}
     monkeypatch.setattr(main.scheduler, "state", state)
     assert client.get("/health").status_code == 200  # 2 minutes ago: fine
     state["last_tick"], state["last_error"] = at(22, 40), "OperationalError: connection refused"
@@ -239,6 +239,9 @@ def test_health_says_when_the_scheduler_is_stuck_or_stopped(client, clock, monke
     assert r.status_code == 503 and r.json()["status"] == "down"
     assert r.json()["problems"] == ["the scheduler hasn't finished a round for 20 minutes: the bots don't check or trade "
                                     "(last error: OperationalError: connection refused)"]
+    state["last_tick"], state["live_tick"], state["last_error"] = at(22, 59), at(22, 50), None  # the live bots' own pass
+    assert client.get("/health").json()["problems"] == [
+        "the live bots' pass hasn't finished for 10 minutes: the real-money bots don't check or trade"]
     state["running"] = False
     assert client.get("/health").json()["problems"] == ["the scheduler isn't running: the bots don't check or trade"]
 

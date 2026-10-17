@@ -133,7 +133,9 @@ check says "BUY $x of SYM sent; waiting for the fill", and the next scheduler pa
 (holding, price, trade email) from one read of the account's orders. A pass also reads the account's buying power
 once and takes each buy off it, and asks whether a symbol can be split once a day; the paper requests slow to the
 minute's budget instead of being refused. A buy costs about one request (four before) and a burst of 277 buys should
-take about 2 minutes instead of 6.5. "Run now" and the live account still wait for each fill.
+take about 2 minutes instead of 6.5. "Run now" and the live account still wait for each fill. The live account's bots
+have a scheduler pass of their own every 30 seconds, so a long pass of the others never holds their account check,
+prices and checks back.
 
 The backtest replays every check on intraday bars from decision-service (Alpaca, years of history; 15-minute bars
 were added for this) or on Yahoo daily closes, with practice and exam windows and the usual recommendation. It counts
