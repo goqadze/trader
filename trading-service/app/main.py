@@ -32,7 +32,7 @@ from .market import is_open, next_decision_time, ny_date, session_bounds
 from .models import (DIP, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPreset, DipStudy, DipTest, EquitySnapshot, Event,
                      Notification, Order, Signal, WatchItem)
 from .schemas import (AccountOut, BotCreate, BotOut, BotUpdate, CapitalAdd, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn,
-                      DipPresetOut, DipStudyIn, DipStudyOut, DipStudySummaryOut, DipTestDetailOut, DipTestIn, DipTestPageOut,
+                      DipPresetOut, DipStudyIn, DipStudyOut, DipStudySummaryOut, DipTestDetailOut, DipTestIn, DipTestOut, DipTestPageOut,
                       EmailAlertsIn, EmailAlertsOut, EventOut, HoldingOut, NotificationOut, RiskReportOut, NotifyCategoryOut, OrderOut,
                       PRESET_CONFIGS, RotationBotCreate, RotationPresetIn, SectorsIn, SignalOut, SnapshotOut, StatusOut, StudyStrategy,
                       WatchItemOut, WatchSymbols, check_window)
@@ -957,8 +957,8 @@ def list_dip_tests(study_id: int, offset: int = Query(0, ge=0), limit: int = Que
                    session: Session = Depends(get_session)):
     """One page of a study's tested setups (without their curves: GET /dip/tests/{id}), filtered and sorted by any
     column of the grid; by default the picks first, then the best score. `filters`: JSON {"watchlist": [names],
-    "extra": [filters], "<rule>": [values]} (the values GET /dip/studies/{id}/summary lists); missing numbers sort
-    last either way."""
+    "extra": [filters], "sector": [badges], "<rule>": [values]} (the values GET /dip/studies/{id}/summary lists; a
+    test with any of the sectors stays); missing numbers sort last either way. Each test comes with its sector badges."""
     study = _get_study(session, study_id)
     if sort not in studies.sort_keys(list(study.periods), study.strategy):
         raise HTTPException(422, f"can't sort by {sort!r}")
@@ -968,9 +968,11 @@ def list_dip_tests(study_id: int, offset: int = Query(0, ge=0), limit: int = Que
             raise ValueError
     except ValueError:
         raise HTTPException(422, 'filters: JSON like {"watchlist": ["ETFs"], "stop": [0.2]}')
-    total, ids = studies.page(studies.index(session, study), offset, limit, sort, order, q, picks, profit_both, beat_both, chosen)
+    idx = studies.index(session, study)
+    total, ids = studies.page(idx, offset, limit, sort, order, q, picks, profit_both, beat_both, chosen)
     found = {t.id: t for t in session.scalars(select(DipTest).where(DipTest.id.in_(ids)).options(defer(DipTest.detail)))}
-    return DipTestPageOut(total=total, items=[found[i] for i in ids if i in found])
+    return DipTestPageOut(total=total, items=[
+        DipTestOut.model_validate(found[i]).model_copy(update={"sectors": idx.sectors.get(i, [])}) for i in ids if i in found])
 
 
 @app.get("/dip/studies/{study_id}/summary", response_model=DipStudySummaryOut)

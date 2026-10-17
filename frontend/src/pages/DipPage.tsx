@@ -123,6 +123,12 @@ export default function DipPage() {
     message.info("Loaded into the backtest form: press Run backtest");
   };
 
+  /** The Test results tab's "Start a bot": the new dip bot form with that setup's rules, watchlist and capital. */
+  const startTest = (config: DipPresetConfig, name: string) => {
+    setInitial({ ...pickRules(config), name, symbols: config.symbols, ...(config.initial_cash && { allocated_cash: config.initial_cash }) });
+    setFormOpen(true);
+  };
+
   const create = async (body: DipBotCreate) => {
     const bot = await tradingApi.createDipBot(body);
     message.success(`Bot created: ${bot.name}`);
@@ -210,7 +216,7 @@ export default function DipPage() {
         items={[
           { key: "bots", label: `Bots & signals${dipBots.length ? ` (${dipBots.length})` : ""}`, children: live },
           { key: "backtest", label: "Backtest", children: backtest },
-          { key: "tests", label: "Test results", children: <TestResults kit={DIP_KIT} onLoad={loadTest} /> },
+          { key: "tests", label: "Test results", children: <TestResults kit={DIP_KIT} onLoad={loadTest} onStartBot={startTest} /> },
         ]}
       />
       <DipBotForm

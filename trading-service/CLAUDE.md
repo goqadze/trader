@@ -31,7 +31,7 @@ grep -n "<column>" app/models.py app/schemas.py ../frontend/src/trading/types.ts
 | `market.py` | NYSE calendar | `is_open`, `session_bounds`, `slot_window`, `decision_time`, `next_decision_time`, `month_end_after`, `ny_date` |
 | `notify.py` | Email outbox | `enqueue`, `trade`, `from_event`, `dip_signal`, `compose` (HTML), `send_pending`, `run_forever`; links use `dashboard_url()/trading/{id}` |
 | `risk_report.py` | Daily pre-open risk email | `build`, `run_once`, `due`, `run_forever`; `macro_dates.json` |
-| `studies.py` | Test results grid (server-side paging) | `index`, `forget`, `page`, `sort_keys` |
+| `studies.py` | Test results grid (server-side paging; each test's sector badges from its symbols, `sector` filter) | `index`, `forget`, `page`, `sort_keys` |
 | `sectors.py` | Sector badges per bot (from its symbols, or set by hand: `Bot.sectors`) | `badges` (the rule), `SYMBOLS` (hand-made symbol → sector), `YAHOO` (fallback), `of_bot`, `clean`; endpoints `GET /sectors`, `PUT /bots/{id}/sectors` |
 | `journal.py` | Journal API (`/journal`, per signed-in user) | `list_trades`, `create_trade`, `apply`, `stats`, `import_bot_trades` |
 | `auth.py` | Sign-in, sessions, admin approval | `current_user`, `admin_user`, `issue_session`, `login`, `signup` |

@@ -397,6 +397,7 @@ class DipTestOut(BaseModel):
     note: str
     extra: str | None = None
     quarters: dict | None = None
+    sectors: list[str] = []  # its symbols' sector badges, as a bot with them would get (sectors.badges)
 
 
 class DipTestDetailOut(DipTestOut):
@@ -433,6 +434,7 @@ class DipStudySummaryOut(BaseModel):
     made_money_both: int  # in practice and exam
     beat_hold_both: int
     watchlists: list[str]
+    sectors: list[str]  # the Sectors filter's choices: the tests' badges, the most common first
     extras: list[str]  # the Filter column's choices ("—" = none); empty when no test has one
     rules: dict[str, list[RuleValueOut]]  # the rules the tests differ in: their columns, and the filter choices
     has_quarters: bool

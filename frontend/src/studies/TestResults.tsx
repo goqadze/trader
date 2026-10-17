@@ -1,15 +1,17 @@
 // A strategy's test batches (parameter sweeps): every tested setup under its name, its rules and how it did in each
-// window, as a sortable grid. Any of them can be saved as a setup or loaded into the backtest form. The dip buyer's and
+// window, as a sortable grid, filterable by its symbols' sectors too. Any of them can be saved as a setup, loaded into
+// the backtest form or started as a bot. The dip buyer's and
 // the momentum rotation's (each strategy's rules and words come from its kit: dip/kit.tsx, rotation/kit.tsx).
 // trading-service keeps them (/dip/studies?strategy=, /dip/tests); a sweep script fills them in.
 
-import { ExperimentOutlined, SaveOutlined, StarFilled } from "@ant-design/icons";
+import { ExperimentOutlined, RocketOutlined, SaveOutlined, StarFilled } from "@ant-design/icons";
 import { Alert, App as AntApp, Button, Card, Col, Empty, Grid, Input, Modal, Row, Select, Space, Spin, Switch, Table, Tag, Tooltip, Typography } from "antd";
 import type { ColumnGroupType, ColumnsType, ColumnType, SortOrder } from "antd/es/table/interface";
 import dayjs from "dayjs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { tradingApi } from "../trading/api";
+import { SectorTags } from "../trading/sectors";
 import type { RuleColumn, StrategyKit } from "./kit";
 import type { Study, StudySummary, StudyTest, StudyTestDetail, TestNumbers, TestQuery } from "./types";
 
@@ -257,12 +259,18 @@ interface Props<C extends { symbols: string[] }> {
   kit: StrategyKit<C>;
   /** Fill the backtest form with this setup (the page switches to the Backtest tab). */
   onLoad: (c: C) => void;
+  /** Open the page's new bot form filled in with this setup, named after it. */
+  onStartBot: (c: C, name: string) => void;
 }
 
 const PAGE_SIZES = [25, 50, 100, 200];
+// A touch screen opens a hover hint on the tap that also opens a dialog, and leaves it on top of the dialog: the row's
+// buttons get their hints only where there is a mouse
+const HOVER = window.matchMedia?.("(hover: hover)").matches ?? true;
+const hint = (text: string) => (HOVER ? text : undefined);
 const DEFAULT_SORT = { key: "pick", order: "asc" as const }; // the picks first, then the best score
 
-export default function TestResults<C extends { symbols: string[] }>({ kit, onLoad }: Props<C>) {
+export default function TestResults<C extends { symbols: string[] }>({ kit, onLoad, onStartBot }: Props<C>) {
   const { message } = AntApp.useApp();
   const [studies, setStudies] = useState<Study[] | null>(null);
   const [studyId, setStudyId] = useState<number | null>(null);
@@ -346,6 +354,12 @@ export default function TestResults<C extends { symbols: string[] }>({ kit, onLo
     filtered: (key) => filters[key] ?? null,
   };
 
+  /** The bot gets the rules, not a tested filter on top of them (the bots don't have those yet). */
+  const startBot = (t: StudyTest<C>) => {
+    if (t.extra) message.warning(`The bot gets the rules, not the filter (${t.extra}): the bots don't have it yet`);
+    onStartBot(kit.complete(t.config), t.name.slice(0, 80));
+  };
+
   const save = async () => {
     if (!saving) return;
     setBusy(true);
@@ -399,6 +413,14 @@ export default function TestResults<C extends { symbols: string[] }>({ kit, onLo
       sorter: true,
       sortOrder: controls.sortOrder("watchlist"),
       render: (_, t) => <Tooltip title={t.config.symbols.join(" ")}>{t.watchlist} <span style={{ color: MUTED }}>({t.config.symbols.length})</span></Tooltip>,
+    },
+    {
+      key: "sector",
+      title: <Tooltip title={`The sectors of its ${kit.listWord}, as a bot with it would get them: a sector holding at least a fifth of its symbols`}>Sectors</Tooltip>,
+      width: 150,
+      filters: (summary?.sectors ?? []).map((s) => ({ text: s, value: s })),
+      filteredValue: controls.filtered("sector"),
+      render: (_, t) => <SectorTags sectors={t.sectors ?? []} />,
     },
     {
       key: "score",
@@ -473,15 +495,18 @@ export default function TestResults<C extends { symbols: string[] }>({ kit, onLo
     {
       key: "actions",
       title: "",
-      width: 76,
+      width: 104,
       fixed: pin ? "right" : undefined,
       render: (_, t) => (
         <Space size={2}>
-          <Tooltip title="Save as a setup (then pick it under Saved setups: the backtest, a new bot)">
-            <Button size="small" type="text" icon={<SaveOutlined />} onClick={() => setSaving({ test: t, name: t.name })} />
+          <Tooltip title={hint("Save as a setup (then pick it under Saved setups: the backtest, a new bot)")}>
+            <Button size="small" type="text" icon={<SaveOutlined />} aria-label="Save as a setup" onClick={() => setSaving({ test: t, name: t.name })} />
           </Tooltip>
-          <Tooltip title="Load into the backtest form">
-            <Button size="small" type="text" icon={<ExperimentOutlined />} onClick={() => onLoad(kit.complete(t.config))} />
+          <Tooltip title={hint("Load into the backtest form")}>
+            <Button size="small" type="text" icon={<ExperimentOutlined />} aria-label="Load into the backtest form" onClick={() => onLoad(kit.complete(t.config))} />
+          </Tooltip>
+          <Tooltip title={hint("Start a bot with this setup (opens the new bot form, filled in: pick the broker and check it first)")}>
+            <Button size="small" type="text" icon={<RocketOutlined />} aria-label="Start a bot with this setup" onClick={() => startBot(t)} />
           </Tooltip>
         </Space>
       ),

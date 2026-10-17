@@ -5,11 +5,15 @@ column's filter choices, and "what matters": each rule's like-for-like effect on
 Both come from a per-study index kept in memory: every test's sort and filter keys, built once from the database. The
 endpoints that change a study's tests drop it (forget), and as a second guard it is built again when the tests' count or
 newest id moves (SQLite reuses a deleted row's id, so that alone can miss a replaced test). A page then only reads its
-own rows. A study's strategy (dip buyer or momentum rotation) decides which rules its grid has: RULES."""
+own rows. A study's strategy (dip buyer or momentum rotation) decides which rules its grid has: RULES.
+
+Each test also gets sector badges from its symbols, by the bots' rule (sectors.badges), so the grid can be narrowed to
+the setups that trade a theme (Energy, Chips ...)."""
 
 import json
 import math
 import threading
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from statistics import median
@@ -17,6 +21,7 @@ from statistics import median
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, defer
 
+from . import sectors as sector_badges
 from .models import DipStudy, DipTest
 
 MAIN = ("practice", "exam")  # the score's windows: "made money in both", "beat buy & hold in both"
@@ -74,6 +79,7 @@ class Row:
     name: str
     watchlist: str
     extra: str
+    sectors: list[str]  # its symbols' sector badges (sectors.badges)
     score: float | None
     haystack: str  # what the search box looks in
     rules: dict[str, float]
@@ -88,6 +94,7 @@ class Index:
     rows: list[Row]
     rule_keys: set[str] = field(default_factory=set)  # its strategy's rules
     summary: dict = field(default_factory=dict)
+    sectors: dict[int, list[str]] = field(default_factory=dict)  # test id -> its sector badges, for the page's rows
 
 
 _cache: dict[int, Index] = {}
@@ -101,7 +108,7 @@ def _num(x: dict | None, key: str) -> float | None:
     return float(v) if isinstance(v, (int, float)) else None
 
 
-def _row(t: DipTest, periods: list[str], rules: tuple[Rule, ...]) -> Row:
+def _row(t: DipTest, periods: list[str], rules: tuple[Rule, ...], yahoo: dict[str, str]) -> Row:
     c, res = t.config, t.results or {}
     numbers: dict[str, float | None] = {}
     for p in periods:
@@ -120,7 +127,8 @@ def _row(t: DipTest, periods: list[str], rules: tuple[Rule, ...]) -> Row:
     numbers["quarters"] = q["won"] * 1000 + q["worst"] if q else None
     main = [res.get(p) or {} for p in MAIN if p in periods]
     return Row(
-        id=t.id, pick=t.pick, code=t.code, name=t.name, watchlist=t.watchlist, extra=t.extra or NO_EXTRA, score=t.score,
+        id=t.id, pick=t.pick, code=t.code, name=t.name, watchlist=t.watchlist, extra=t.extra or NO_EXTRA,
+        sectors=sector_badges.badges(c.get("symbols", []), yahoo), score=t.score,
         haystack=f"{t.code} {t.name} {t.watchlist} {' '.join(c.get('symbols', []))}".lower(),
         rules={r.key: r.value(c) for r in rules}, numbers=numbers,
         profit_both=all((x.get("total_return_pct") or -1) > 0 for x in main),
@@ -159,6 +167,13 @@ def _effects(tests: list[DipTest], rule_set: tuple[Rule, ...]) -> list[dict]:
     return out
 
 
+def _sector_choices(rows: list[Row]) -> list[str]:
+    """The Sectors filter's choices: the badges the tests have, the most common first."""
+    count = Counter(s for r in rows for s in r.sectors)
+    known = {b: i for i, b in enumerate(sector_badges.BADGES)}
+    return sorted(count, key=lambda s: (-count[s], known.get(s, len(known)), s))
+
+
 def _summary(tests: list[DipTest], rows: list[Row], rules: tuple[Rule, ...]) -> dict:
     varying = {}
     for r in rules:
@@ -172,6 +187,7 @@ def _summary(tests: list[DipTest], rows: list[Row], rules: tuple[Rule, ...]) -> 
         "made_money_both": sum(r.profit_both for r in rows),
         "beat_hold_both": sum(r.beat_both for r in rows),
         "watchlists": sorted({r.watchlist for r in rows}),
+        "sectors": _sector_choices(rows),
         "extras": sorted({r.extra for r in rows}) if any(r.extra != NO_EXTRA for r in rows) else [],
         "rules": varying,
         "has_quarters": any(r.numbers["quarters"] is not None for r in rows),
@@ -193,8 +209,10 @@ def index(session: Session, study: DipStudy) -> Index:
         tests = list(session.scalars(select(DipTest).where(DipTest.study_id == study.id)
                                      .options(defer(DipTest.detail)).order_by(DipTest.id)))
         periods, rules = list(study.periods), RULES[study.strategy]
-        rows = [_row(t, periods, rules) for t in tests]
-        built = Index(version=version, rows=rows, rule_keys={r.key for r in rules}, summary=_summary(tests, rows, rules))
+        yahoo = sector_badges.yahoo_sectors(session)
+        rows = [_row(t, periods, rules, yahoo) for t in tests]
+        built = Index(version=version, rows=rows, rule_keys={r.key for r in rules}, summary=_summary(tests, rows, rules),
+                      sectors={r.id: r.sectors for r in rows})
         _cache[study.id] = built
         return built
 
@@ -214,12 +232,14 @@ def page(idx: Index, offset: int, limit: int, sort: str = "pick", order: str = "
     """The ids of one page of the grid, and how many tests the filters leave."""
     q, filters = q.strip().lower(), filters or {}
     watchlists, extras = set(filters.get("watchlist") or []), set(filters.get("extra") or [])
+    picked_sectors = set(filters.get("sector") or [])  # a test with any of them stays
     rule_filters = {k: {float(v) for v in vs} for k, vs in filters.items() if k in idx.rule_keys and vs}
 
     def keep(r: Row) -> bool:
         return ((not picks or r.pick is not None) and (not profit_both or r.profit_both) and (not beat_both or r.beat_both)
                 and (not q or q in r.haystack) and (not watchlists or r.watchlist in watchlists)
                 and (not extras or r.extra in extras)
+                and (not picked_sectors or not picked_sectors.isdisjoint(r.sectors))
                 and all(float(r.rules[k]) in vs for k, vs in rule_filters.items()))
 
     rows = [r for r in idx.rows if keep(r)]

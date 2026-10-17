@@ -154,6 +154,8 @@ them, sell one holding, and change any rule, including the news switch (`PATCH /
 blacklist and the periods), then pick the name from the list to fill them all back in. The new-bot form loads a
 setup's rules, watchlist and capital; a running bot's Edit loads its rules only. Saving under an existing name
 replaces it. Kept in trading-db (`GET`/`POST /dip/presets`, `DELETE /dip/presets/{id}`), so every browser sees them.
+In the Test results tab (dip and rotation), a tested setup's rocket button opens the new-bot form filled in with its
+rules, watchlist and capital, named after it: pick the broker, check it, create.
 
 Every dip into the buy zone, recovery, stop-loss and news veto is saved as a **signal** (`GET /bots/{id}/signals`,
 `GET /signals`), whatever the bot did. The bell in the header polls them every 30 s and can show a pop-up, a desktop
@@ -318,7 +320,9 @@ Defensive ...) in the bot table's Sectors column (filterable) and on its page. T
 else Yahoo's sector), and a sector holding at least a fifth of the symbols is a badge, three at most. 13 energy
 stocks give Energy; 8 chip makers and 4 consumer staples give Chips and Defensive; a list spread thinner is
 Diversified. The pencil next to them sets them by hand (`PUT /bots/{id}/sectors`, any names, up to 6) or back to
-automatic. Only a label: how the bot trades doesn't change.
+automatic. Only a label: how the bot trades doesn't change. The Test results grids (dip and rotation) give each
+tested setup the badges a bot with its symbols would get, in a Sectors column with a filter (`"sector"` in the tests'
+`filters`: a setup with any of the chosen sectors stays).
 
 Free cash (`GET /accounts`): under the totals, each Alpaca account (paper, live; only those with keys) shows the money
 no bot holds: the account's cash minus the cash of every bot on it that isn't archived. A paused bot keeps its cash for

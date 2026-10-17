@@ -16,7 +16,7 @@ from app import dip, main, rotation, scheduler, splits, trader
 from app.brokers import BrokerError, BrokerOrder
 from app.brokers import catalog as real_catalog
 from app.db import SessionLocal
-from app.models import DIP, Bot, Decision, Event, Holding, Order, Signal, WatchItem
+from app.models import DIP, Bot, Decision, Event, Holding, Order, Signal, SymbolSector, WatchItem
 from app.shares import dollars
 from app.trader import add_capital, holdings
 
@@ -1483,6 +1483,13 @@ def test_the_grid_is_filtered_sorted_and_paged_by_the_server(api):
     assert codes("filters=" + quote('{"watchlist": ["Chips"]}')) == ["C", "D"]
     assert codes("filters=" + quote('{"stop": [0.1]}')) == ["B", "D"]
     assert codes("filters=" + quote('{"watchlist": ["ETFs"], "stop": [0.2]}') + "&sort=score&order=desc", total=2) == ["A", "E"]
+    # Sector badges from each test's symbols, as a bot with them would get: a test with any of the chosen ones stays
+    assert {t["code"]: t["sectors"] for t in c.get(url).json()["items"]} == {
+        "A": ["Tech", "Financials"], "B": ["Tech", "Financials"], "C": ["Chips"], "D": ["Tech", "Financials"],
+        "E": ["Tech", "Financials"]}  # D is named Chips but holds SETUP's XLK and XLF
+    assert codes("filters=" + quote('{"sector": ["Chips"]}'), total=1) == ["C"]
+    assert codes("filters=" + quote('{"sector": ["Financials", "Energy"]}')) == ["A", "B", "E", "D"]
+    assert codes("filters=" + quote('{"sector": ["Chips", "Tech"], "stop": [0.1]}')) == ["B", "D"]
 
     assert c.get(f"{url}?sort=bear-ret").status_code == 422  # no such window
     assert c.get(f"{url}?filters=nope").status_code == 422
@@ -1492,6 +1499,7 @@ def test_the_grid_is_filtered_sorted_and_paged_by_the_server(api):
     s = c.get(f"/dip/studies/{study['id']}/summary").json()
     assert (s["tests"], s["made_money_both"], s["beat_hold_both"], s["has_quarters"]) == (5, 3, 1, True)
     assert (s["watchlists"], s["extras"]) == (["Chips", "ETFs"], [])
+    assert s["sectors"] == ["Tech", "Financials", "Chips"]  # the most common first
     assert s["rules"] == {"drop": [{"value": 0.03, "text": "3%"}, {"value": 0.05, "text": "5%"}],
                           "stop": [{"value": 0.1, "text": "10%"}, {"value": 0.2, "text": "20%"}]}  # only what differs
     # Like for like: A and B differ only in the stop (7 vs 5 around 6), A and E only in the fall (5 vs 1 around 3), C and
@@ -1506,6 +1514,20 @@ def test_the_grid_is_filtered_sorted_and_paged_by_the_server(api):
     c.post(f"/dip/studies/{study['id']}/tests", json=[{**GRID[4], "score": 50.0}])
     assert codes("sort=score&order=desc")[0] == "E"
     assert c.get(f"/dip/studies/{study['id']}/summary").json()["effects"][1]["cells"][1]["median"] == 22.5  # 5% fall: E 50 vs A 5
+
+
+def test_a_tests_sectors_come_from_yahoo_for_a_symbol_not_listed(api):
+    c, _, _ = api
+    with SessionLocal() as s:
+        s.add(SymbolSector(symbol="ZZZZ", sector="Energy"))
+        s.commit()
+    study = c.put("/dip/studies", json=STUDY).json()
+    url = f"/dip/studies/{study['id']}/tests"
+    c.post(url, json=[one_setup("T1", 1.0, config={**SETUP, "symbols": ["ZZZZ"]}),
+                      one_setup("T2", 2.0, config={**SETUP, "symbols": ["QQQQ"]})])  # unknown anywhere: no badge
+    assert {t["code"]: t["sectors"] for t in c.get(url).json()["items"]} == {"T1": ["Energy"], "T2": []}
+    assert c.get(f"/dip/studies/{study['id']}/summary").json()["sectors"] == ["Energy"]
+    assert [t["code"] for t in c.get(url + "?filters=" + quote('{"sector": ["Energy"]}')).json()["items"]] == ["T1"]
 
 
 def test_a_study_and_its_tests_are_checked(api):

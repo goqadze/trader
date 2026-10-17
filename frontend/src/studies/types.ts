@@ -70,6 +70,7 @@ export interface StudyTest<C> {
   note: string;
   extra?: string | null; // a filter tested on top of the rules (the bots don't have it yet)
   quarters?: TestQuarters | null; // separate short tests (the best setups only)
+  sectors?: string[]; // its symbols' sector badges, as a bot with them would get (only in a page of the grid)
 }
 
 /** One page of a study's grid (the server filters, sorts and pages it), and how many tests the filters leave. */
@@ -88,7 +89,7 @@ export interface TestQuery {
   picks?: boolean;
   profit_both?: boolean;
   beat_both?: boolean;
-  filters?: Record<string, (string | number)[]>; // "watchlist", "extra" (— = none) or a rule key -> the values kept
+  filters?: Record<string, (string | number)[]>; // "watchlist", "extra" (— = none), "sector" (any of them) or a rule key -> the values kept
 }
 
 /** The grid's frame: counts, each column's filter choices, and each rule's like-for-like effect on the score. */
@@ -97,6 +98,7 @@ export interface StudySummary {
   made_money_both: number;
   beat_hold_both: number;
   watchlists: string[];
+  sectors: string[]; // the Sectors filter's choices: the tests' badges, the most common first
   extras: string[]; // the Filter column's values ("—" = none); empty when no test has one
   rules: Record<string, { value: number; text: string }[]>; // only the rules the tests differ in
   has_quarters: boolean;

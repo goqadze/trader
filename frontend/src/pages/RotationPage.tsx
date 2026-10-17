@@ -147,6 +147,15 @@ export default function RotationPage() {
     message.info("Loaded into the backtest form: press Run rotation");
   };
 
+  /** The Test results tab's "Start a bot": the new rotation bot form with that setup's rules, universe and capital. */
+  const startTest = (config: RotationPresetConfig, name: string) => {
+    setInitial({
+      name, universe: config.symbols, top_n: config.top_n, lookback_months: config.lookback_months, skip_months: config.skip_months,
+      abs_filter: config.abs_filter, fractional: config.fractional, ...(config.initial_cash && { allocated_cash: config.initial_cash }),
+    });
+    setFormOpen(true);
+  };
+
   const create = async (body: RotationBotCreate) => {
     const bot = await tradingApi.createRotationBot(body);
     message.success(`Bot created: ${bot.name}`);
@@ -236,7 +245,7 @@ export default function RotationPage() {
         items={[
           { key: "bots", label: `Bots${rotationBots.length ? ` (${rotationBots.length})` : ""}`, children: live },
           { key: "backtest", label: "Backtest", children: backtest },
-          { key: "tests", label: "Test results", children: <TestResults kit={ROTATION_KIT} onLoad={loadTest} /> },
+          { key: "tests", label: "Test results", children: <TestResults kit={ROTATION_KIT} onLoad={loadTest} onStartBot={startTest} /> },
         ]}
       />
       <RotationBotForm
