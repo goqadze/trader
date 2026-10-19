@@ -6,8 +6,8 @@ import { request as http } from "../http";
 import type { RotationPresetConfig } from "../rotation/types";
 import type { SavedSetup, Study, StudyStrategy, StudySummary, StudyTestDetail, StudyTestPage, TestQuery } from "../studies/types";
 import type {
-  AccountInfo, Bot, BotCreate, BotUpdate, CapitalAdd, Decision, EmailAlert, EmailAlerts, EmailAlertsSave, Order, RotationBotCreate, RotationBotUpdate, Snapshot,
-  TradingEvent, TradingStatus,
+  AccountInfo, Bot, BotCreate, BotUpdate, CapitalAdd, CapitalWithdraw, Decision, EmailAlert, EmailAlerts, EmailAlertsSave, Order, RotationBotCreate, RotationBotUpdate, Snapshot,
+  TradingEvent, TradingStatus, WithdrawalPlan,
 } from "./types";
 
 const BASE = "/api/trading";
@@ -26,6 +26,8 @@ export const tradingApi = {
   resume: (id: number) => request<Bot>("POST", `/bots/${id}/resume`),
   archive: (id: number) => request<Bot>("POST", `/bots/${id}/archive`),
   addCapital: (id: number, body: CapitalAdd) => request<Bot>("POST", `/bots/${id}/capital`, body),
+  withdrawalPlan: (id: number, amount: number) => request<WithdrawalPlan>("GET", `/bots/${id}/withdraw?amount=${amount}`),
+  withdraw: (id: number, body: CapitalWithdraw) => request<Bot>("POST", `/bots/${id}/withdraw`, body),
   runNow: (id: number) => request<Decision>("POST", `/bots/${id}/run`),
   closePosition: (id: number) => request<Order | Order[]>("POST", `/bots/${id}/close`), // a rotation bot: one order per holding
   halt: () => request<{ paused: number }>("POST", "/halt"),

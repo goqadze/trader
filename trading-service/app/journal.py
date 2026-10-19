@@ -46,7 +46,8 @@ MAX_DAYS = 400  # the longest calendar asked for at once
 # What a bot's sale was, in the journal's words
 EXIT_REASONS = {"target": "Target reached", "stop-loss": "Stop-loss hit", "time": "Held its maximum days",
                 "manual": "Sold by hand from the dashboard", "signal": "The strategy's sell signal",
-                "rotation": "Rotated out (no longer among the strongest)", "rebalance": "Trimmed in a rebalance"}
+                "rotation": "Rotated out (no longer among the strongest)", "rebalance": "Trimmed in a rebalance",
+                "withdrawal": "Sold to raise money taken out of the bot"}
 ACCOUNTS = {"paper": "Simulator (paper)", "alpaca-paper": "Alpaca paper", "alpaca-live": "Alpaca live"}
 
 

@@ -2,6 +2,7 @@
 one of all the others unless the last one is still going (see run_forever). For each bot:
 
   1. resolves orders still pending at the broker          (any time)
+     settles a withdrawal once its sales have finished     (withdraw.settle)
      and keeps the stop-loss resting at the broker         (brokers that can hold one: Alpaca)
   2. checks the real account matches the bot's records   (market hours, real brokers only)
   3. refreshes the price, records equity, enforces stops  (market hours, every RISK_CHECK_MINUTES)
@@ -32,7 +33,7 @@ from .config import settings
 from .db import SessionLocal, utcnow
 from .decision_client import get_signal
 from .market import NY, is_open, ny_date, session_bounds, sessions_since, slot_window
-from . import dip, rotation, splits
+from . import dip, rotation, splits, withdraw
 from .models import DIP, HOLDINGS_STRATEGIES, OPEN_ORDER_STATUSES, ROTATION, Bot, Holding, Order, WatchItem
 from .trader import bot_lock, evaluate, log_event, protect, reconcile, sync_pending, watch
 
@@ -139,6 +140,7 @@ def process_bot(bot_id: int, now: datetime, signal_fn=get_signal, broker_factory
             try:
                 broker = broker_factory(bot)
                 sync_pending(session, bot, broker, now, cached=True)
+                withdraw.settle(session, bot, now)  # a withdrawal whose sales have just finished
                 if bot.strategy == ROTATION:
                     _process_rotation(session, bot, broker, now, closes_fn)
                     session.commit()

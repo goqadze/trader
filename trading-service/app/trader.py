@@ -183,9 +183,16 @@ def capital(bot: Bot) -> float:
     return round(bot.allocated_cash + (bot.added_cash or 0.0), 2)
 
 
+def return_pct(bot: Bot, value: float) -> float:
+    """The return in %, of the bot (value = its equity) or of buy & hold (its value): what it is worth plus the money
+    taken out (withdraw.py), against what you put in. Taking money out doesn't move it: the money only changes pockets."""
+    return round(((value + (bot.withdrawn_cash or 0.0)) / capital(bot) - 1) * 100, 2)
+
+
 def benchmark_value(bot: Bot, price: float | None) -> float | None:
     """What buy & hold is worth at `price` (the symbol's; a rotation or dip bot's basket value): the starting capital
-    bought it at benchmark_price, and each addition bought benchmark_added more of it at that day's price."""
+    bought it at benchmark_price, and each addition bought benchmark_added more of it at that day's price (each
+    withdrawal sold some of it for the same money: less)."""
     if not bot.benchmark_price or not price:
         return None
     return round(price * (bot.allocated_cash / bot.benchmark_price + (bot.benchmark_added or 0.0)), 2)

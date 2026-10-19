@@ -120,7 +120,9 @@ export interface Bot extends Omit<StrategyParams, "strategy"> {
   setup?: BotSetup | null; // the tested setup it was started from (Test results); null = not from a test
   allocated_cash: number; // the starting capital
   added_cash: number | null; // money added since (Add money); null = none
-  capital: number; // what was put in: allocated_cash + added_cash; return_pct and buy_hold_return_pct are measured on it
+  withdrawn_cash?: number | null; // money taken out since (Take money out); null = none
+  withdrawing?: number | null; // a withdrawal whose sales are still working at the broker
+  capital: number; // what was put in: allocated_cash + added_cash (money taken out doesn't lower it)
   cash: number;
   shares: number;
   entry_price: number | null;
@@ -137,7 +139,7 @@ export interface Bot extends Omit<StrategyParams, "strategy"> {
   created_at: string;
   next_decision_at: string | null; // null = paused/archived: no scheduled decisions
   equity: number;
-  return_pct: number;
+  return_pct: number; // (equity + withdrawn_cash) / capital - 1, in %: taking money out doesn't move it
   unrealized_pnl: number;
   buy_hold_return_pct: number | null;
   pending_order: boolean; // a market order is still working at the broker
@@ -179,6 +181,26 @@ export interface CapitalAdd {
   amount: number;
   top_up?: boolean; // dip bots: bring each holding up to a full slot at the next check that can buy
   confirm_live?: boolean; // required on a real-money bot
+}
+
+/** Money out of a running bot (POST /bots/{id}/withdraw): its cash first, then the same share of each holding. */
+export interface CapitalWithdraw {
+  amount: number;
+  confirm_live?: boolean; // required on a real-money bot
+}
+
+/** What a withdrawal would do now, at the bot's last prices (GET /bots/{id}/withdraw?amount=): nothing is sent. */
+export interface WithdrawalPlan {
+  amount: number;
+  most: number; // the most it can give now (a bot keeps $100)
+  equity: number;
+  cash: number;
+  from_cash: number; // the part its cash covers
+  part: number; // the share of the holdings' worth the sales raise (0-1)
+  raises: number; // what the sales would bring in all
+  left_in_cash: number; // its cash afterwards: what whole shares raise beyond the amount
+  sales: { symbol: string; held: number; qty: number; price: number; raises: number; whole: boolean }[];
+  problem: string | null; // why it would be refused now; null = it would go ahead
 }
 
 export interface Decision {

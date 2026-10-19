@@ -183,6 +183,40 @@ class CapitalAdd(BaseModel):
     confirm_live: bool = False  # required on a real-money bot
 
 
+class CapitalWithdraw(BaseModel):
+    """Money out of a running bot (POST /bots/{id}/withdraw): its cash first, then the same share of each holding
+    (withdraw.py)."""
+
+    amount: float = Field(gt=0, le=10_000_000)
+    confirm_live: bool = False  # required on a real-money bot
+
+
+class WithdrawalSaleOut(BaseModel):
+    """One holding's sale in a withdrawal's plan, at the prices the bot has now."""
+
+    symbol: str
+    held: float  # shares it holds
+    qty: float  # shares it would sell
+    price: float
+    raises: float  # what they'd bring after the bot's slippage and fee estimates
+    whole: bool  # whole shares (else fractions of one)
+
+
+class WithdrawalPlanOut(BaseModel):
+    """What taking `amount` out would do now (GET /bots/{id}/withdraw): nothing is sent."""
+
+    amount: float
+    most: float  # the most it can give now (it keeps withdraw.MIN_LEFT)
+    equity: float
+    cash: float
+    from_cash: float  # the part its cash covers
+    part: float  # the share of the holdings' worth the sales raise (0-1)
+    raises: float  # what the sales would bring in all
+    left_in_cash: float  # its cash afterwards: what whole shares raise beyond the amount
+    sales: list[WithdrawalSaleOut]
+    problem: str | None  # why it would be refused now (None = it would go ahead)
+
+
 class DipBotUpdate(BaseModel):
     """Change a dip buyer's rules while it runs; only the fields sent change. New rules apply from the next check; a
     position already held keeps the target and stop it was bought with."""
@@ -694,6 +728,8 @@ class BotOut(StrategyParams):
     setup: BotSetup | None = None  # the tested setup it was started from (None = not from Test results)
     allocated_cash: float  # the starting capital
     added_cash: float | None = None  # money added since (None = none)
+    withdrawn_cash: float | None = None  # money taken out since (None = none)
+    withdrawing: float | None = None  # a withdrawal whose sales are still working at the broker
     cash: float
     shares: int
     entry_price: float | None
@@ -711,10 +747,11 @@ class BotOut(StrategyParams):
     # --- derived for the dashboard ---
     next_decision_at: datetime | None  # when the scheduler will next decide for this bot (None = paused/archived)
     equity: float
-    capital: float  # what you put in: allocated_cash + added_cash; return_pct and buy_hold_return_pct are measured on it
+    capital: float  # what you put in: allocated_cash + added_cash (money taken out doesn't lower it)
+    # (equity + withdrawn_cash) / capital - 1: what it is worth plus what you took out, against what you put in
     return_pct: float
     unrealized_pnl: float
-    buy_hold_return_pct: float | None
+    buy_hold_return_pct: float | None  # the same for buy & hold, which got the same money in and out on the same days
     pending_order: bool  # a market order is still working at the broker
     stop_at_broker: bool  # the stop-loss rests at the broker as a real order (Alpaca), not only in this service
     # --- rotation bots only (None / empty on the others) ---

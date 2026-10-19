@@ -23,7 +23,7 @@ from pydantic import ValidationError
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session, defer
 
-from . import auth, dip, journal, notify, risk_report, rotation, scheduler, studies
+from . import auth, dip, journal, notify, risk_report, rotation, scheduler, studies, withdraw
 from . import sectors as badges
 from .brokers import SHARED_ACCOUNT_BROKERS, BrokerError, catalog, get_broker
 from .config import settings
@@ -31,13 +31,13 @@ from .db import SessionLocal, get_session, init_db, utcnow
 from .market import is_open, next_decision_time, ny_date, session_bounds
 from .models import (DIP, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPreset, DipStudy, DipTest, EquitySnapshot, Event,
                      Notification, Order, Signal, WatchItem)
-from .schemas import (AccountOut, BotCreate, BotOut, BotUpdate, CapitalAdd, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn,
+from .schemas import (AccountOut, BotCreate, BotOut, BotUpdate, CapitalAdd, CapitalWithdraw, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn,
                       DipPresetOut, DipStudyIn, DipStudyOut, DipStudySummaryOut, DipTestDetailOut, DipTestIn, DipTestOut, DipTestPageOut,
                       EmailAlertsIn, EmailAlertsOut, EventOut, HoldingOut, NotificationOut, RiskReportOut, NotifyCategoryOut, OrderOut,
                       PRESET_CONFIGS, RotationBotCreate, RotationPresetIn, SectorsIn, SignalOut, SnapshotOut, StatusOut, StudyStrategy,
-                      WatchItemOut, WatchSymbols, check_window)
+                      WatchItemOut, WatchSymbols, WithdrawalPlanOut, WithdrawalSaleOut, check_window)
 from .trader import (add_capital, benchmark_value, bot_equity, bot_lock, capital, close_position, evaluate, holdings,
-                     log_event, open_orders, resting_stop)
+                     log_event, open_orders, resting_stop, return_pct)
 
 logger = logging.getLogger("trading-service")
 logging.basicConfig(level=logging.INFO)
@@ -119,10 +119,10 @@ def _bot_out(session: Session, bot: Bot, yahoo: dict[str, str] | None = None) ->
         "sectors_from_symbols": from_symbols,
         "equity": equity,
         "capital": capital(bot),
-        "return_pct": round((equity / capital(bot) - 1) * 100, 2),
+        "return_pct": return_pct(bot, equity),
         "unrealized_pnl": round(sum(r.unrealized_pnl for r in rows) if rows else
                                 bot.shares * price - bot.cost_basis if bot.shares else 0.0, 2),
-        "buy_hold_return_pct": round((bh / capital(bot) - 1) * 100, 2) if (bh := benchmark_value(bot, price)) else None,
+        "buy_hold_return_pct": return_pct(bot, bh) if (bh := benchmark_value(bot, price)) else None,
         "pending_order": bool(open_orders(session, bot)),
         "stop_at_broker": resting_stop(session, bot) is not None,
         "next_decision_at": scheduler.next_decision_at(bot, now),
@@ -687,6 +687,10 @@ def archive_bot(bot_id: int, session: Session = Depends(get_session)):
         return _set_status(session, bot, ("active", "paused"), "archived", "Archived by user")
 
 
+def _is_live(bot: Bot) -> bool:
+    return next((b["live"] for b in catalog() if b["name"] == bot.broker), False)
+
+
 CAPITAL_MAX = 10_000_000  # all the money put in one bot, like the most it can start with
 
 
@@ -704,7 +708,7 @@ def add_bot_capital(bot_id: int, body: CapitalAdd, session: Session = Depends(ge
             raise HTTPException(409, "bot is archived")
         if body.top_up and bot.strategy != DIP:
             raise HTTPException(422, "only a dip bot tops up its holdings; a rotation bot resizes them at its next rebalance")
-        live = next((b["live"] for b in catalog() if b["name"] == bot.broker), False)
+        live = _is_live(bot)
         if live and not body.confirm_live:
             raise HTTPException(422, "real-money bot: set confirm_live=true to confirm")
         if capital(bot) + body.amount > CAPITAL_MAX:
@@ -741,6 +745,45 @@ def add_bot_capital(bot_id: int, body: CapitalAdd, session: Session = Depends(ge
         log_event(session, bot.id, "capital", f"Added ${body.amount:,.2f}{' of REAL MONEY' if live else ''}: "
                   f"${capital(bot):,.2f} put in (started with ${bot.allocated_cash:,.2f}). {how}{note}",
                   "warning" if live or note else "info", now)
+        session.commit()
+        return _bot_out(session, bot)
+
+
+@app.get("/bots/{bot_id}/withdraw", response_model=WithdrawalPlanOut)
+def withdrawal_plan(bot_id: int, amount: float = Query(gt=0, le=10_000_000), session: Session = Depends(get_session)):
+    """What taking `amount` out would do now, at the bot's last prices (the dashboard's preview): nothing is sent and
+    the broker isn't asked. The real one sizes its sales on fresh quotes, so they can differ a little."""
+    bot = _get_bot(session, bot_id)
+    p = withdraw.plan(session, bot, amount)
+    why = withdraw.problem(session, bot, p, utcnow())
+    return WithdrawalPlanOut(
+        amount=amount, most=p.most, equity=p.equity, cash=p.cash, from_cash=p.from_cash, part=round(p.part, 6),
+        raises=p.raises, left_in_cash=round(p.cash + p.raises - amount, 2), problem=why[0] if why else None,
+        sales=[WithdrawalSaleOut(symbol=x.symbol, held=x.held, qty=x.qty, price=x.price, raises=round(x.raises(p.keep), 2),
+                                 whole=x.whole) for x in p.sales])
+
+
+@app.post("/bots/{bot_id}/withdraw", response_model=BotOut)
+def withdraw_bot_capital(bot_id: int, body: CapitalWithdraw, session: Session = Depends(get_session)):
+    """Take money out of a running bot: from its cash first (realized profit included), then by selling the same share
+    of each holding at market now. What you put in stays; the return counts the money taken out, and buy & hold gives up
+    the same money on the same day (withdraw.py has the rules). On Alpaca no money leaves the account: it becomes the
+    account's free cash."""
+    with _Locked(bot_id):
+        bot = _get_bot(session, bot_id)
+        if bot.status == "archived":
+            raise HTTPException(409, "bot is archived")
+        live = _is_live(bot)
+        if live and not body.confirm_live:
+            raise HTTPException(422, "real-money bot: set confirm_live=true to confirm")
+        broker = _broker_or_400(bot)
+        now = utcnow()
+        try:
+            story = withdraw.withdraw(session, bot, broker, body.amount, now, live)
+        except withdraw.Refused as e:
+            session.rollback()
+            raise HTTPException(e.status, str(e))
+        log_event(session, bot.id, withdraw.REASON, story, "warning" if live else "info", now)
         session.commit()
         return _bot_out(session, bot)
 

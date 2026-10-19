@@ -313,11 +313,13 @@ export default function TradingPage() {
   const shown = useMemo(() => (broker === "all" ? list : list.filter((b) => b.broker === broker)), [list, broker]);
   const totals = useMemo(() => {
     const running = shown.filter((b) => b.status !== "archived");
-    // Everything put in (the start plus Add money), so added money never shows as profit
+    // Everything put in (the start plus Add money), so added money never shows as profit; money taken out still counts
+    // as made (what they're worth plus what came out, against what went in), like each bot's return
     const allocated = running.reduce((s, b) => s + b.capital, 0);
     const added = running.reduce((s, b) => s + (b.added_cash ?? 0), 0);
+    const withdrawn = running.reduce((s, b) => s + (b.withdrawn_cash ?? 0), 0);
     const equity = running.reduce((s, b) => s + b.equity, 0);
-    return { allocated, added, equity, pnl: equity - allocated, active: running.filter((b) => b.status === "active").length, count: running.length };
+    return { allocated, added, withdrawn, equity, pnl: equity + withdrawn - allocated, active: running.filter((b) => b.status === "active").length, count: running.length };
   }, [shown]);
 
   const create = async (body: BotCreate | object) => {
@@ -413,7 +415,11 @@ export default function TradingPage() {
         <Col xs={12} md={6}>
           <Card size="small">
             <Statistic title="Capital allocated" value={usd(totals.allocated, 0)} />
-            {totals.added > 0 && <span style={{ color: "#8b98b5", fontSize: 12 }}>incl. {usd(totals.added, 0)} added</span>}
+            {(totals.added > 0 || totals.withdrawn > 0) && (
+              <span style={{ color: "#8b98b5", fontSize: 12 }}>
+                {[totals.added > 0 && `incl. ${usd(totals.added, 0)} added`, totals.withdrawn > 0 && `${usd(totals.withdrawn, 0)} taken out`].filter(Boolean).join(" · ")}
+              </span>
+            )}
           </Card>
         </Col>
         <Col xs={12} md={6}><Card size="small"><Statistic title="Current equity" value={usd(totals.equity, 0)} /></Card></Col>

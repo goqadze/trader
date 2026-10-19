@@ -33,7 +33,7 @@ logger = logging.getLogger("trading-service.notify")
 KEY = "email_alerts"  # its Setting row
 # What you can choose to get (models.NOTIFY_CATEGORIES): (label, what it covers), in the dashboard's words
 CATEGORIES = {
-    "trades": ("Buys and sells", "Every filled order; a sale with its profit or loss"),
+    "trades": ("Buys and sells", "Every filled order; a sale with its profit or loss; money taken out of a bot"),
     "risk": ("Stop-loss and risk", "Stop-loss sales, blacklisted symbols, the drawdown breaker, HALT ALL"),
     "problems": ("Problems", "Errors, and orders that failed or need a look (at most one per bot and kind an hour)"),
     "signals": ("Dip signals", "Every dip buyer signal: buy zone, turned up, back up, held too long, news veto (chatty)"),
@@ -50,7 +50,8 @@ PROBLEM_QUIET = timedelta(hours=1)  # a bot failing every check emails once an h
 COLORS = {"trades": "#4f8cff", "risk": "#ef5b6b", "problems": "#d4a72c", "signals": "#13c2c2", "report": "#9254de",
           "test": "#33c088"}
 REASONS = {"dip": "bought the dip", "signal": "buy signal", "target": "back at its target", "stop-loss": "stop-loss",
-           "time": "held too long", "manual": "you asked", "rebalance": "rebalance", "top-up": "topped up with added money"}
+           "time": "held too long", "manual": "you asked", "rebalance": "rebalance", "top-up": "topped up with added money",
+           "withdrawal": "to raise money you took out"}
 SIGNAL_HEADS = {"down": "in the buy zone", "rebound": "turned up from its low", "up": "is back up", "stop": "hit its stop",
                 "time": "held too long", "news": "bearish news, not bought"}
 # Each alert's account as a badge, like the dashboard's tags; real money in red. A live alert never shares an email with
@@ -171,6 +172,8 @@ def from_event(session: Session, bot_id: int | None, kind: str, message: str, le
         category = "problems"
     elif level in ("warning", "error") and kind in ("risk", "halt"):
         category = "risk"
+    elif kind == "withdrawal":  # money taken out of a bot (withdraw.py), and its settling
+        category = "trades"
     else:
         return
     bot = session.get(Bot, bot_id) if bot_id else None

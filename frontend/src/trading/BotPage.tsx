@@ -1,5 +1,6 @@
 import {
-  ArrowLeftOutlined, CaretRightOutlined, DollarOutlined, EditOutlined, InboxOutlined, PauseOutlined, ThunderboltOutlined,
+  ArrowLeftOutlined, CaretRightOutlined, DollarOutlined, EditOutlined, InboxOutlined, MinusCircleOutlined, PauseOutlined,
+  ThunderboltOutlined,
 } from "@ant-design/icons";
 import {
   Alert, App as AntApp, Button, Card, Col, Descriptions, Empty, Row, Space, Statistic, Table, Tabs, Tag, Tooltip, Typography,
@@ -24,6 +25,7 @@ import { HoldingsCard, RotationEditForm, RotationParamsCard } from "./RotationPa
 import { MarketStatus } from "./TradingPage";
 import type { Bot, BotUpdate, Decision, Order, RotationBotUpdate, Snapshot, TradingEvent } from "./types";
 import { usePolling } from "./usePolling";
+import WithdrawMoney from "./WithdrawMoney";
 
 const MUTED = "#8b98b5";
 
@@ -52,7 +54,7 @@ const decisionColumns: ColumnsType<Decision> = [
 
 const REASON_COLOR: Record<string, string> = {
   "stop-loss": "red", target: "green", manual: "purple", rotation: "geekblue", rebalance: "blue", dip: "cyan", time: "gold",
-  "top-up": "lime",
+  "top-up": "lime", withdrawal: "magenta",
 };
 const REASON_TIP: Record<string, string> = {
   rotation: "A rotation bot moving into or out of this symbol",
@@ -60,6 +62,7 @@ const REASON_TIP: Record<string, string> = {
   dip: "A dip buyer buying a fall",
   time: "A dip buyer selling a position held its maximum number of days",
   "top-up": "A dip buyer bringing a holding up to a full slot with money you added",
+  withdrawal: "Part of a holding sold to raise money you took out of the bot",
 };
 
 /** `symbol`: the bot's symbol, for orders saved before each order stored its own. */
@@ -174,6 +177,7 @@ export default function BotPage() {
   const confirm = useConfirm();
   const [editOpen, setEditOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [takeOpen, setTakeOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
   // One poll for everything on the page, so all panels show the same moment
@@ -303,6 +307,11 @@ export default function BotPage() {
             <SetupButton bot={bot} />
             {bot.pending_order && <Tag color="processing">order pending</Tag>}
             {bot.rebalancing && !bot.pending_order && <Tag color="processing">rebalancing</Tag>}
+            {bot.withdrawing != null && (
+              <Tooltip title={`Taking ${usd(bot.withdrawing)} out: its sales are still working at the broker. Settled once they have finished`}>
+                <Tag color="processing">withdrawal settling</Tag>
+              </Tooltip>
+            )}
             {bot.top_up && (
               <Tooltip title="You added money with top up: its next check that can buy brings each holding up to a full slot">
                 <Tag color="processing">top-up at the next check</Tag>
@@ -337,6 +346,9 @@ export default function BotPage() {
               <Tooltip title={dip ? "More money for this bot: bigger slots, and a top-up of what it holds if you like" : "More money for this bot"}>
                 <Button icon={<DollarOutlined />} onClick={() => setAddOpen(true)}>Add money</Button>
               </Tooltip>
+              <Tooltip title="Money out of this bot: from its cash first, then the same share of each holding">
+                <Button icon={<MinusCircleOutlined />} disabled={bot.pending_order} onClick={() => setTakeOpen(true)}>Take money out</Button>
+              </Tooltip>
               <Tooltip title={!holding ? "No open position" : !marketOpen ? "Orders only during market hours" : ""}>
                 <Button danger loading={busy === "close"} disabled={!holding || !marketOpen || bot.pending_order} onClick={closeAll}>
                   {many ? "Close all positions" : "Close position"}
@@ -365,8 +377,13 @@ export default function BotPage() {
       {/* ---------- KPIs ---------- */}
       <Row gutter={[16, 16]}>
         <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="Equity" value={usd(bot.equity)} />
-          <Tooltip title={bot.added_cash ? `${usd(bot.allocated_cash)} at the start, ${usd(bot.added_cash)} added since` : undefined}>
-            <span style={{ color: MUTED, fontSize: 12 }}>of {usd(bot.capital, 0)} {bot.added_cash ? "put in" : "allocated"}</span>
+          <Tooltip title={bot.added_cash || bot.withdrawn_cash
+            ? `${usd(bot.allocated_cash)} at the start${bot.added_cash ? `, ${usd(bot.added_cash)} added since` : ""}${bot.withdrawn_cash ? `, ${usd(bot.withdrawn_cash)} taken out (the return counts it)` : ""}`
+            : undefined}>
+            <span style={{ color: MUTED, fontSize: 12 }}>
+              of {usd(bot.capital, 0)} {bot.added_cash || bot.withdrawn_cash ? "put in" : "allocated"}
+              {bot.withdrawn_cash ? `, ${usd(bot.withdrawn_cash, 0)} taken out` : ""}
+            </span>
           </Tooltip>
         </Card></Col>
         <Col xs={12} md={8} xl={4}>
@@ -514,6 +531,13 @@ export default function BotPage() {
 
       <AddMoney bot={bot} open={addOpen} onClose={() => setAddOpen(false)}
         onAdded={() => { message.success("Money added"); setAddOpen(false); page.reload(); }} />
+      <WithdrawMoney bot={bot} open={takeOpen} onClose={() => setTakeOpen(false)}
+        onDone={(after) => {
+          const taken = (after.withdrawn_cash ?? 0) - (bot.withdrawn_cash ?? 0);
+          message.success(after.withdrawing != null ? "Selling now: the withdrawal settles once the sales have filled" : `Took out ${usd(taken)}`);
+          setTakeOpen(false);
+          page.reload();
+        }} />
       {dip ? (
         <DipEditForm open={editOpen} bot={bot} onCancel={() => setEditOpen(false)} onSaved={() => { message.success("Rules saved"); setEditOpen(false); page.reload(); }} />
       ) : rotation ? (

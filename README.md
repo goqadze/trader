@@ -338,6 +338,34 @@ leaves out the day's sales until they settle (T+1). After the Oct 16 sales it re
 money gone, it counts again once they settle. Read from Alpaca at most every 30 seconds. The Mac and the server keep
 separate bots on the same Alpaca paper account, so each counts only its own.
 
+Money in and out of a running bot (both on its page; on Alpaca no money moves between accounts, only the bot's share
+of the account changes, so the account's free cash goes down or up):
+
+- **Add money** (`POST /bots/{id}/capital`): more cash for the bot. A dip bot's slots grow from its next buy (with
+  *top up*, its next check first brings each holding up to a full slot); a rotation bot invests it at its next
+  rebalance; a single-symbol bot's next buy uses it. Buy & hold buys its basket with the same money that day.
+- **Take money out** (`POST /bots/{id}/withdraw`, `trading-service/app/withdraw.py`): from the bot's cash first,
+  realized profit included; only what the cash doesn't cover comes from selling the same share of each holding at
+  market (so in regular hours only). Fractions of a share where the bot and the broker trade them; elsewhere whole
+  shares, each holding's share rounded down and the rest made up one share at a time from the holdings nearest to
+  their next share (the extra a whole share raises stays in its cash). The sales are sized on fresh quotes less the
+  bot's slippage and fee estimates; if they fill lower, or one doesn't fill, that much less comes out and the cash
+  never stays under zero (a sale still working is settled by the scheduler once it finishes). A bot keeps $100: to
+  take everything out, close its positions and archive it. Refused (with the reason) while one of its orders is
+  working, during a rebalance, or on an archived bot; a real-money bot asks for a confirmation tick. The dialog shows
+  the plan first (`GET /bots/{id}/withdraw?amount=`, nothing sent). E.g. a bot of $412 with $40 of cash: taking $150
+  out takes the $40 and sells about 30% of each holding for the other $110.
+- **How it's measured**: "put in" is the starting capital plus money added; money taken out doesn't lower it. The
+  return is (equity + money taken out) / put in − 1, so taking money out never moves it, and taking profit out never
+  turns it into a loss. Buy & hold gets the same money in and out on the same days (it sells its basket for a
+  withdrawal) and is measured the same way. Example: $400 put in, worth $450 (+12.5%); take $100 out: worth $350,
+  still +12.5%. The drawdown breaker's peak shrinks in proportion, so a withdrawal neither trips nor resets it. After
+  a withdrawal a dip bot's slots are smaller (its holdings keep their stop, target and days held; one sold whole isn't
+  bought again before tomorrow, and a waiting top-up is dropped), a rotation bot's next rebalance sizes its picks on
+  the smaller equity, and a single-symbol bot's stop order at the broker is placed again for the shares left. Each
+  withdrawal is in the bot's events and emailed with the trades (category *Buys and sells*); its sales show as
+  `withdrawal` orders.
+
 Safety built in:
 
 - **Paper by default.** Live needs an env flag, live keys, and an explicit confirmation per bot; setting the

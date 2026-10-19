@@ -121,6 +121,13 @@ class Bot(Base):
     # day's price, benchmark_added more units of it: see trader.benchmark_value
     added_cash: Mapped[float | None] = mapped_column(Float, nullable=True)
     benchmark_added: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Money you took out while it runs (POST /bots/{id}/withdraw; NULL = none). What you put in stays the same: the
+    # return counts what came out as part of what the bot made, (equity + this) / put in - 1 (trader.return_pct).
+    # Buy & hold sells its basket for the same money on the same day: benchmark_added goes down (see withdraw.py)
+    withdrawn_cash: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # A withdrawal whose sales are still working at the broker: the amount taken out, settled once they have finished
+    # (withdraw.settle). NULL = none
+    withdrawing: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # --- Market data bookkeeping ---
     benchmark_price: Mapped[float | None] = mapped_column(Float, nullable=True)  # price at creation: buy & hold baseline
@@ -421,7 +428,8 @@ class Order(Base):
     # A BUY sent as a dollar amount (a dip bot's buy in fractions, where the broker takes those): the broker works out the
     # shares at the fill, so the bot never spends more than its slot; `qty` is then only the estimate at the quote
     notional: Mapped[float | None] = mapped_column(Float, nullable=True)
-    reason: Mapped[str] = mapped_column(String(16))  # signal | stop-loss | target | manual | rotation | rebalance | dip | time
+    # signal | stop-loss | target | manual | rotation | rebalance | dip | time | top-up | withdrawal
+    reason: Mapped[str] = mapped_column(String(16))
     status: Mapped[str] = mapped_column(String(20), default="new", index=True)
     # Our own unique id, sent to the broker. If the network drops mid-submit we can ask the broker
     # "did you get order X?" instead of guessing -- and a retry can never create a duplicate order.
