@@ -145,14 +145,16 @@ export function SetupButton({ bot, compact = false }: { bot: Bot; compact?: bool
   const setup = bot.setup;
   if (!setup) return null;
   return (
-    <>
+    // The popup is drawn outside the table, but its clicks (X, Close, the dark mask) still bubble up React's tree to the
+    // bot table's row, which opens the bot's page: stop them here
+    <span onClick={(e) => e.stopPropagation()}>
       <Tag
         icon={<ExperimentOutlined />}
         color="geekblue"
         role="button"
         aria-label={`Tested setup ${setup.name}`}
         style={{ cursor: "pointer", marginInlineEnd: 0, ...(compact && { fontSize: 11, lineHeight: "18px", padding: "0 5px" }) }}
-        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen(true); }}
+        onClick={() => setOpen(true)}
       >
         {compact ? setup.code : `Tested setup ${setup.code}`}
       </Tag>
@@ -166,6 +168,6 @@ export function SetupButton({ bot, compact = false }: { bot: Bot; compact?: bool
       >
         <SetupDetails bot={bot} setup={setup} />
       </Modal>
-    </>
+    </span>
   );
 }
