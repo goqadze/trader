@@ -12,7 +12,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
 import { tradingApi } from "../trading/api";
 import { SectorTags } from "../trading/sectors";
-import type { RuleColumn, StrategyKit } from "./kit";
+import { PERIOD_LABEL, type RuleColumn, type StrategyKit } from "./kit";
 import type { Study, StudySummary, StudyTest, StudyTestDetail, TestNumbers, TestQuery } from "./types";
 
 const MUTED = "#8b98b5";
@@ -21,10 +21,6 @@ const RED = "#ef5b6b";
 const color = (v: number | null | undefined) => (v == null || Math.abs(v) < 0.005 ? undefined : v > 0 ? GREEN : RED);
 const signed = (v: number | null | undefined, d = 1) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(d)}%`);
 
-const PERIOD_LABEL: Record<string, string> = {
-  practice: "Practice", exam: "Exam", stress: "Stress check", early: "Early check", practice4: "Practice", exam4: "Exam",
-  bear: "Bear 2022",
-};
 const months = (p?: [string, string]) => (p ? Math.round(dayjs(p[1]).diff(dayjs(p[0]), "day") / 30.44) : 0);
 const PERIOD_TIP: Record<string, (n: number) => string> = {
   practice: (n) => `The ${n} months before the exam.`,
@@ -259,8 +255,8 @@ interface Props<C extends { symbols: string[] }> {
   kit: StrategyKit<C>;
   /** Fill the backtest form with this setup (the page switches to the Backtest tab). */
   onLoad: (c: C) => void;
-  /** Open the page's new bot form filled in with this setup, named after it. */
-  onStartBot: (c: C, name: string) => void;
+  /** Open the page's new bot form filled in with this setup, named after it; the bot keeps a copy of test `testId`. */
+  onStartBot: (c: C, name: string, testId: number) => void;
 }
 
 const PAGE_SIZES = [25, 50, 100, 200];
@@ -357,7 +353,7 @@ export default function TestResults<C extends { symbols: string[] }>({ kit, onLo
   /** The bot gets the rules, not a tested filter on top of them (the bots don't have those yet). */
   const startBot = (t: StudyTest<C>) => {
     if (t.extra) message.warning(`The bot gets the rules, not the filter (${t.extra}): the bots don't have it yet`);
-    onStartBot(kit.complete(t.config), t.name.slice(0, 80));
+    onStartBot(kit.complete(t.config), t.name.slice(0, 80), t.id);
   };
 
   const save = async () => {

@@ -37,6 +37,7 @@ grep -rn "<text on screen>" src --include='*.tsx'                     # the comp
   `isRotation`, `holdsMany`, `slotTimes`, `checkTimes`, `STATUS_COLOR`, `accountLabel`.
 - `trading/usePolling.ts` `usePolling(fetcher, ms, deps)` → `{data, error, loading, reload}` (pauses in a hidden tab).
 - `trading/sectors.tsx`: `SectorTags` (colored badges), `SectorBadges` (bot page badges + edit dialog).
+- `trading/setup.tsx`: `SetupButton` (a bot's tested setup: tag + popup with its results and the rules that differ), `FromSetupNote` (new-bot forms).
 - `trading/confirm.tsx` `useConfirm()` (every risky action asks first; shows `AccountTag` LIVE/paper).
 - `strategies.ts` (strategy list, kept in sync with the backends), `symbols.ts` (symbol groups, `symbolClash`),
   `periods.ts` (test windows).

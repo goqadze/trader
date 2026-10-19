@@ -11,6 +11,7 @@ import { tradingApi } from "./api";
 import BotForm, { type BotFormInitial } from "./BotForm";
 import { useConfirm } from "./confirm";
 import { SectorTags } from "./sectors";
+import { SetupButton } from "./setup";
 import { dipRules } from "../dip/DipParts";
 import { strategyName } from "../strategies";
 import {
@@ -76,7 +77,7 @@ const columns: ColumnsType<Bot> = [
     render: (_, b) => (
       <Space direction="vertical" size={0}>
         <Link to={`/trading/${b.id}`} style={{ fontWeight: 600, fontSize: 15 }}>{botTitle(b)}</Link>
-        <span style={{ color: "#8b98b5", fontSize: 12 }}>{b.name}</span>
+        <span style={{ color: "#8b98b5", fontSize: 12 }}>{b.name} <SetupButton bot={b} compact /></span>
       </Space>
     ),
   },

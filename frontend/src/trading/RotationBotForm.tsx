@@ -4,6 +4,7 @@ import { ROTATION_KIT } from "../rotation/kit";
 import type { RotationPresetConfig } from "../rotation/types";
 import UniverseField, { SECTORS } from "../rotation/UniverseField";
 import SetupPicker from "../studies/SetupPicker";
+import { FromSetupNote } from "./setup";
 import type { BrokerInfo, RotationBotCreate } from "./types";
 
 const MUTED = "#8b98b5";
@@ -64,13 +65,15 @@ function fromForm(v: FormValues): RotationBotCreate {
 interface Props {
   open: boolean;
   initial: RotationBotInitial;
+  fromSetup?: string | null; // the tested setup it starts from (Test results): the bot keeps a copy of it
+  onUnlink?: () => void; // the bot won't keep it (also when a saved setup replaces its rules)
   brokers: BrokerInfo[];
   onCancel: () => void;
   onSubmit: (body: RotationBotCreate) => Promise<void>;
 }
 
 /** New momentum rotation bot: the rotation's rules (prefilled from a rotation backtest), a paper broker and the capital. */
-export default function RotationBotForm({ open, initial, brokers, onCancel, onSubmit }: Props) {
+export default function RotationBotForm({ open, initial, fromSetup, onUnlink, brokers, onCancel, onSubmit }: Props) {
   const [form] = Form.useForm<FormValues>();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -100,11 +103,13 @@ export default function RotationBotForm({ open, initial, brokers, onCancel, onSu
   };
 
   /** A saved setup: its rules, universe and capital (the broker, name and safety settings stay). */
-  const load = (c: RotationPresetConfig) =>
+  const load = (c: RotationPresetConfig) => {
+    onUnlink?.(); // other rules now: not the tested setup's
     form.setFieldsValue({
       universe: c.symbols, top_n: c.top_n, lookback_months: c.lookback_months, skip_month: c.skip_months > 0, abs_filter: c.abs_filter,
       fractional: c.fractional, ...(c.initial_cash && { allocated_cash: c.initial_cash }),
     });
+  };
 
   const pctInput = (min: number, max: number, step: number) => <InputNumber min={min} max={max} step={step} addonAfter="%" style={{ width: "100%" }} />;
 
@@ -115,6 +120,7 @@ export default function RotationBotForm({ open, initial, brokers, onCancel, onSu
         few in equal parts, selling what dropped out: the same rules as the rotation backtest. It starts with a rebalance at the
         next decision time. Paper accounts only for now.
       </Typography.Paragraph>
+      {fromSetup && <FromSetupNote name={fromSetup} onUnlink={onUnlink} />}
       <Form<FormValues> form={form} layout="vertical" requiredMark={false}>
         <Row gutter={12}>
           <Col span={14}>

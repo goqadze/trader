@@ -164,6 +164,7 @@ class DipBotCreate(DipRules):
     fee_pct: float = Field(0.0, ge=0, le=0.05)
     slippage_pct: float = Field(0.0005, ge=0, le=0.05)
     max_drawdown_pct: float = Field(0.2, ge=0, le=1)
+    setup_test_id: int | None = Field(None, ge=1)  # started from this Test results test: the bot keeps a copy of it
 
     @field_validator("symbols")
     @classmethod
@@ -585,6 +586,7 @@ class RotationBotCreate(BaseModel):
     fee_pct: float = Field(0.0, ge=0, le=0.05)
     slippage_pct: float = Field(0.0005, ge=0, le=0.05)
     max_drawdown_pct: float = Field(0.2, ge=0, le=1)
+    setup_test_id: int | None = Field(None, ge=1)  # started from this Test results test: the bot keeps a copy of it
 
     @field_validator("universe")
     @classmethod
@@ -655,6 +657,27 @@ class HoldingOut(BaseModel):
     on_watchlist: bool = True  # False: removed from the watchlist; held until it exits
 
 
+class BotSetup(BaseModel):
+    """The tested setup a bot was started from, copied when the bot was made (models.Bot.setup): what it was called,
+    where it was tested, its rules and how it did in each window then."""
+
+    test_id: int
+    code: str
+    name: str
+    study_id: int
+    study: str
+    strategy: StudyStrategy
+    watchlist: str = ""
+    score: float | None = None  # the weaker of its practice and exam returns
+    pick: int | None = None  # the study's pick number (1 = its best pick)
+    note: str = ""
+    extra: str | None = None  # a filter tested on top of the rules, which the bot doesn't have
+    periods: dict[str, tuple[date, date]]  # the study's windows, in the grid's order
+    results: dict[str, dict]  # window -> return, buy & hold, worst drop, trades, win rate (as the grid has them)
+    config: dict  # the tested rules (schemas.DipPresetConfig / RotationPresetConfig as JSON)
+    started_at: datetime  # when the bot was made from it
+
+
 class BotOut(StrategyParams):
     model_config = ConfigDict(from_attributes=True)
 
@@ -668,6 +691,7 @@ class BotOut(StrategyParams):
     sectors: list[str] = []  # sector badges, biggest first (see sectors.py)
     sectors_auto: bool = True  # worked out from its symbols (False: set by hand)
     sectors_from_symbols: list[str] = []  # what its symbols say, even when set by hand
+    setup: BotSetup | None = None  # the tested setup it was started from (None = not from Test results)
     allocated_cash: float  # the starting capital
     added_cash: float | None = None  # money added since (None = none)
     cash: float

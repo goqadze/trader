@@ -101,6 +101,7 @@ export default function RotationPage() {
   const [tab, setTab] = useState(savedTab);
   const [formOpen, setFormOpen] = useState(false);
   const [initial, setInitial] = useState<RotationBotInitial>({});
+  const [fromTest, setFromTest] = useState<{ id: number; name: string } | null>(null); // the form's tested setup, if any
   const [loadRequest, setLoadRequest] = useState<{ config: RotationPresetConfig; seq: number } | null>(null);
   const bots = usePolling(() => tradingApi.listBots(), 30_000);
   const status = usePolling(tradingApi.status, 60_000);
@@ -111,6 +112,7 @@ export default function RotationPage() {
     const state = location.state as { newRotationBot?: boolean } | null;
     if (!state?.newRotationBot) return;
     setInitial({});
+    setFromTest(null);
     setFormOpen(true);
     navigate(location.pathname, { replace: true, state: null });
   }, [location, navigate]);
@@ -137,6 +139,7 @@ export default function RotationPage() {
       ...(cfg.initial_cash != null && { allocated_cash: cfg.initial_cash }),
       ...(cfg.fractional != null && { fractional: cfg.fractional }),
     });
+    setFromTest(null);
     setFormOpen(true);
   };
 
@@ -147,17 +150,19 @@ export default function RotationPage() {
     message.info("Loaded into the backtest form: press Run rotation");
   };
 
-  /** The Test results tab's "Start a bot": the new rotation bot form with that setup's rules, universe and capital. */
-  const startTest = (config: RotationPresetConfig, name: string) => {
+  /** The Test results tab's "Start a bot": the new rotation bot form with that setup's rules, universe and capital. The
+   *  bot keeps a copy of the test (its name and results: Tested setup on its page). */
+  const startTest = (config: RotationPresetConfig, name: string, testId: number) => {
     setInitial({
       name, universe: config.symbols, top_n: config.top_n, lookback_months: config.lookback_months, skip_months: config.skip_months,
       abs_filter: config.abs_filter, fractional: config.fractional, ...(config.initial_cash && { allocated_cash: config.initial_cash }),
     });
+    setFromTest({ id: testId, name });
     setFormOpen(true);
   };
 
   const create = async (body: RotationBotCreate) => {
-    const bot = await tradingApi.createRotationBot(body);
+    const bot = await tradingApi.createRotationBot(fromTest ? { ...body, setup_test_id: fromTest.id } : body);
     message.success(`Bot created: ${bot.name}`);
     setFormOpen(false);
     navigate(`/trading/${bot.id}`);
@@ -214,7 +219,7 @@ export default function RotationPage() {
     <Row gutter={[16, 16]}>
       <Col xs={24} lg={14}>
         <Space style={{ marginBottom: 12 }} wrap>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => { setInitial({}); setFormOpen(true); }}>New rotation bot</Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => { setInitial({}); setFromTest(null); setFormOpen(true); }}>New rotation bot</Button>
           <span style={{ color: MUTED, fontSize: 12 }}>Each bot holds the strongest few of its universe and rebalances at each month's last close.</span>
         </Space>
         {bots.error && <Alert type="error" showIcon message={`Can't reach trading-service: ${bots.error}`} style={{ marginBottom: 12 }} />}
@@ -251,6 +256,8 @@ export default function RotationPage() {
       <RotationBotForm
         open={formOpen}
         initial={initial}
+        fromSetup={fromTest?.name}
+        onUnlink={() => setFromTest(null)}
         brokers={status.data?.brokers ?? [{ name: "paper", label: "Paper (built-in simulator)", live: false, available: true, reason: "" }]}
         onCancel={() => setFormOpen(false)}
         onSubmit={create}

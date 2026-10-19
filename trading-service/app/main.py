@@ -373,6 +373,7 @@ def create_rotation_bot(body: RotationBotCreate, session: Session = Depends(get_
         raise HTTPException(422, "rotation bots trade on paper accounts only for now: paper-trade it first")
     if clash := _symbol_clash(session, body.broker, body.universe):
         raise HTTPException(409, _clash_text(clash, body.broker))
+    setup = _setup_snapshot(session, body.setup_test_id, "rotation") if body.setup_test_id else None
 
     # The universe's prices today: they validate the symbols and start the benchmark (the universe held equally)
     now = utcnow()
@@ -383,11 +384,11 @@ def create_rotation_bot(body: RotationBotCreate, session: Session = Depends(get_
     if missing := [s for s in body.universe if s not in prices]:
         raise HTTPException(422, f"no prices for {', '.join(missing)} (unknown symbols?)")
 
-    params = body.model_dump(exclude={"name", "broker", "allocated_cash"})
+    params = body.model_dump(exclude={"name", "broker", "allocated_cash", "setup_test_id"})
     bot = Bot(name=body.name or f"Momentum top {body.top_n} of {len(body.universe)}", symbol="ROTATION",
               broker=body.broker, status="active", strategy=ROTATION, allocated_cash=body.allocated_cash,
               cash=body.allocated_cash, peak_equity=body.allocated_cash, benchmark_prices=prices,
-              benchmark_price=body.allocated_cash, last_price=body.allocated_cash, last_price_at=now, **params)
+              benchmark_price=body.allocated_cash, last_price=body.allocated_cash, last_price_at=now, setup=setup, **params)
     session.add(bot)
     session.flush()
     skip = f", skipping the latest {body.skip_months} month{'s' if body.skip_months > 1 else ''}" if body.skip_months else ""
@@ -395,7 +396,8 @@ def create_rotation_bot(body: RotationBotCreate, session: Session = Depends(get_
               f"Created {bot.name}: momentum rotation on {bot.broker} with ${bot.allocated_cash:,.2f}. Holds the strongest "
               f"{body.top_n} of {', '.join(body.universe)} by {body.lookback_months}-month momentum{skip}"
               f"{', only those that rose' if body.abs_filter else ''}; rebalances at each month's last close"
-              f"{'; buys fractions of a share' if body.fractional else '; whole shares only'}")
+              f"{'; buys fractions of a share' if body.fractional else '; whole shares only'}"
+              f"{'.' + _setup_text(setup) if setup else ''}")
     session.commit()
     return _bot_out(session, bot)
 
@@ -423,6 +425,31 @@ def _prices_or_422(symbols: list[str]) -> dict[str, float]:
     return prices
 
 
+# A tested setup's numbers a bot keeps (the grid's columns and the popup's): not the curves or the per-symbol rows
+SETUP_NUMBERS = ("total_return_pct", "buy_hold_return_pct", "max_drawdown_pct", "buy_hold_max_drawdown_pct", "num_trades",
+                 "win_rate_pct", "stop_exits")
+
+
+def _setup_snapshot(session: Session, test_id: int, strategy: str) -> dict:
+    """A copy of the Test results test a new bot is started from (schemas.BotSetup): its name, study, rules and results
+    now, so the bot keeps them when the study is replaced or deleted. strategy: the new bot's kind, "dip" or "rotation"."""
+    test = session.get(DipTest, test_id)
+    if test is None:
+        raise HTTPException(422, f"tested setup {test_id} not found (its study may have been replaced): start the bot again from Test results")
+    study = session.get(DipStudy, test.study_id)
+    if study.strategy != strategy:
+        raise HTTPException(422, f"tested setup {test.code} is a {study.strategy} setup, not a {strategy} one")
+    return {"test_id": test.id, "code": test.code, "name": test.name, "study_id": study.id, "study": study.name,
+            "strategy": study.strategy, "watchlist": test.watchlist, "score": test.score, "pick": test.pick, "note": test.note,
+            "extra": test.extra, "periods": study.periods, "config": test.config,
+            "results": {p: {k: r[k] for k in SETUP_NUMBERS if k in r} for p, r in (test.results or {}).items() if isinstance(r, dict)},
+            "started_at": utcnow().isoformat()}
+
+
+def _setup_text(setup: dict | None) -> str:
+    return f" Started from the tested setup {setup['name']} ({setup['study']})." if setup else ""
+
+
 @app.post("/bots/dip", response_model=BotOut, status_code=201)
 def create_dip_bot(body: DipBotCreate, session: Session = Depends(get_session)):
     """A dip buyer: watches `symbols` and buys any that fell drop_pct during the last `lookback` days (or hours),
@@ -430,19 +457,20 @@ def create_dip_bot(body: DipBotCreate, session: Session = Depends(get_session)):
     live = _usable_broker_or_422(body.broker, body.confirm_live)
     if clash := _symbol_clash(session, body.broker, body.symbols, dip_bot=True):
         raise HTTPException(409, _clash_text(clash, body.broker))
+    setup = _setup_snapshot(session, body.setup_test_id, "dip") if body.setup_test_id else None
     prices = _prices_or_422(body.symbols)  # also the benchmark: the starting watchlist held in equal parts
     now = utcnow()
-    params = body.model_dump(exclude={"name", "broker", "allocated_cash", "symbols", "confirm_live"})
+    params = body.model_dump(exclude={"name", "broker", "allocated_cash", "symbols", "confirm_live", "setup_test_id"})
     bot = Bot(name=body.name or f"Dip buyer on {len(body.symbols)} symbol{'s' if len(body.symbols) > 1 else ''}",
               symbol="DIP", broker=body.broker, status="active", strategy=DIP, allocated_cash=body.allocated_cash,
               cash=body.allocated_cash, peak_equity=body.allocated_cash, universe=body.symbols, benchmark_prices=prices,
-              benchmark_price=body.allocated_cash, last_price=body.allocated_cash, last_price_at=now, **params)
+              benchmark_price=body.allocated_cash, last_price=body.allocated_cash, last_price_at=now, setup=setup, **params)
     session.add(bot)
     session.flush()
     for s in body.symbols:
         session.add(WatchItem(bot_id=bot.id, symbol=s, status="watching", added_at=now))
     log_event(session, bot.id, "created", f"Created {bot.name}: dip buyer on {bot.broker} with ${bot.allocated_cash:,.2f}"
-              f"{' (REAL MONEY)' if live else ''}, watching {', '.join(body.symbols)}. {_dip_rules_text(bot)}",
+              f"{' (REAL MONEY)' if live else ''}, watching {', '.join(body.symbols)}. {_dip_rules_text(bot)}{_setup_text(setup)}",
               "warning" if live else "info", now)
     session.commit()
     return _bot_out(session, bot)

@@ -50,6 +50,7 @@ export interface RotationBotCreate {
   fee_pct: number;
   slippage_pct: number;
   max_drawdown_pct: number;
+  setup_test_id?: number; // started from this Test results test: the bot keeps a copy of it
 }
 
 /** A rotation bot changes only these: its universe and rules are fixed for its life. */
@@ -74,6 +75,37 @@ export interface Holding {
   on_watchlist: boolean; // false: removed from the watchlist, held until it exits
 }
 
+/** The tested setup a bot was started from (Test results' "Start a bot"), copied when the bot was made: it stays when
+ *  the study is replaced (trading-service schemas.BotSetup). */
+export interface BotSetup {
+  test_id: number;
+  code: string;
+  name: string;
+  study_id: number;
+  study: string;
+  strategy: "dip" | "rotation";
+  watchlist: string;
+  score: number | null; // the weaker of its practice and exam returns
+  pick: number | null; // the study's pick number (1 = its best)
+  note: string;
+  extra: string | null; // a filter tested on top of the rules, which the bot doesn't have
+  periods: Record<string, [string, string]>; // the study's windows, in the grid's order
+  results: Record<string, SetupNumbers>; // window -> how it did
+  config: Record<string, unknown>; // the tested rules (a DipPresetConfig or RotationPresetConfig)
+  started_at: string;
+}
+
+/** A window's numbers a bot keeps from its tested setup (main.SETUP_NUMBERS): percents, trades as counts. */
+export interface SetupNumbers {
+  total_return_pct?: number | null;
+  buy_hold_return_pct?: number | null;
+  max_drawdown_pct?: number | null;
+  buy_hold_max_drawdown_pct?: number | null;
+  num_trades?: number | null;
+  win_rate_pct?: number | null;
+  stop_exits?: number | null;
+}
+
 export interface Bot extends Omit<StrategyParams, "strategy"> {
   strategy: StrategyId | typeof ROTATION | typeof DIP;
   id: number;
@@ -85,6 +117,7 @@ export interface Bot extends Omit<StrategyParams, "strategy"> {
   sectors: string[]; // sector badges, biggest first (trading-service sectors.py)
   sectors_auto: boolean; // worked out from its symbols; false = set by hand
   sectors_from_symbols: string[]; // what its symbols say, even when set by hand
+  setup?: BotSetup | null; // the tested setup it was started from (Test results); null = not from a test
   allocated_cash: number; // the starting capital
   added_cash: number | null; // money added since (Add money); null = none
   capital: number; // what was put in: allocated_cash + added_cash; return_pct and buy_hold_return_pct are measured on it

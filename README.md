@@ -155,7 +155,11 @@ blacklist and the periods), then pick the name from the list to fill them all ba
 setup's rules, watchlist and capital; a running bot's Edit loads its rules only. Saving under an existing name
 replaces it. Kept in trading-db (`GET`/`POST /dip/presets`, `DELETE /dip/presets/{id}`), so every browser sees them.
 In the Test results tab (dip and rotation), a tested setup's rocket button opens the new-bot form filled in with its
-rules, watchlist and capital, named after it: pick the broker, check it, create.
+rules, watchlist and capital, named after it: pick the broker, check it, create. The bot keeps a copy of that test
+(`setup_test_id` in `POST /bots/dip` and `/bots/rotation`; `setup` on the bot): its name, study, rules and results per
+window, so it stays when the study is replaced. A **Tested setup** tag (the test's code in the bot table, on the bot's
+page) opens them in a popup, with the rules the bot now trades differently from the test ("Stop: 8% → 10%"). The
+form's "Don't link", or loading a saved setup into it, starts the bot without the copy.
 
 Every dip into the buy zone, recovery, stop-loss and news veto is saved as a **signal** (`GET /bots/{id}/signals`,
 `GET /signals`), whatever the bot did. The bell in the header polls them every 30 s and can show a pop-up, a desktop

@@ -76,6 +76,7 @@ export default function DipPage() {
   const [tab, setTab] = useState(savedTab);
   const [formOpen, setFormOpen] = useState(false);
   const [initial, setInitial] = useState<DipBotInitial>({});
+  const [fromTest, setFromTest] = useState<{ id: number; name: string } | null>(null); // the form's tested setup, if any
   const [loadRequest, setLoadRequest] = useState<{ config: DipPresetConfig; seq: number } | null>(null);
   const bots = usePolling(() => tradingApi.listBots(true), 15_000); // archived too: their old signals keep their names
   const status = usePolling(tradingApi.status, 60_000);
@@ -88,6 +89,7 @@ export default function DipPage() {
     const state = location.state as { newDipBot?: boolean } | null;
     if (!state?.newDipBot) return;
     setInitial({});
+    setFromTest(null);
     setFormOpen(true);
     navigate(location.pathname, { replace: true, state: null });
   }, [location, navigate]);
@@ -113,6 +115,7 @@ export default function DipPage() {
       ...pickRules(cfg), symbols: cfg.symbols, ...(cfg.initial_cash && { allocated_cash: cfg.initial_cash }),
       ...(cfg.slippage_pct != null && { slippage_pct: cfg.slippage_pct }),
     });
+    setFromTest(null);
     setFormOpen(true);
   };
 
@@ -123,14 +126,16 @@ export default function DipPage() {
     message.info("Loaded into the backtest form: press Run backtest");
   };
 
-  /** The Test results tab's "Start a bot": the new dip bot form with that setup's rules, watchlist and capital. */
-  const startTest = (config: DipPresetConfig, name: string) => {
+  /** The Test results tab's "Start a bot": the new dip bot form with that setup's rules, watchlist and capital. The bot
+   *  keeps a copy of the test (its name and results: Tested setup on its page). */
+  const startTest = (config: DipPresetConfig, name: string, testId: number) => {
     setInitial({ ...pickRules(config), name, symbols: config.symbols, ...(config.initial_cash && { allocated_cash: config.initial_cash }) });
+    setFromTest({ id: testId, name });
     setFormOpen(true);
   };
 
   const create = async (body: DipBotCreate) => {
-    const bot = await tradingApi.createDipBot(body);
+    const bot = await tradingApi.createDipBot(fromTest ? { ...body, setup_test_id: fromTest.id } : body);
     message.success(`Bot created: ${bot.name}`);
     setFormOpen(false);
     navigate(`/trading/${bot.id}`);
@@ -185,7 +190,7 @@ export default function DipPage() {
     <Row gutter={[16, 16]}>
       <Col xs={24} lg={14}>
         <Space style={{ marginBottom: 12 }} wrap>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => { setInitial({}); setFormOpen(true); }}>New dip bot</Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => { setInitial({}); setFromTest(null); setFormOpen(true); }}>New dip bot</Button>
           <span style={{ color: MUTED, fontSize: 12 }}>Every check posts its signals here and to the bell at the top (pop-up, desktop notification, sound, read aloud).</span>
         </Space>
         {bots.error && <Alert type="error" showIcon message={`Can't reach trading-service: ${bots.error}`} style={{ marginBottom: 12 }} />}
@@ -222,6 +227,8 @@ export default function DipPage() {
       <DipBotForm
         open={formOpen}
         initial={initial}
+        fromSetup={fromTest?.name}
+        onUnlink={() => setFromTest(null)}
         brokers={status.data?.brokers ?? [{ name: "paper", label: "Paper (built-in simulator)", live: false, available: true, reason: "" }]}
         onCancel={() => setFormOpen(false)}
         onSubmit={create}

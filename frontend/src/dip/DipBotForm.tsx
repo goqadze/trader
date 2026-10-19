@@ -1,6 +1,7 @@
 import { Alert, Checkbox, Col, Divider, Form, Input, InputNumber, Modal, Row, Select, Tooltip, Typography } from "antd";
 import { useEffect, useRef, useState } from "react";
 import UniverseField from "../rotation/UniverseField";
+import { FromSetupNote } from "../trading/setup";
 import type { BrokerInfo } from "../trading/types";
 import PresetPicker from "./PresetPicker";
 import RulesFields, { type RulesForm, fromRulesForm, toRulesForm } from "./RulesFields";
@@ -51,6 +52,8 @@ function fromForm(v: FormValues): DipBotCreate {
 interface Props {
   open: boolean;
   initial: DipBotInitial;
+  fromSetup?: string | null; // the tested setup it starts from (Test results): the bot keeps a copy of it
+  onUnlink?: () => void; // the bot won't keep it (also when a saved setup replaces its rules)
   brokers: BrokerInfo[];
   onCancel: () => void;
   onSubmit: (body: DipBotCreate) => Promise<void>;
@@ -58,7 +61,7 @@ interface Props {
 
 /** New dip buyer: the watchlist, the rules (prefilled from a backtest), the broker and the capital. A real-money broker
  * (only listed as usable once the server allows live trading) needs the "real money" box ticked. */
-export default function DipBotForm({ open, initial, brokers, onCancel, onSubmit }: Props) {
+export default function DipBotForm({ open, initial, fromSetup, onUnlink, brokers, onCancel, onSubmit }: Props) {
   const [form] = Form.useForm<FormValues>();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -92,6 +95,7 @@ export default function DipBotForm({ open, initial, brokers, onCancel, onSubmit 
   const pctInput = (min: number, max: number, step: number) => <InputNumber min={min} max={max} step={step} addonAfter="%" style={{ width: "100%" }} />;
 
   const load = (c: DipPresetConfig) => {
+    onUnlink?.(); // other rules now: not the tested setup's
     form.setFieldsValue({ ...toRulesForm(pickRules(c)), symbols: c.symbols, ...(c.initial_cash && { allocated_cash: c.initial_cash }) });
     void form.validateFields(["lookback"]).catch(() => undefined); // a backtest's window may be too long for a bot: say so now
   };
@@ -103,6 +107,7 @@ export default function DipBotForm({ open, initial, brokers, onCancel, onSubmit 
         the stop-loss, which also blacklists the symbol), and posts every signal to the bell at the top. You can add and remove symbols,
         re-enable blacklisted ones and switch the news on or off while it runs.
       </Typography.Paragraph>
+      {fromSetup && <FromSetupNote name={fromSetup} onUnlink={onUnlink} />}
       <Form<FormValues> form={form} layout="vertical" requiredMark={false}>
         <Form.Item label="Start from a saved setup" tooltip="Fills in its rules, watchlist and capital (save setups on the Backtest tab)">
           <PresetPicker onLoad={load} />

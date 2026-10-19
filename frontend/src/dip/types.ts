@@ -224,6 +224,7 @@ export interface DipBotCreate extends DipRules {
   fee_pct: number;
   slippage_pct: number;
   max_drawdown_pct: number;
+  setup_test_id?: number; // started from this Test results test: the bot keeps a copy of it
 }
 
 export type DipBotUpdate = Partial<DipRules & Pick<DipBotCreate, "name" | "fee_pct" | "slippage_pct" | "max_drawdown_pct">>;

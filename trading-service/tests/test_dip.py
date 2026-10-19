@@ -1541,6 +1541,54 @@ def test_a_study_and_its_tests_are_checked(api):
     assert c.post("/dip/studies/999/tests", json=[one_setup("T1", 1.0)]).status_code == 404
 
 
+def test_a_bot_started_from_a_tested_setup_keeps_a_copy_of_its_name_and_results(api):
+    c, _, _ = api
+    study = c.put("/dip/studies", json=STUDY).json()
+    results = {"practice": {"total_return_pct": 3.2, "max_drawdown_pct": -5.5, "num_trades": 12, "sharpe": 1.1},
+               "exam": {"total_return_pct": 4.0, "buy_hold_return_pct": 2.5, "win_rate_pct": 80.0}}
+    c.post(f"/dip/studies/{study['id']}/tests", json=[one_setup("T3", 4.0, pick=2, note="the best of the ETFs", results=results)])
+    test = c.get(f"/dip/studies/{study['id']}/tests").json()["items"][0]
+
+    r = c.post("/bots/dip", json={**BODY, "setup_test_id": test["id"]})
+    assert r.status_code == 201, r.text
+    bot = r.json()
+    setup = bot["setup"]
+    assert (setup["test_id"], setup["code"], setup["name"], setup["study"], setup["study_id"]) == (
+        test["id"], "T3", "T3 ETFs 4%/5d", "Sweep 1", study["id"])
+    assert (setup["strategy"], setup["watchlist"], setup["score"], setup["pick"], setup["note"]) == ("dip", "ETFs", 4.0, 2, "the best of the ETFs")
+    assert setup["periods"] == {"practice": ["2025-07-09", "2026-01-08"], "exam": ["2026-01-09", "2026-10-09"]}
+    assert setup["results"] == {"practice": {"total_return_pct": 3.2, "max_drawdown_pct": -5.5, "num_trades": 12},  # no sharpe, curves
+                                "exam": {"total_return_pct": 4.0, "buy_hold_return_pct": 2.5, "win_rate_pct": 80.0}}
+    assert setup["config"]["symbols"] == ["XLK", "XLF"] and setup["config"]["stop_pct"] == 0.1 and setup["started_at"]
+    assert bot["universe"] == ["A", "B"]  # the bot keeps the rules it was made with: the copy only remembers the test
+    assert "Started from the tested setup T3 ETFs 4%/5d (Sweep 1)." in c.get(f"/bots/{bot['id']}/events").text
+
+    # A copy: the study replaced (its tests dropped), the bot still has it, on its page and in the list
+    c.put("/dip/studies", json={**STUDY, "description": "again"})
+    assert c.get(f"/bots/{bot['id']}").json()["setup"]["name"] == "T3 ETFs 4%/5d"
+    assert [b["setup"] and b["setup"]["code"] for b in c.get("/bots").json()] == ["T3"]
+    r = c.post("/bots/dip", json={**BODY, "setup_test_id": test["id"]})  # that test is gone now
+    assert r.status_code == 422 and "not found" in r.text
+    assert c.post("/bots/dip", json=BODY).json()["setup"] is None  # not from a test
+    assert c.post("/bots/dip", json={**BODY, "setup_test_id": 0}).status_code == 422
+
+
+def test_a_tested_setup_starts_only_a_bot_of_its_own_kind(api):
+    c, _, _ = api
+    rot = c.put("/dip/studies", json={**STUDY, "name": "Rotation sweep", "strategy": "rotation"}).json()
+    config = {"symbols": ["A", "B", "C"], "top_n": 2, "lookback_months": 12, "skip_months": 1, "abs_filter": True,
+              "fractional": True, "initial_cash": 400}
+    assert c.post(f"/dip/studies/{rot['id']}/tests", json=[one_setup("M1", 5.0, config=config)]).status_code == 200
+    test = c.get(f"/dip/studies/{rot['id']}/tests").json()["items"][0]
+    r = c.post("/bots/dip", json={**BODY, "setup_test_id": test["id"]})
+    assert r.status_code == 422 and "is a rotation setup, not a dip one" in r.text
+    r = c.post("/bots/rotation", json={"universe": ["A", "B", "C"], "top_n": 2, "allocated_cash": 10_000, "setup_test_id": test["id"]})
+    assert r.status_code == 201, r.text
+    bot = r.json()
+    assert (bot["setup"]["code"], bot["setup"]["strategy"], bot["setup"]["config"]["top_n"]) == ("M1", "rotation", 2)
+    assert "Started from the tested setup M1 ETFs 4%/5d (Rotation sweep)." in c.get(f"/bots/{bot['id']}/events").text
+
+
 def test_money_is_added_to_a_running_bot_and_tops_up_what_it_holds(api):
     c, clock, broker = api
     bot = c.post("/bots/dip", json=BODY).json()

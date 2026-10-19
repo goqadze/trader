@@ -3,6 +3,12 @@
 import type { ReactNode } from "react";
 import type { SavedSetup, StudyStrategy } from "./types";
 
+/** The test windows' names (the grid's columns, a bot's tested setup) */
+export const PERIOD_LABEL: Record<string, string> = {
+  practice: "Practice", exam: "Exam", stress: "Stress check", early: "Early check", practice4: "Practice", exam4: "Exam",
+  bear: "Bear 2022",
+};
+
 /** A rule the tests of a batch can differ in, as a grid column (trading-service studies.RULES: the same keys). */
 export interface RuleColumn<C> {
   key: string;
