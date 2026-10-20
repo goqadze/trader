@@ -34,6 +34,7 @@ export const tradingApi = {
   sectors: () => request<string[]>("GET", "/sectors"),
   // null: back to automatic (from its symbols); [] = no badge
   setSectors: (id: number, sectors: string[] | null) => request<Bot>("PUT", `/bots/${id}/sectors`, { sectors }),
+  setRating: (id: number, rating: number) => request<Bot>("PUT", `/bots/${id}/rating`, { rating }), // 0 = not rated
   decisions: (id: number) => request<Decision[]>("GET", `/bots/${id}/decisions`),
   orders: (id: number) => request<Order[]>("GET", `/bots/${id}/orders`),
   events: (id: number) => request<TradingEvent[]>("GET", `/bots/${id}/events`),

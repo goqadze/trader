@@ -88,6 +88,9 @@ class Bot(Base):
     # The tested setup it was started from (Test results' "Start a bot"): a copy of that test's name, study, rules and
     # results as they were then (main._setup_snapshot), so it stays when the study is replaced. NULL = not from a test
     setup: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The owner's own stars for the bot, 0-5 (0 = not rated): a label for sorting favourites to the top of the bot
+    # table. Nothing about how it trades depends on it. server_default: existing bots start unrated
+    rating: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     # --- Strategy parameters: the same knobs as the backtest RunConfig, so a tested setup deploys 1:1 ---
     # Which decision-service strategy decides (see schemas.Strategy). server_default: existing bots, which

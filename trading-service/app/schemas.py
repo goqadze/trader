@@ -655,6 +655,12 @@ class BotUpdate(BaseModel):
     fractional: bool | None = None  # rotation bots only (a dip bot's goes through PATCH /bots/{id}/dip)
 
 
+class RatingIn(BaseModel):
+    """A bot's stars (PUT /bots/{id}/rating): 0 (not rated) to 5."""
+
+    rating: int = Field(..., ge=0, le=5, strict=True)
+
+
 class SectorsIn(BaseModel):
     """A bot's sector badges set by hand (PUT /bots/{id}/sectors): any names, the listed ones (GET /sectors) spelled
     as listed. [] = no badge; null = back to automatic, worked out from its symbols."""
@@ -725,6 +731,7 @@ class BotOut(StrategyParams):
     sectors: list[str] = []  # sector badges, biggest first (see sectors.py)
     sectors_auto: bool = True  # worked out from its symbols (False: set by hand)
     sectors_from_symbols: list[str] = []  # what its symbols say, even when set by hand
+    rating: int = 0  # the owner's stars, 0 (not rated) to 5
     setup: BotSetup | None = None  # the tested setup it was started from (None = not from Test results)
     allocated_cash: float  # the starting capital
     added_cash: float | None = None  # money added since (None = none)

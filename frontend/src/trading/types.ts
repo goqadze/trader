@@ -117,6 +117,7 @@ export interface Bot extends Omit<StrategyParams, "strategy"> {
   sectors: string[]; // sector badges, biggest first (trading-service sectors.py)
   sectors_auto: boolean; // worked out from its symbols; false = set by hand
   sectors_from_symbols: string[]; // what its symbols say, even when set by hand
+  rating: number; // the owner's stars, 0 (not rated) to 5 (trading/rating.tsx)
   setup?: BotSetup | null; // the tested setup it was started from (Test results); null = not from a test
   allocated_cash: number; // the starting capital
   added_cash: number | null; // money added since (Add money); null = none

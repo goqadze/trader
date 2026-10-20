@@ -34,7 +34,7 @@ from .models import (DIP, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPrese
 from .schemas import (AccountOut, BotCreate, BotOut, BotUpdate, CapitalAdd, CapitalWithdraw, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn,
                       DipPresetOut, DipStudyIn, DipStudyOut, DipStudySummaryOut, DipTestDetailOut, DipTestIn, DipTestOut, DipTestPageOut,
                       EmailAlertsIn, EmailAlertsOut, EventOut, HoldingOut, NotificationOut, RiskReportOut, NotifyCategoryOut, OrderOut,
-                      PRESET_CONFIGS, RotationBotCreate, RotationPresetIn, SectorsIn, SignalOut, SnapshotOut, StatusOut, StudyStrategy,
+                      PRESET_CONFIGS, RatingIn, RotationBotCreate, RotationPresetIn, SectorsIn, SignalOut, SnapshotOut, StatusOut, StudyStrategy,
                       WatchItemOut, WatchSymbols, WithdrawalPlanOut, WithdrawalSaleOut, check_window)
 from .trader import (add_capital, benchmark_value, bot_equity, bot_lock, capital, close_position, evaluate, holdings,
                      log_event, open_orders, resting_stop, return_pct)
@@ -322,6 +322,18 @@ def set_bot_sectors(bot_id: int, body: SectorsIn, session: Session = Depends(get
         bot.sectors = body.sectors
         said = "automatic (from its symbols)" if body.sectors is None else ", ".join(body.sectors) or "none"
         log_event(session, bot.id, "params", f"Sector badges: {said}")
+        session.commit()
+    return _bot_out(session, bot)
+
+
+@app.put("/bots/{bot_id}/rating", response_model=BotOut)
+def set_bot_rating(bot_id: int, body: RatingIn, session: Session = Depends(get_session)):
+    """Sets a bot's stars, 0 (not rated) to 5: the owner's favourites, for sorting the bot table. Only a label, so
+    it works on any bot, archived ones too, and leaves no event: a few clicks while sorting would push the trades
+    out of the recent activity."""
+    bot = _get_bot(session, bot_id)
+    if body.rating != bot.rating:
+        bot.rating = body.rating
         session.commit()
     return _bot_out(session, bot)
 

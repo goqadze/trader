@@ -10,6 +10,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { tradingApi } from "./api";
 import BotForm, { type BotFormInitial } from "./BotForm";
 import { useConfirm } from "./confirm";
+import { BotRating } from "./rating";
 import { SectorTags } from "./sectors";
 import { SetupButton } from "./setup";
 import { dipRules } from "../dip/DipParts";
@@ -80,6 +81,15 @@ const columns: ColumnsType<Bot> = [
         <span style={{ color: "#8b98b5", fontSize: 12 }}>{b.name} <SetupButton bot={b} compact /></span>
       </Space>
     ),
+  },
+  {
+    // The owner's favourites, 0-5 stars, set right here (trading/rating.tsx; the stars are drawn in TradingPage, which
+    // can reload the list after a click); the first click on the heading puts the most stars on top
+    title: "Rating",
+    key: "rating",
+    width: 130,
+    sorter: (a, b) => a.rating - b.rating,
+    sortDirections: ["descend", "ascend"],
   },
   {
     // Which parts of the market it trades (filterable: the filter's choices come from the bots listed, see below)
@@ -179,7 +189,7 @@ function rememberBroker(broker: string) {
   }
 }
 
-// The bot table's sort (ID, Return or Position, by a click on the column), remembered in this browser too
+// The bot table's sort (ID, Rating, Return or Position, by a click on the column), remembered in this browser too
 const SORT_KEY = "trading.botSort";
 type BotSort = { key: string; order: SortOrder };
 
@@ -276,6 +286,7 @@ export default function TradingPage() {
   const status = usePolling(tradingApi.status, 30_000);
   const accounts = usePolling(tradingApi.accounts, 30_000);
   const list = bots.data ?? [];
+  const reloadBots = bots.reload;
   // The brokers the listed bots use, live first. The filter shows with two or more; a remembered pick with no bots listed
   // (any more), or with the filter hidden, shows them all (the pick holds while the list loads)
   const brokers = [...BROKER_ORDER, ...list.map((b) => b.broker)].filter((n, i, all) => all.indexOf(n) === i && list.some((b) => b.broker === n));
@@ -296,8 +307,10 @@ export default function TradingPage() {
   const sorted = useMemo(() => columns.map((c) => (
     c.key === "sectors"
       ? { ...c, filters: sectorChoices, filteredValue: sectorPick, onFilter: (v: boolean | React.Key, b: Bot) => b.sectors.includes(String(v)) }
+      : c.key === "rating"
+      ? { ...c, sortOrder: c.key === sort.key ? sort.order : null, render: (_: unknown, b: Bot) => <BotRating bot={b} onChanged={reloadBots} /> }
       : c.sorter ? { ...c, sortOrder: c.key === sort.key ? sort.order : null } : c
-  )), [sort, sectorChoices, sectorPick]);
+  )), [sort, sectorChoices, sectorPick, reloadBots]);
   const phone = Grid.useBreakpoint().sm === false; // undefined before the first measure: the desktop control
   const events = usePolling(() => tradingApi.allEvents(broker === "all" ? undefined : broker), 15_000, [broker]);
 
@@ -452,7 +465,7 @@ export default function TradingPage() {
           loading={bots.loading && !bots.data}
           pagination={false}
           size="middle"
-          scroll={{ x: 1050 }}
+          scroll={{ x: 1180 }}
           onChange={(_, filters, s) => {
             setSectorPick((filters.sectors as string[] | null) ?? null);
             const one = Array.isArray(s) ? s[0] : s;

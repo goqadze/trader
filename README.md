@@ -328,6 +328,11 @@ automatic. Only a label: how the bot trades doesn't change. The Test results gri
 tested setup the badges a bot with its symbols would get, in a Sectors column with a filter (`"sector"` in the tests'
 `filters`: a setup with any of the chosen sectors stays).
 
+Rating: your own 0 to 5 stars for each bot, to mark favourites. Click a star in the bot table's Rating column or next
+to the name on the bot's page; the same star again clears it (`PUT /bots/{id}/rating`, kept in the trading DB, so the
+phone and the Mac see the same). The first click on the Rating heading puts the most stars on top; the sort is
+remembered in that browser. Only a label: how the bot trades doesn't change, and it leaves no event in the activity.
+
 Free cash (`GET /accounts`): under the totals, each Alpaca account (paper, live; only those with keys) shows the money
 no bot holds: the account's cash minus the cash of every bot on it that isn't archived. A paused bot keeps its cash for
 when it resumes; an archived one gives it back. E.g. $484.25 of cash with bots holding $24.16 + $140 + $140 leaves

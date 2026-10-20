@@ -13,6 +13,7 @@ import AddMoney from "./AddMoney";
 import { tradingApi } from "./api";
 import BotForm from "./BotForm";
 import { useConfirm } from "./confirm";
+import { BotRating } from "./rating";
 import { SectorBadges } from "./sectors";
 import { SetupButton } from "./setup";
 import {
@@ -301,6 +302,7 @@ export default function BotPage() {
           <Space align="center" wrap>
             <Typography.Title level={3} style={{ margin: 0 }}>{botTitle(bot)}</Typography.Title>
             <span style={{ color: MUTED }}>{bot.name}</span>
+            <BotRating bot={bot} onChanged={page.reload} size={16} />
             <Tag color={STATUS_COLOR[bot.status]}>{bot.status}</Tag>
             <Tag color={bot.live ? "red" : "blue"}>{bot.live ? "LIVE — real money" : bot.broker === "paper" ? "PAPER (simulated)" : bot.broker}</Tag>
             <SectorBadges bot={bot} onChanged={page.reload} />
