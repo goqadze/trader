@@ -14,7 +14,9 @@ Where it has to differ from the backtest:
   - A month end missed while the service was down is made up at the next decision time.
   - No stop-loss or take-profit (the backtest has none either). The drawdown breaker pauses the bot: no more
     rebalances, it keeps what it holds until you resume it or close the positions.
-Paper accounts only for now (the built-in simulator or Alpaca paper): main.py refuses real money.
+  - On an Alpaca account it may hold a symbol a dip or another rotation bot trades too (main._symbol_clash): it books
+    only its own fills, sells only its own shares, and an order another bot's working order would cross waits for the
+    next tick (trader._refusal). Alpaca live (real money) needs confirm_live when the bot is created.
 
 Like trader.py, every function takes `now` explicitly, and `closes_fn` (the daily price download) can be swapped,
 so tests replay any moment without the network.
@@ -325,6 +327,8 @@ def _next_orders(session: Session, bot: Bot, broker: Broker, now: datetime, targ
 def step(session: Session, bot: Bot, broker: Broker, now: datetime) -> None:
     """Trade towards the open plan: sells first, buys once they've filled. Runs right after the decision and on every
     scheduler tick while the plan is open (Alpaca fills take a moment); closes the plan once nothing is left to send.
+    A round with a rejected order (by the broker, or not sent because another bot's order on that symbol still works)
+    ends this tick's trading: the next tick tries again, and its seconds usually let the other order fill.
     Raises BrokerError when a quote is missing or stale: the plan stays open and the next tick tries again."""
     plan = bot.rotation_plan
     if not plan:
@@ -349,8 +353,10 @@ def step(session: Session, bot: Bot, broker: Broker, now: datetime) -> None:
             return
         plan = {**plan, "rounds": plan["rounds"] + 1}  # a new dict: SQLAlchemy only saves a JSON column it sees replaced
         bot.rotation_plan = plan
-        for side, symbol, qty, reason in orders:
-            submit_order(session, bot, broker, side, qty, reason, now, decision, symbol=symbol)
+        sent = [submit_order(session, bot, broker, side, qty, reason, now, decision, symbol=symbol)
+                for side, symbol, qty, reason in orders]
+        if any(o.status == "rejected" for o in sent):
+            return  # trying again at once would meet the same answer
 
 
 # ---------------------------------------------------------------------------
@@ -373,8 +379,8 @@ def watch(session: Session, bot: Bot, broker: Broker, now: datetime, closes_fn=N
 
 
 def reconcile(session: Session, bot: Bot, broker: Broker, now: datetime) -> bool:
-    """Real (paper) accounts: does the account hold what the bots think, symbol by symbol? Several dip bots may trade one
-    symbol there, so the account's position is compared with all their records added up (others_hold).
+    """Real accounts: does the account hold what the bots think, symbol by symbol? Several dip and rotation bots may trade
+    one symbol there, so the account's position is compared with all their records added up (others_hold).
     If it differs (a manual trade, a missed fill), pause instead of trading on a wrong picture. Always fine on the
     simulator."""
     if open_orders(session, bot):

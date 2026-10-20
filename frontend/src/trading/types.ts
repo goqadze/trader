@@ -40,6 +40,7 @@ export const DIP = "dip_buyer" as const;
 export interface RotationBotCreate {
   name?: string;
   broker: string;
+  confirm_live?: boolean; // a real-money broker: you said yes to real orders
   allocated_cash: number;
   universe: string[];
   top_n: number;

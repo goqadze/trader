@@ -514,8 +514,8 @@ out.label  # a typed object, not free text</code></pre>
       <ul class="plain">
         <li><b>paper</b> (built-in, Yahoo quotes) · <b>alpaca-paper</b> · <b>alpaca-live</b>, behind one
           <code>Broker</code> interface; live needs <code>confirm_live</code>.</li>
-        <li>Only one bot per symbol on a shared Alpaca account (a dip bot's whole watchlist counts); rotation and dip
-          bots are paper-only.</li>
+        <li>On a shared Alpaca account dip and rotation bots may trade the same symbols, each booking its own shares; a
+          single-symbol bot keeps its symbol to itself (its stop-loss rests at Alpaca).</li>
         <li>Dip bots check at the end of each bar of their interval and post <b>signals</b> (down / rebound / up / stop / news) that
           the header's bell turns into pop-ups, desktop notifications, a sound or speech.</li>
         <li>Sign-in: Argon2id passwords, a JWT in an HttpOnly cookie, admin approval for new users; nginx asks

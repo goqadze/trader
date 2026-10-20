@@ -1652,16 +1652,22 @@ def test_real_money_needs_a_yes_and_an_account_short_of_it_is_flagged(api, monke
             "cash") in ev["message"]
 
 
-def test_only_dip_bots_share_symbols_on_a_real_account(api, monkeypatch):
+def test_dip_and_rotation_bots_share_symbols_on_a_real_account_and_single_symbol_bots_dont(api, monkeypatch):
     c, _, _ = api
     monkeypatch.setattr(main, "catalog", lambda: [{**b, "available": True} for b in real_catalog()])
     one = c.post("/bots/dip", json={**BODY, "broker": "alpaca-paper"})
     two = c.post("/bots/dip", json={**BODY, "broker": "alpaca-paper", "symbols": ["a", "c"]})
     assert one.status_code == 201 and two.status_code == 201, two.text
     assert c.post(f"/bots/{one.json()['id']}/watchlist", json={"symbols": ["C"]}).status_code == 200
-    r = c.post("/bots/rotation", json={"universe": ["A", "B", "C"], "top_n": 2, "allocated_cash": 10_000, "broker": "alpaca-paper"})
-    assert r.status_code == 409 and "only dip bots share symbols" in r.text
+    rot = c.post("/bots/rotation", json={"universe": ["A", "B", "C"], "top_n": 2, "allocated_cash": 10_000,
+                                         "broker": "alpaca-paper"})
+    assert rot.status_code == 201, rot.text  # A, B and C are the dip bots' too
+    three = c.post("/bots/dip", json={**BODY, "broker": "alpaca-paper", "symbols": ["b"]})  # B: the rotation bot's too
+    assert three.status_code == 201, three.text
     r = c.post("/bots", json={"symbol": "A", "broker": "alpaca-paper"})
     assert r.status_code == 409 and "already trades A" in r.text and "rejects buys" in r.text
-    assert c.post("/bots/rotation", json={"universe": ["D", "E"], "top_n": 1, "allocated_cash": 10_000,
-                                          "broker": "alpaca-paper"}).status_code in (201, 422)  # no clash (D, E: no prices here)
+    assert c.post("/bots", json={"symbol": "E", "broker": "alpaca-paper"}).status_code == 201  # E: nobody's
+    r = c.post(f"/bots/{one.json()['id']}/watchlist", json={"symbols": ["E"]})
+    assert r.status_code == 409 and "already trades E" in r.text  # a single-symbol bot's: not shared
+    r = c.post("/bots/rotation", json={"universe": ["A", "E"], "top_n": 1, "allocated_cash": 10_000, "broker": "alpaca-paper"})
+    assert r.status_code == 409 and "already trades E" in r.text

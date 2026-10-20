@@ -7,8 +7,8 @@ from .paper import PaperBroker
 
 __all__ = ["Broker", "BrokerError", "BrokerOrder", "Quote", "catalog", "get_broker", "SHARED_ACCOUNT_BROKERS"]
 
-# Brokers backed by ONE real account. Two bots on the same symbol there would buy/sell the same
-# shares and corrupt each other's position, so the API allows one bot per symbol on these.
+# Brokers backed by ONE real account. Every bot there shares the account's position in a symbol, so a single-symbol
+# bot keeps its symbol to itself; dip and rotation bots book their own shares and may share (main._symbol_clash).
 SHARED_ACCOUNT_BROKERS = {"alpaca-paper", "alpaca-live"}
 
 

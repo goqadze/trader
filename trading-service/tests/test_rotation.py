@@ -12,7 +12,7 @@ from sqlalchemy import select
 from app import main, rotation, scheduler
 from app.brokers import BrokerError, BrokerOrder
 from app.brokers import catalog as real_catalog
-from app.models import ROTATION, EquitySnapshot, Event, Holding, Order
+from app.models import DIP, ROTATION, EquitySnapshot, Event, Holding, Order
 from app.rotation import MAX_ROUNDS, due, momentum, next_rebalance_at, rebalance, reconcile, step, watch
 from app.trader import holdings, sync_pending
 
@@ -192,14 +192,62 @@ def test_buys_wait_until_the_sells_have_filled(session):
     assert "Done: holding 50 A, 250 C" in d.outcome
 
 
-def test_a_rebalance_gives_up_after_refused_orders(session):
+def test_a_rebalance_tries_refused_orders_at_the_next_ticks_then_gives_up(session):
     bot = make_rotation(session)
     broker = FakeBroker(now=T1, prices=PRICES)
     broker.submit_mode = "reject"
     rebalance(session, bot, broker, T1, "scheduled", feed(STANDARD))
+    assert len(broker.sent) == 2 and bot.rotation_plan["rounds"] == 1  # not again at once: the same answer
+    for i in range(1, MAX_ROUNDS + 1):  # the scheduler's next ticks, 30 seconds apart
+        step(session, bot, broker, T1 + timedelta(seconds=30 * i))
     assert len(broker.sent) == MAX_ROUNDS * 2 and bot.rotation_plan is None
     errors = [e.message for e in session.scalars(select(Event).where(Event.level == "error"))]
     assert any(m.startswith(f"Rebalance stopped after {MAX_ROUNDS} rounds") for m in errors)
+
+
+def _dip_bot_holding_a(session, shares=10):
+    """A dip bot on the Alpaca paper account that holds `shares` of A."""
+    dipper = make_bot(session, symbol="DIP", strategy=DIP, broker="alpaca-paper", universe=["A"])
+    _hold(session, dipper, "A", shares, shares * PRICES["A"])
+    return dipper
+
+
+def test_a_rotation_bot_and_a_dip_bot_hold_one_symbol_each_with_its_own_shares(session):
+    dipper = _dip_bot_holding_a(session)
+    bot = make_rotation(session, broker="alpaca-paper", slippage_pct=0.0)
+    broker = FakeBroker(now=T1, prices=PRICES)
+    broker.held_by = {"A": 10}
+    rebalance(session, bot, broker, T1, "scheduled", feed(STANDARD))
+    assert broker.sent == [("BUY", "A", 50), ("BUY", "B", 100)] and broker.held_by == {"A": 60, "B": 100}
+    assert _held(session, bot) == {"A": 50, "B": 100} and _held(session, dipper) == {"A": 10}
+    assert reconcile(session, bot, broker, T1) and reconcile(session, dipper, broker, T1)  # 50 + 10 = the account's 60
+    assert (bot.status, dipper.status) == ("active", "active")
+    broker.now = T2
+    rebalance(session, bot, broker, T2, "scheduled", feed(closes(A=-0.1, B=0.3, C=0.4, D=-0.2)))  # A dropped out
+    assert broker.sent[2] == ("SELL", "A", 50) and broker.held_by["A"] == 10  # its own 50, not the dip bot's 10
+    assert _held(session, dipper) == {"A": 10} and reconcile(session, dipper, broker, T2) and dipper.status == "active"
+
+
+def test_a_rotation_buy_waits_for_the_next_tick_while_another_bots_sale_of_it_works(session):
+    dipper = _dip_bot_holding_a(session)
+    bot = make_rotation(session, broker="alpaca-paper", slippage_pct=0.0)
+    broker = FakeBroker(now=T1, prices=PRICES)
+    broker.held_by = {"A": 10}
+    sale = Order(bot_id=dipper.id, side="SELL", symbol="A", qty=10, reason="target", status="submitted",
+                 client_order_id="working", created_at=T1, updated_at=T1)
+    session.add(sale)
+    session.commit()
+    broker.orders["working"] = BrokerOrder(status="submitted", broker_order_id="b-working")  # still working at Alpaca
+    rebalance(session, bot, broker, T1, "scheduled", feed(STANDARD))
+    assert broker.sent == [("BUY", "B", 100)]  # Alpaca would reject a buy of A while the dip bot's sale of A works
+    refused = session.scalar(select(Order).where(Order.bot_id == bot.id, Order.status == "rejected"))
+    assert refused.symbol == "A" and refused.error.startswith(f"bot #{dipper.id}'s SELL of A is still working")
+    assert bot.rotation_plan["rounds"] == 1 and bot.status == "active"  # not tried again at once, not paused
+    broker.orders["working"] = BrokerOrder(status="filled", filled_qty=10, avg_price=100.0, broker_order_id="b-working")
+    broker.held_by["A"] = 0  # the sale filled at Alpaca a moment later
+    step(session, bot, broker, T1 + timedelta(seconds=30))  # the next tick
+    assert broker.sent[-1] == ("BUY", "A", 50) and bot.rotation_plan is None
+    assert _held(session, bot) == {"A": 50, "B": 100} and bot.status == "active"
 
 
 # --- Watching --------------------------------------------------------------------------------------
@@ -327,7 +375,7 @@ def test_money_added_to_a_rotation_bot_goes_in_at_its_next_rebalance(api):
     assert "Done: holding 100 A, 200 B" in d["outcome"]  # each pick topped up to half of 20,000
 
 
-def test_rotation_bots_are_checked_and_paper_only(api, monkeypatch):
+def test_rotation_bots_are_checked_and_trade_real_money_only_when_confirmed(api, monkeypatch):
     c, _, _ = api
     assert c.post("/bots/rotation", json={**BODY, "top_n": 5}).status_code == 422
     assert c.post("/bots/rotation", json={**BODY, "universe": ["A", "not one"]}).status_code == 422
@@ -335,20 +383,28 @@ def test_rotation_bots_are_checked_and_paper_only(api, monkeypatch):
     assert r.status_code == 422 and "can't trade crypto yet: BTC-USD" in r.text
     r = c.post("/bots/rotation", json={**BODY, "universe": ["A", "B", "ZZZZ"]})
     assert r.status_code == 422 and "no prices for ZZZZ" in r.text
+    r = c.post("/bots/rotation", json={**BODY, "broker": "alpaca-live"})
+    assert r.status_code == 422 and "unavailable" in r.text  # live trading off: the tests' default
     monkeypatch.setattr(main, "catalog", lambda: [{**b, "available": True} for b in real_catalog()])
     r = c.post("/bots/rotation", json={**BODY, "broker": "alpaca-live"})
-    assert r.status_code == 422 and "paper accounts only" in r.text
+    assert r.status_code == 422 and "confirm_live" in r.text
+    r = c.post("/bots/rotation", json={**BODY, "broker": "alpaca-live", "confirm_live": True})
+    assert r.status_code == 201 and r.json()["live"] is True and r.json()["broker"] == "alpaca-live"
+    created = c.get(f"/bots/{r.json()['id']}/events").json()[-1]
+    assert created["level"] == "warning" and "on alpaca-live with $10,000.00 (REAL MONEY). Holds" in created["message"]
 
 
-def test_one_bot_per_symbol_on_a_real_account_counts_the_whole_universe(api, monkeypatch):
+def test_a_single_symbol_bot_keeps_its_symbol_from_the_whole_universe(api, monkeypatch):
     c, _, _ = api
     monkeypatch.setattr(main, "catalog", lambda: [{**b, "available": True} for b in real_catalog()])
     assert c.post("/bots", json={"symbol": "C", "broker": "alpaca-paper"}).status_code == 201
     r = c.post("/bots/rotation", json={**BODY, "broker": "alpaca-paper"})
-    assert r.status_code == 409 and "already trades C" in r.text
+    assert r.status_code == 409 and "already trades C" in r.text and "single-symbol bot keeps its symbol" in r.text
     assert c.post("/bots/rotation", json={**BODY, "universe": ["A", "B"], "broker": "alpaca-paper"}).status_code == 201
     assert c.post("/bots", json={"symbol": "B", "broker": "alpaca-paper"}).status_code == 409
     assert c.post("/bots/rotation", json=BODY).status_code == 201  # the simulator keeps every bot apart
+    # another rotation bot shares A and B with the first one: both book their own shares
+    assert c.post("/bots/rotation", json={**BODY, "universe": ["A", "B", "D"], "broker": "alpaca-paper"}).status_code == 201
 
 
 def test_a_rotation_bot_changes_only_its_name_costs_and_breaker(api):

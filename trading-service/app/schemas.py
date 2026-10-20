@@ -609,6 +609,7 @@ class RotationBotCreate(BaseModel):
 
     name: str | None = Field(None, max_length=80)
     broker: str = "paper"
+    confirm_live: bool = False  # a real-money broker: you said yes to real orders
     allocated_cash: float = Field(10_000, ge=100, le=10_000_000)
     universe: list[str] = Field(..., min_length=2, max_length=60)
     top_n: int = Field(3, ge=1, le=20)

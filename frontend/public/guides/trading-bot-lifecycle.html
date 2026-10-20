@@ -248,7 +248,7 @@
               <li>The form turns your percentages into fractions: <code>4%</code> → <code>0.04</code>.</li>
               <li>The browser sends <code>POST /bots</code>; nginx forwards it to trading-service.</li>
               <li><b>Validation:</b> symbol looks like a ticker, the strategy is one of the 11, stop-loss ≤ 50%, position size ≤ 100%, capital ≥ $100, and so on. Anything wrong → a clear error in the form.</li>
-              <li><b>Broker check:</b> is that broker set up? A live broker also needs the “real money” tick. A real account allows only <em>one bot per symbol</em>.</li>
+              <li><b>Broker check:</b> is that broker set up? A live broker also needs the “real money” tick. On a real account a single-symbol bot keeps <em>its symbol to itself</em> (dip and rotation bots may share theirs).</li>
               <li><b>Price check:</b> the broker fetches a live quote. No price = unknown symbol = rejected. The price is saved as the <b>buy &amp; hold baseline</b>.</li>
               <li>The bot is saved: status <span class="tag buy">active</span>, cash = your capital, 0 shares, peak equity = your capital.</li>
               <li>An audit event “Created …” is written, and the browser opens the bot's page.</li>

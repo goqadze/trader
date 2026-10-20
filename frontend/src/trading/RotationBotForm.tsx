@@ -15,6 +15,7 @@ const PCT_FIELDS = ["fee_pct", "slippage_pct", "max_drawdown_pct"] as const;
 interface FormValues {
   name?: string;
   broker: string;
+  confirm_live?: boolean;
   allocated_cash: number;
   universe: string[];
   top_n: number;
@@ -57,7 +58,7 @@ function toForm(v: RotationBotInitial): FormValues {
 
 function fromForm(v: FormValues): RotationBotCreate {
   const { skip_month, ...rest } = v;
-  const out = { ...rest, name: v.name?.trim() || undefined, skip_months: skip_month ? 1 : 0 };
+  const out = { ...rest, name: v.name?.trim() || undefined, confirm_live: !!v.confirm_live, skip_months: skip_month ? 1 : 0 };
   for (const f of PCT_FIELDS) out[f] = +((v[f] ?? 0) / 100).toFixed(6);
   return out;
 }
@@ -72,11 +73,14 @@ interface Props {
   onSubmit: (body: RotationBotCreate) => Promise<void>;
 }
 
-/** New momentum rotation bot: the rotation's rules (prefilled from a rotation backtest), a paper broker and the capital. */
+/** New momentum rotation bot: the rotation's rules (prefilled from a rotation backtest), the broker and the capital. A
+ * real-money broker (only listed as usable once the server allows live trading) needs the "real money" box ticked. */
 export default function RotationBotForm({ open, initial, fromSetup, onUnlink, brokers, onCancel, onSubmit }: Props) {
   const [form] = Form.useForm<FormValues>();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const broker = Form.useWatch("broker", form);
+  const isLive = brokers.find((b) => b.name === broker)?.live ?? false;
 
   // Load values only when the modal opens (see BotForm)
   const initialRef = useRef(initial);
@@ -118,7 +122,8 @@ export default function RotationBotForm({ open, initial, fromSetup, onUnlink, br
       <Typography.Paragraph style={{ fontSize: 12, color: MUTED }}>
         On each month's last trading day, 30 minutes before the close, it ranks the universe by momentum and holds the strongest
         few in equal parts, selling what dropped out: the same rules as the rotation backtest. It starts with a rebalance at the
-        next decision time. Paper accounts only for now.
+        next decision time. On an Alpaca account it may hold symbols your dip and other rotation bots trade too: each bot keeps
+        count of its own shares.
       </Typography.Paragraph>
       {fromSetup && <FromSetupNote name={fromSetup} onUnlink={onUnlink} />}
       <Form<FormValues> form={form} layout="vertical" requiredMark={false}>
@@ -126,7 +131,7 @@ export default function RotationBotForm({ open, initial, fromSetup, onUnlink, br
           <Col span={14}>
             <Form.Item name="broker" label="Broker">
               <Select
-                options={brokers.filter((b) => !b.live).map((b) => ({
+                options={brokers.map((b) => ({
                   value: b.name,
                   disabled: !b.available,
                   label: b.available ? b.label : <Tooltip title={b.reason}>{b.label} (not configured)</Tooltip>,
@@ -207,6 +212,20 @@ export default function RotationBotForm({ open, initial, fromSetup, onUnlink, br
           message="No stop-loss on a rotation"
           description="Like the backtest, it only acts at month ends. Between them it holds through drops; the breaker pauses it if the loss gets too big."
         />
+        {isLive && (
+          <>
+            <Alert
+              type="error"
+              showIcon
+              message="This bot trades REAL MONEY"
+              description="Every rebalance is a set of real orders on your Alpaca account, and a live run can lose more than its backtest did. Pause it any time: pausing stops the rebalances, it keeps what it holds until you close the positions."
+              style={{ marginTop: 12, marginBottom: 12 }}
+            />
+            <Form.Item name="confirm_live" valuePropName="checked" rules={[{ validator: (_, v) => (v ? Promise.resolve() : Promise.reject(new Error("Required for a real-money bot"))) }]}>
+              <Checkbox>I understand this bot places real orders with real money</Checkbox>
+            </Form.Item>
+          </>
+        )}
         {error && <Alert type="error" showIcon message={error} style={{ marginTop: 12 }} />}
       </Form>
     </Modal>

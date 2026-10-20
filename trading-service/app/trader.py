@@ -11,9 +11,9 @@ Two things are stricter than the backtest because real money is involved:
   - a quote older than MAX_QUOTE_AGE_MINUTES blocks trading (no acting on a frozen feed)
 On brokers that can hold orders for us (Alpaca) the stop-loss also rests AT THE BROKER as a real stop
 order (see protect), so it still fires while this service -- or the machine it runs on -- is down.
-Several dip bots may trade one symbol on one real account (main._symbol_clash): each books only its own fills and sells
-only its own shares; the account check adds up all their records (others_hold), and an order that would sell another bot's
-shares or cross another bot's working order isn't sent (_refusal).
+Several dip and rotation bots may trade one symbol on one real account (main._symbol_clash): each books only its own fills
+and sells only its own shares; the account check adds up all their records (others_hold), and an order that would sell
+another bot's shares or cross another bot's working order isn't sent (_refusal).
 
 Every function takes `now` explicitly instead of reading the clock, so tests can replay any moment.
 """

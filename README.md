@@ -315,8 +315,10 @@ this rotation** on the Rotation page) run the rotation backtest's rules on one b
 - No stop-loss or take-profit, like the backtest; the drawdown breaker pauses it (no more rebalances, it keeps its
   holdings). Its benchmark is the universe bought in equal parts when it started. Each order records its symbol;
   `rotation` = moving into or out of a symbol, `rebalance` = a trim or top-up.
-- Paper accounts only for now (the simulator or Alpaca paper). On Alpaca paper no other bot may trade a symbol of its
-  universe, and the account is reconciled symbol by symbol.
+- The simulator, Alpaca paper, or Alpaca live (real money: `confirm_live`, the form's "real money" tick). On an Alpaca
+  account its universe may share symbols with dip and other rotation bots (see "Several bots, one symbol, one
+  account" below), and the account is reconciled symbol by symbol. A rebalance order that another bot's working order
+  blocks waits for the next 30-second tick (6 rounds of orders at most, then it gives up until the next month end).
 
 Sector badges (`trading-service/app/sectors.py`): each bot shows which parts of the market it trades (Energy, Chips,
 Defensive ...) in the bot table's Sectors column (filterable) and on its page. They're worked out from its symbols
@@ -389,14 +391,14 @@ Safety built in:
   the same ratio is held back and the bot pauses until the data has it.
 - **Reconciliation** (real brokers): if the account's shares don't match the bots' records (e.g. you traded by
   hand), the bot pauses.
-- **Several bots, one symbol, one account**: dip bots may trade the same symbol on one real account.
+- **Several bots, one symbol, one account**: dip and rotation bots may trade the same symbol on one real account.
   Each books only its own fills and sells only its own shares; the account check adds up all their records; a sale
   bigger than what the account holds beyond the other bots' shares isn't sent (it would sell theirs, or sell short)
   and pauses the bot; orders on one account go out one at a time, and none while another bot's order on the other
   side of that symbol is still working (Alpaca's wash-trade protection would reject it): it's retried at the next check.
-  An order sent but not booked yet is asked about first: once Alpaca has filled it, the other side goes out. Rotation and
-  single-symbol bots keep their symbols to themselves: a single-symbol bot's stop-loss rests at Alpaca as an open sell
-  order, and Alpaca rejects buys of that symbol meanwhile.
+  An order sent but not booked yet is asked about first: once Alpaca has filled it, the other side goes out.
+  Single-symbol bots keep their symbols to themselves: a single-symbol bot's stop-loss rests at Alpaca as an open sell
+  order, Alpaca rejects buys of that symbol meanwhile, and its account check counts only its own shares.
 - **Restart-safe**: the time of the last decision is stored in the database, so a restart never repeats a
   check (and never skips the afternoon one because the morning one ran).
 - **History is never deleted**: bots are archived, not removed. Data lives in its own Postgres container
