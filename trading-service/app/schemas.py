@@ -710,6 +710,7 @@ class BotSetup(BaseModel):
     strategy: StudyStrategy
     watchlist: str = ""
     score: float | None = None  # the weaker of its practice and exam returns
+    all: float | None = None  # its full windows back to back, the grid's All (studies.all_return; worked out when read)
     pick: int | None = None  # the study's pick number (1 = its best pick)
     note: str = ""
     extra: str | None = None  # a filter tested on top of the rules, which the bot doesn't have
@@ -734,6 +735,7 @@ class BotOut(StrategyParams):
     sectors_from_symbols: list[str] = []  # what its symbols say, even when set by hand
     rating: int = 0  # the owner's stars, 0 (not rated) to 5
     setup: BotSetup | None = None  # the tested setup it was started from (None = not from Test results)
+    setup_live: list[int] = []  # the other live (real-money) bots started from that setup, archived ones left out
     allocated_cash: float  # the starting capital
     added_cash: float | None = None  # money added since (None = none)
     withdrawn_cash: float | None = None  # money taken out since (None = none)

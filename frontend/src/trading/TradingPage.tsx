@@ -12,7 +12,7 @@ import BotForm, { type BotFormInitial } from "./BotForm";
 import { useConfirm } from "./confirm";
 import { BotRating } from "./rating";
 import { SectorTags } from "./sectors";
-import { SetupButton } from "./setup";
+import { SetupButton, SetupPct } from "./setup";
 import { dipRules } from "../dip/DipParts";
 import { strategyName } from "../strategies";
 import {
@@ -62,6 +62,11 @@ export function MarketStatus({ status, bot }: { status: TradingStatus | null; bo
   );
 }
 
+// A missing number (a bot not started from a tested setup) sorts last whichever way the column is sorted (antd turns
+// the result around for "descend", so it is turned around here too)
+const missingLast = (x: number | null | undefined, y: number | null | undefined, order?: SortOrder | null) =>
+  x == null || y == null ? (Number(x == null) - Number(y == null)) * (order === "descend" ? -1 : 1) : x - y;
+
 const columns: ColumnsType<Bot> = [
   {
     // The number reports, emails and Claude call a bot by ("#7"); the same as in its page's address
@@ -90,6 +95,25 @@ const columns: ColumnsType<Bot> = [
     width: 130,
     sorter: (a, b) => a.rating - b.rating,
     sortDirections: ["descend", "ascend"],
+  },
+  {
+    // Its tested setup's numbers (trading/setup.tsx), to sort bots by how their setup did in the backtests
+    title: <Tooltip title="Its tested setup's score: the weaker of its practice and exam returns (— = not started from a test)">Score</Tooltip>,
+    key: "score",
+    width: 84,
+    align: "right",
+    sorter: (a, b, order) => missingLast(a.setup?.score, b.setup?.score, order),
+    sortDirections: ["descend", "ascend"],
+    render: (_, b) => <SetupPct v={b.setup?.score} />,
+  },
+  {
+    title: <Tooltip title="Its tested setup's All: every test window back to back (the bear market left out), what it grew to">All</Tooltip>,
+    key: "all",
+    width: 76,
+    align: "right",
+    sorter: (a, b, order) => missingLast(a.setup?.all, b.setup?.all, order),
+    sortDirections: ["descend", "ascend"],
+    render: (_, b) => <SetupPct v={b.setup?.all} digits={0} />,
   },
   {
     // Which parts of the market it trades (filterable: the filter's choices come from the bots listed, see below)
@@ -189,7 +213,7 @@ function rememberBroker(broker: string) {
   }
 }
 
-// The bot table's sort (ID, Rating, Return or Position, by a click on the column), remembered in this browser too
+// The bot table's sort (ID, Rating, Score, All, Return or Position, by a click on the column), remembered in this browser too
 const SORT_KEY = "trading.botSort";
 type BotSort = { key: string; order: SortOrder };
 
@@ -465,7 +489,7 @@ export default function TradingPage() {
           loading={bots.loading && !bots.data}
           pagination={false}
           size="middle"
-          scroll={{ x: 1180 }}
+          scroll={{ x: 1340 }}
           onChange={(_, filters, s) => {
             setSectorPick((filters.sectors as string[] | null) ?? null);
             const one = Array.isArray(s) ? s[0] : s;

@@ -82,8 +82,21 @@ def _get_bot(session: Session, bot_id: int) -> Bot:
     return bot
 
 
-def _bot_out(session: Session, bot: Bot, yahoo: dict[str, str] | None = None) -> BotOut:
-    """yahoo: the symbols' Yahoo sectors (sectors.yahoo_sectors), read once by a caller listing many bots."""
+def _live_setups(session: Session) -> dict[tuple[int, str], list[int]]:
+    """The tested setups that real money trades: (test id, code) -> the ids of the live bots started from it, archived
+    ones left out. So a paper bot's setup can say a live bot uses it too (BotOut.setup_live)."""
+    live = [b["name"] for b in catalog() if b["live"]]
+    out: dict[tuple[int, str], list[int]] = {}
+    for b in session.scalars(select(Bot).where(Bot.broker.in_(live), Bot.status != "archived").order_by(Bot.id)):
+        if b.setup:
+            out.setdefault((b.setup["test_id"], b.setup["code"]), []).append(b.id)
+    return out
+
+
+def _bot_out(session: Session, bot: Bot, yahoo: dict[str, str] | None = None,
+             live_setups: dict[tuple[int, str], list[int]] | None = None) -> BotOut:
+    """yahoo: the symbols' Yahoo sectors (sectors.yahoo_sectors) and live_setups (_live_setups), read once by a caller
+    listing many bots."""
     price = bot.last_price or bot.entry_price or 0.0  # a rotation bot's "price": what its universe held equally is worth
     equity = bot_equity(session, bot, price)
     live = next((b["live"] for b in catalog() if b["name"] == bot.broker), False)
@@ -117,6 +130,10 @@ def _bot_out(session: Session, bot: Bot, yahoo: dict[str, str] | None = None) ->
         "sectors": sector_badges,
         "sectors_auto": sectors_auto,
         "sectors_from_symbols": from_symbols,
+        # The setup's All is worked out from the windows it keeps, so bots made before it was shown have it too
+        "setup": {**bot.setup, "all": studies.all_return(bot.setup["periods"], bot.setup["results"])} if bot.setup else None,
+        "setup_live": [i for i in (_live_setups(session) if live_setups is None else live_setups).get(
+            (bot.setup["test_id"], bot.setup["code"]), []) if i != bot.id] if bot.setup else [],
         "equity": equity,
         "capital": capital(bot),
         "return_pct": return_pct(bot, equity),
@@ -303,8 +320,8 @@ def list_bots(include_archived: bool = False, session: Session = Depends(get_ses
     q = select(Bot).order_by(Bot.created_at.desc())
     if not include_archived:
         q = q.where(Bot.status != "archived")
-    yahoo = badges.yahoo_sectors(session)
-    return [_bot_out(session, b, yahoo) for b in session.scalars(q)]
+    yahoo, live_setups = badges.yahoo_sectors(session), _live_setups(session)
+    return [_bot_out(session, b, yahoo, live_setups) for b in session.scalars(q)]
 
 
 @app.get("/sectors", response_model=list[str])

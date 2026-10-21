@@ -87,6 +87,7 @@ export interface BotSetup {
   strategy: "dip" | "rotation";
   watchlist: string;
   score: number | null; // the weaker of its practice and exam returns
+  all: number | null; // its full windows back to back, the grid's All (null where the grid has no All column)
   pick: number | null; // the study's pick number (1 = its best)
   note: string;
   extra: string | null; // a filter tested on top of the rules, which the bot doesn't have
@@ -120,6 +121,7 @@ export interface Bot extends Omit<StrategyParams, "strategy"> {
   sectors_from_symbols: string[]; // what its symbols say, even when set by hand
   rating: number; // the owner's stars, 0 (not rated) to 5 (trading/rating.tsx)
   setup?: BotSetup | null; // the tested setup it was started from (Test results); null = not from a test
+  setup_live?: number[]; // the other live (real-money) bots started from that setup, archived ones left out
   allocated_cash: number; // the starting capital
   added_cash: number | null; // money added since (Add money); null = none
   withdrawn_cash?: number | null; // money taken out since (Take money out); null = none

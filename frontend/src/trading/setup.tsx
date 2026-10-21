@@ -1,11 +1,13 @@
 // The tested setup a bot was started from (Test results' "Start a bot"): a button on the bot table and the bot's page
 // that opens its name, study, results per window and whether the bot's rules still match it. trading-service copies the
-// test into the bot when it is made (main._setup_snapshot), so this stays when the study is replaced.
+// test into the bot when it is made (main._setup_snapshot), so this stays when the study is replaced. A red * on the
+// button of a bot that isn't live: real money trades the same setup (BotOut.setup_live).
 
 import { ExperimentOutlined } from "@ant-design/icons";
 import { Alert, Button, Descriptions, Modal, Table, Tag, Tooltip, Typography } from "antd";
 import dayjs from "dayjs";
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { PERIOD_LABEL } from "../studies/kit";
 import { isRotation } from "./format";
 import type { Bot, BotSetup, SetupNumbers } from "./types";
@@ -14,10 +16,26 @@ const MUTED = "#8b98b5";
 const GREEN = "#33c088";
 const RED = "#ef5b6b";
 const color = (v: number | null | undefined) => (v == null || Math.abs(v) < 0.005 ? undefined : v > 0 ? GREEN : RED);
-const signed = (v: number | null | undefined) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(1)}%`);
+const signed = (v: number | null | undefined, digits = 1) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(digits)}%`);
 const share = (v: unknown) => `${+(Number(v) * 100).toFixed(2)}%`;
 const yesNo = (v: unknown) => (v ? "on" : "off");
 const day = (d: string) => dayjs(d).format("MMM D, YYYY");
+// "All": the windows it chains (the grid's: all but the bear market) and their months, for its tooltip
+const allTip = (setup: BotSetup) => {
+  const full = Object.entries(setup.periods).filter(([k]) => k !== "bear");
+  const months = full.reduce((n, [, [a, b]]) => n + Math.round(dayjs(b).diff(dayjs(a), "day") / 30.44), 0);
+  return `All ${full.length} windows back to back (${months} months): what it grew to`;
+};
+
+/** A tested setup's Score or All in the bot table: "+50.2%" in color, "—" for a bot not started from a test. */
+export function SetupPct({ v, digits = 1 }: { v: number | null | undefined; digits?: number }) {
+  return v == null ? <span style={{ color: MUTED }}>—</span> : <span style={{ color: color(v) }}>{signed(v, digits)}</span>;
+}
+
+/** The live (real-money) bots trading a bot's setup, as links ("#224, #221"); a click closes the popup it is in. */
+function LiveBots({ ids, onClick }: { ids: number[]; onClick: () => void }) {
+  return <>{ids.map((id, i) => <span key={id}>{i > 0 && ", "}<Link to={`/trading/${id}`} onClick={onClick}>#{id}</Link></span>)}</>;
+}
 
 /** The new bot form's note that the bot will keep this tested setup, and a way to drop the link. */
 export function FromSetupNote({ name, onUnlink }: { name: string; onUnlink?: () => void }) {
@@ -86,8 +104,9 @@ interface Row extends SetupNumbers {
   dates?: [string, string];
 }
 
-function SetupDetails({ bot, setup }: { bot: Bot; setup: BotSetup }) {
+function SetupDetails({ bot, setup, close }: { bot: Bot; setup: BotSetup; close: () => void }) {
   const diffs = setupDifferences(bot, setup);
+  const live = bot.setup_live ?? [];
   const rows: Row[] = Object.keys({ ...setup.periods, ...setup.results }).map((k) => ({ key: k, dates: setup.periods[k], ...setup.results[k] }));
   const symbols = (setup.config.symbols as string[] | undefined) ?? [];
   return (
@@ -101,7 +120,19 @@ function SetupDetails({ bot, setup }: { bot: Bot; setup: BotSetup }) {
         <Descriptions.Item label="Score">
           <Tooltip title="The weaker of its practice and exam returns"><span style={{ color: color(setup.score) }}>{signed(setup.score)}</span></Tooltip>
         </Descriptions.Item>
+        {setup.all != null && (
+          <Descriptions.Item label="All">
+            <Tooltip title={allTip(setup)}><span style={{ color: color(setup.all) }}>{signed(setup.all, 0)}</span></Tooltip>
+          </Descriptions.Item>
+        )}
         <Descriptions.Item label="Bot started from it">{day(setup.started_at)}</Descriptions.Item>
+        {live.length > 0 && (
+          <Descriptions.Item label={<span style={{ color: RED }}>{bot.live ? "Other live bots on it" : "Live bots on it"}</span>}>
+            <Tooltip title="Bots trading real money (Alpaca live) that were started from this tested setup">
+              <span><LiveBots ids={live} onClick={close} /> <Tag color="red" style={{ marginInlineStart: 4 }}>REAL MONEY</Tag></span>
+            </Tooltip>
+          </Descriptions.Item>
+        )}
       </Descriptions>
       <Table<Row>
         size="small"
@@ -144,20 +175,28 @@ export function SetupButton({ bot, compact = false }: { bot: Bot; compact?: bool
   const [open, setOpen] = useState(false);
   const setup = bot.setup;
   if (!setup) return null;
+  const live = bot.live ? [] : bot.setup_live ?? []; // a live bot is real money itself: no mark
+  const tag = (
+    <Tag
+      icon={<ExperimentOutlined />}
+      color="geekblue"
+      role="button"
+      aria-label={`Tested setup ${setup.name}${live.length ? ", used by live bots" : ""}`}
+      style={{ cursor: "pointer", marginInlineEnd: 0, ...(compact && { fontSize: 11, lineHeight: "18px", padding: "0 5px" }) }}
+      onClick={() => setOpen(true)}
+    >
+      {compact ? setup.code : `Tested setup ${setup.code}`}
+      {live.length > 0 && <b style={{ color: RED, marginInlineStart: 2, fontSize: compact ? 15 : 17, lineHeight: 0, verticalAlign: "-0.2em" }}>*</b>}
+    </Tag>
+  );
   return (
     // The popup is drawn outside the table, but its clicks (X, Close, the dark mask) still bubble up React's tree to the
     // bot table's row, which opens the bot's page: stop them here
     <span onClick={(e) => e.stopPropagation()}>
-      <Tag
-        icon={<ExperimentOutlined />}
-        color="geekblue"
-        role="button"
-        aria-label={`Tested setup ${setup.name}`}
-        style={{ cursor: "pointer", marginInlineEnd: 0, ...(compact && { fontSize: 11, lineHeight: "18px", padding: "0 5px" }) }}
-        onClick={() => setOpen(true)}
-      >
-        {compact ? setup.code : `Tested setup ${setup.code}`}
-      </Tag>
+      {/* Hidden while the popup is open: after a tap on a phone it would stay up over the popup */}
+      {live.length ? (
+        <Tooltip open={open ? false : undefined} title={`* Real money trades this setup too: live bot${live.length > 1 ? "s" : ""} ${live.map((i) => `#${i}`).join(", ")}`}>{tag}</Tooltip>
+      ) : tag}
       <Modal
         title={<><ExperimentOutlined /> {setup.name}</>}
         open={open}
@@ -166,7 +205,7 @@ export function SetupButton({ bot, compact = false }: { bot: Bot; compact?: bool
         width={760}
         destroyOnClose
       >
-        <SetupDetails bot={bot} setup={setup} />
+        <SetupDetails bot={bot} setup={setup} close={() => setOpen(false)} />
       </Modal>
     </span>
   );

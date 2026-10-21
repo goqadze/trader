@@ -12,7 +12,7 @@ from conftest import IS_POSTGRES, FakeBroker, at, make_bot
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app import dip, main, rotation, scheduler, splits, trader
+from app import dip, main, rotation, scheduler, splits, studies, trader
 from app.brokers import BrokerError, BrokerOrder
 from app.brokers import catalog as real_catalog
 from app.db import SessionLocal
@@ -1587,6 +1587,47 @@ def test_a_tested_setup_starts_only_a_bot_of_its_own_kind(api):
     bot = r.json()
     assert (bot["setup"]["code"], bot["setup"]["strategy"], bot["setup"]["config"]["top_n"]) == ("M1", "rotation", 2)
     assert "Started from the tested setup M1 ETFs 4%/5d (Rotation sweep)." in c.get(f"/bots/{bot['id']}/events").text
+
+
+def test_a_setups_all_is_its_windows_back_to_back_where_the_grid_has_that_column():
+    periods = {"practice": ["2025-04-09", "2026-01-08"], "exam": ["2026-01-09", "2026-10-09"],
+               "stress": ["2024-07-09", "2025-04-08"], "bear": ["2022-01-03", "2022-09-30"]}
+    results = {"practice": {"total_return_pct": 10}, "exam": {"total_return_pct": 20}, "stress": {"total_return_pct": -10},
+               "bear": {"total_return_pct": -50}}
+    assert studies.all_return(periods, results) == pytest.approx(18.8)  # 1.1 × 1.2 × 0.9: the bear window isn't one of them
+    assert studies.all_return({p: periods[p] for p in ("practice", "exam")}, results) is None  # two windows: no All column
+    assert studies.all_return({**periods, "stress": ["2024-07-09", "2025-04-09"]}, results) is None  # overlaps the practice
+    assert studies.all_return(periods, {**results, "stress": {"error": "no prices"}}) is None
+    assert studies.all_return(periods, {p: r for p, r in results.items() if p != "exam"}) is None
+
+
+def test_a_bots_setup_has_its_all_and_the_live_bots_started_from_it(api, monkeypatch):
+    c, _, _ = api
+    monkeypatch.setattr(main, "catalog", lambda: [{**b, "available": True} for b in real_catalog()])
+    study = c.put("/dip/studies", json={**STUDY, "periods": {**STUDY["periods"], "stress": ["2024-07-09", "2025-04-08"]}}).json()
+    results = {"practice": {"total_return_pct": 10}, "exam": {"total_return_pct": 20}, "stress": {"total_return_pct": -10}}
+    c.post(f"/dip/studies/{study['id']}/tests", json=[one_setup("T1", 10.0, results=results), one_setup("T2", 3.2)])
+    tests = {t["code"]: t["id"] for t in c.get(f"/dip/studies/{study['id']}/tests").json()["items"]}
+
+    def make(code: str | None, broker: str = "paper", **kw) -> int:
+        r = c.post("/bots/dip", json={**BODY, "broker": broker, "setup_test_id": code and tests[code], **kw})
+        assert r.status_code == 201, r.text
+        return r.json()["id"]
+
+    sim, paper, other, plain = make("T1"), make("T1", "alpaca-paper"), make("T2", "alpaca-paper"), make(None)
+    live1, live2 = make("T1", "alpaca-live", confirm_live=True), make("T1", "alpaca-live", confirm_live=True)
+
+    def setups() -> dict[int, tuple]:
+        return {b["id"]: (b["setup"] and b["setup"]["all"], b["setup_live"]) for b in c.get("/bots").json()}
+
+    assert setups() == {sim: (pytest.approx(18.8), [live1, live2]), paper: (pytest.approx(18.8), [live1, live2]),
+                        other: (None, []),  # its windows have no stress check: no All
+                        plain: (None, []), live1: (pytest.approx(18.8), [live2]), live2: (pytest.approx(18.8), [live1])}
+    assert c.get(f"/bots/{paper}").json()["setup_live"] == [live1, live2]  # a bot's own page too
+
+    assert c.post(f"/bots/{live2}/archive").status_code == 200  # an archived live bot no longer counts
+    assert c.get(f"/bots/{paper}").json()["setup_live"] == [live1]
+    assert setups()[sim] == (pytest.approx(18.8), [live1])
 
 
 def test_money_is_added_to_a_running_bot_and_tops_up_what_it_holds(api):

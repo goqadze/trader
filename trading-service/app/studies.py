@@ -108,6 +108,21 @@ def _num(x: dict | None, key: str) -> float | None:
     return float(v) if isinstance(v, (int, float)) else None
 
 
+def _chain(rets: list[float | None]) -> float | None:
+    """Windows' returns (in %) back to back: what $1 grew to, minus 1, in %. None when a window has no return."""
+    return (math.prod(1 + r / 100 for r in rets) - 1) * 100 if rets and None not in rets else None
+
+
+def all_return(periods: dict[str, list[str]], results: dict) -> float | None:
+    """A tested setup's All (the grid's column): its full windows back to back, from a study's periods (window -> [first
+    day, last day]) and the test's results. None where the grid has no All column (two windows or fewer, or windows that
+    overlap, so they can't be chained) or a window has no return."""
+    full = sorted((p for p in periods if p not in PARTIAL), key=lambda p: str(periods[p][0]))
+    if len(full) <= 2 or any(str(periods[a][1]) >= str(periods[b][0]) for a, b in zip(full, full[1:])):
+        return None
+    return _chain([_num(results.get(p), "total_return_pct") for p in full])
+
+
 def _row(t: DipTest, periods: list[str], rules: tuple[Rule, ...], yahoo: dict[str, str]) -> Row:
     c, res = t.config, t.results or {}
     numbers: dict[str, float | None] = {}
@@ -119,10 +134,7 @@ def _row(t: DipTest, periods: list[str], rules: tuple[Rule, ...], yahoo: dict[st
     calm = [r / max(1.0, -(d or 0)) for p in MAIN if (r := numbers.get(f"{p}-ret")) is not None
             for d in [numbers.get(f"{p}-dd")]]
     numbers["calm"] = min(calm) if len(calm) == len(MAIN) else None
-    # Every full window back to back: what $1 grew to, minus 1, in %
-    full = [p for p in periods if p not in PARTIAL]
-    rets = [numbers.get(f"{p}-ret") for p in full]
-    numbers["all"] = (math.prod(1 + r / 100 for r in rets) - 1) * 100 if full and None not in rets else None
+    numbers["all"] = _chain([numbers.get(f"{p}-ret") for p in periods if p not in PARTIAL])
     q = t.quarters
     numbers["quarters"] = q["won"] * 1000 + q["worst"] if q else None
     main = [res.get(p) or {} for p in MAIN if p in periods]
