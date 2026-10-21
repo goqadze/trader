@@ -1,6 +1,6 @@
 // The tested setup a bot was started from (Test results' "Start a bot"): a button on the bot table and the bot's page
 // that opens its name, study, results per window and whether the bot's rules still match it. trading-service copies the
-// test into the bot when it is made (main._setup_snapshot), so this stays when the study is replaced. A red * on the
+// test into the bot when it is made (main._setup_snapshot), so this stays when the study is replaced. A red LIVE on the
 // button of a bot that isn't live: real money trades the same setup (BotOut.setup_live).
 
 import { ExperimentOutlined } from "@ant-design/icons";
@@ -182,11 +182,21 @@ export function SetupButton({ bot, compact = false }: { bot: Bot; compact?: bool
       color="geekblue"
       role="button"
       aria-label={`Tested setup ${setup.name}${live.length ? ", used by live bots" : ""}`}
-      style={{ cursor: "pointer", marginInlineEnd: 0, ...(compact && { fontSize: 11, lineHeight: "18px", padding: "0 5px" }) }}
+      style={{
+        cursor: "pointer", marginInlineEnd: 0, ...(live.length > 0 && { borderColor: RED }),
+        ...(compact && { fontSize: 11, lineHeight: "18px", padding: "0 5px" }),
+      }}
       onClick={() => setOpen(true)}
     >
       {compact ? setup.code : `Tested setup ${setup.code}`}
-      {live.length > 0 && <b style={{ color: RED, marginInlineStart: 2, fontSize: compact ? 15 : 17, lineHeight: 0, verticalAlign: "-0.2em" }}>*</b>}
+      {live.length > 0 && (
+        <b style={{
+          display: "inline-block", marginInlineStart: 5, padding: "0 4px", borderRadius: 3, background: RED, color: "#fff",
+          fontSize: compact ? 10 : 11, lineHeight: compact ? "14px" : "16px", letterSpacing: 0.4,
+        }}>
+          LIVE
+        </b>
+      )}
     </Tag>
   );
   return (
@@ -195,7 +205,7 @@ export function SetupButton({ bot, compact = false }: { bot: Bot; compact?: bool
     <span onClick={(e) => e.stopPropagation()}>
       {/* Hidden while the popup is open: after a tap on a phone it would stay up over the popup */}
       {live.length ? (
-        <Tooltip open={open ? false : undefined} title={`* Real money trades this setup too: live bot${live.length > 1 ? "s" : ""} ${live.map((i) => `#${i}`).join(", ")}`}>{tag}</Tooltip>
+        <Tooltip open={open ? false : undefined} title={`Real money trades this setup too: live bot${live.length > 1 ? "s" : ""} ${live.map((i) => `#${i}`).join(", ")}`}>{tag}</Tooltip>
       ) : tag}
       <Modal
         title={<><ExperimentOutlined /> {setup.name}</>}

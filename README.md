@@ -162,7 +162,7 @@ page) opens them in a popup, with the rules the bot now trades differently from 
 form's "Don't link", or loading a saved setup into it, starts the bot without the copy. The popup and the bot table's
 Score and All columns show the setup's score and All (its windows back to back, as in the grid's All column; worked
 out from the windows the bot keeps, so `setup.all` is null where the grid has no All column); both columns sort, with
-bots not started from a test last. A red * on the tag of a bot that isn't live means real money trades the same setup:
+bots not started from a test last. A red LIVE on the tag of a bot that isn't live means real money trades the same setup:
 `setup_live` lists those live bots (archived ones left out), and the popup links to them.
 
 Every dip into the buy zone, recovery, stop-loss and news veto is saved as a **signal** (`GET /bots/{id}/signals`,
