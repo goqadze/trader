@@ -129,6 +129,38 @@ def test_fractionable_asks_the_asset_once_a_day_on_the_paper_account(monkeypatch
     assert "MSFT" not in alpaca._assets  # a failed ask leaves nothing behind
 
 
+def test_bots_asking_about_one_symbol_at_once_make_one_request():
+    """The scheduler's threads: several bots buy the same dip at the same moment. The first one asks Alpaca, the
+    others wait for its answer; a bot asking about another symbol meanwhile doesn't wait (2026-10-19: CAT was asked
+    4 times within 0.2 s)."""
+    import threading
+    import time
+
+    seen, answer = [], threading.Event()
+
+    def handler(req):
+        seen.append(req.url.path)
+        answer.wait(5)  # Alpaca takes its time
+        return httpx.Response(200, json={"fractionable": True})
+
+    paper = _broker(handler)
+    results = []
+    threads = [threading.Thread(target=lambda s=s: results.append(paper.fractionable(s)))
+               for s in ("CAT", "CAT", "CAT", "NVDA")]
+    for t in threads:
+        t.start()
+    for _ in range(100):  # until the first CAT ask and the NVDA one are both with Alpaca
+        if len(seen) >= 2:
+            break
+        time.sleep(0.02)
+    time.sleep(0.1)  # time enough for any other CAT ask to arrive too
+    assert sorted(seen) == ["/v2/assets/CAT", "/v2/assets/NVDA"]  # NVDA didn't wait for CAT's answer
+    answer.set()
+    for t in threads:
+        t.join(5)
+    assert results == [True] * 4 and sorted(seen) == ["/v2/assets/CAT", "/v2/assets/NVDA"]  # one ask per symbol
+
+
 def test_rejection_is_returned_not_raised():
     o = _broker(lambda req: httpx.Response(403, text="insufficient buying power")).submit("AAPL", "BUY", 10, "x")
     assert o.status == "rejected" and "insufficient" in o.error

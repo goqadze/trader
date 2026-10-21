@@ -100,6 +100,13 @@ def reset_rate_state() -> None:
 
 
 _assets: dict[str, tuple[date, bool]] = {}  # the paper account: symbol -> (the New York day it was read, fractionable?)
+_asset_locks: dict[str, threading.Lock] = {}  # one per symbol: bots buying it at the same moment wait for one answer
+_asset_locks_guard = threading.Lock()
+
+
+def _asset_lock(symbol: str) -> threading.Lock:
+    with _asset_locks_guard:
+        return _asset_locks.setdefault(symbol, threading.Lock())
 
 
 def _today() -> date:
@@ -568,17 +575,23 @@ class AlpacaBroker(Broker):
 
     def fractionable(self, symbol: str) -> bool:
         """Asked once a day per symbol on the paper account (a stale yes only gets a dollar order rejected); every time
-        on the live one."""
+        on the live one. Several bots buying one dip at the same moment (the scheduler's threads) wait for the first
+        one's answer instead of each asking; bots asking about other symbols don't wait."""
+        if self.live:
+            return self._asset_fractionable(symbol)
         today = _today()
-        if not self.live and (kept := _assets.get(symbol)) is not None and kept[0] == today:
-            return kept[1]
+        with _asset_lock(symbol):
+            if (kept := _assets.get(symbol)) is not None and kept[0] == today:
+                return kept[1]
+            split = self._asset_fractionable(symbol)
+            _assets[symbol] = (today, split)
+            return split
+
+    def _asset_fractionable(self, symbol: str) -> bool:
         r = self._get(self._api, f"/v2/assets/{symbol}")
         if r.status_code != 200:
             raise BrokerError(f"Alpaca asset {symbol}: {r.status_code} {r.text[:200]}")
-        split = bool(r.json().get("fractionable"))
-        if not self.live:
-            _assets[symbol] = (today, split)
-        return split
+        return bool(r.json().get("fractionable"))
 
     @staticmethod
     def _parse(o: dict) -> BrokerOrder:
