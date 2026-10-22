@@ -94,26 +94,6 @@ const columns: ColumnsType<Bot> = [
     sortDirections: ["descend", "ascend"],
   },
   {
-    // Its tested setup's numbers (trading/setup.tsx), to sort bots by how their setup did in the backtests; a bot not
-    // started from a test sorts last either way
-    title: <Tooltip title="Its tested setup's score: the weaker of its practice and exam returns (— = not started from a test)">Score</Tooltip>,
-    key: "score",
-    width: 84,
-    align: "right",
-    sorter: true,
-    sortDirections: ["descend", "ascend"],
-    render: (_, b) => <SetupPct v={b.setup?.score} />,
-  },
-  {
-    title: <Tooltip title="Its tested setup's All: every test window back to back (the bear market left out), what it grew to">All</Tooltip>,
-    key: "all",
-    width: 76,
-    align: "right",
-    sorter: true,
-    sortDirections: ["descend", "ascend"],
-    render: (_, b) => <SetupPct v={b.setup?.all} digits={0} />,
-  },
-  {
     // Which parts of the market it trades (filterable: the filter's choices come from the bots listed, see below)
     title: "Sectors",
     key: "sectors",
@@ -168,6 +148,26 @@ const columns: ColumnsType<Bot> = [
       ) : (
         <span style={{ color: "#8b98b5" }}>flat</span>
       ),
+  },
+  {
+    // Its tested setup's numbers (trading/setup.tsx), to sort bots by how their setup did in the backtests; a bot not
+    // started from a test sorts last either way
+    title: <Tooltip title="Its tested setup's score: the weaker of its practice and exam returns (— = not started from a test)">Score</Tooltip>,
+    key: "score",
+    width: 84,
+    align: "right",
+    sorter: true,
+    sortDirections: ["descend", "ascend"],
+    render: (_, b) => <SetupPct v={b.setup?.score} />,
+  },
+  {
+    title: <Tooltip title="Its tested setup's All: every test window back to back (the bear market left out), what it grew to">All</Tooltip>,
+    key: "all",
+    width: 76,
+    align: "right",
+    sorter: true,
+    sortDirections: ["descend", "ascend"],
+    render: (_, b) => <SetupPct v={b.setup?.all} digits={0} />,
   },
   { title: "Last price", key: "last_price", align: "right", render: (_, b) => (holdsMany(b) ? "—" : usd(b.last_price)) },
   {
