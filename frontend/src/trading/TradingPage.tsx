@@ -18,7 +18,7 @@ import { strategyName } from "../strategies";
 import {
   STATUS_COLOR, botTitle, checkTimes, holdsMany, isDip, isRotation, localTime, nyTime, pct, pnlColor, relative, rotationRules, slotTimes, usd,
 } from "./format";
-import type { AccountInfo, Bot, BotCreate, BotSort, BotTable, BotTableQuery, TradingEvent, TradingStatus } from "./types";
+import type { AccountInfo, Bot, BotCreate, BotKind, BotSort, BotTable, BotTableQuery, TradingEvent, TradingStatus } from "./types";
 import { usePolling } from "./usePolling";
 
 /** Market clock + scheduler heartbeat, shown on both trading pages. Given a bot, shows that bot's next decision. */
@@ -75,6 +75,7 @@ const columns: ColumnsType<Bot> = [
     render: (_, b) => <Link to={`/trading/${b.id}`} style={{ color: "#8b98b5", whiteSpace: "nowrap" }}>#{b.id}</Link>,
   },
   {
+    // Filterable by kind (the choices and their counts come from trading-service, see below)
     title: "Bot",
     key: "bot",
     render: (_, b) => (
@@ -194,6 +195,8 @@ const LEVEL_COLOR: Record<string, string> = { info: "default", warning: "orange"
 const BROKER_KEY = "trading.brokerFilter";
 const BROKER_ORDER = ["alpaca-live", "alpaca-paper", "paper"];
 const BROKER_LABEL: Record<string, string> = { "alpaca-live": "Alpaca live", "alpaca-paper": "Alpaca paper", paper: "Simulator" };
+// The Bot filter's choices, named as the column names the bots (format.botTitle)
+const KIND_LABEL: Record<BotKind, string> = { dip: "Dip buyer", rotation: "Momentum Rotation", symbol: "Single symbol" };
 
 function rememberedBroker(): string {
   try {
@@ -323,13 +326,14 @@ export default function TradingPage() {
   const [initial, setInitial] = useState<BotFormInitial>({});
   const [brokerPick, setBrokerPick] = useState(rememberedBroker);
   const [sort, setSort] = useState(rememberedSort);
+  const [kindPick, setKindPick] = useState<BotKind[] | null>(null);
   const [sectorPick, setSectorPick] = useState<string[] | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(rememberedPageSize);
 
   // One page of the table, filtered, sorted and cut by trading-service, with the counts and totals of all the bots
   const query: BotTableQuery = {
-    broker: brokerPick, archived: showArchived, sectors: sectorPick ?? [], sort: sort.order ? (sort.key as BotSort) : null,
+    broker: brokerPick, archived: showArchived, kinds: kindPick ?? [], sectors: sectorPick ?? [], sort: sort.order ? (sort.key as BotSort) : null,
     order: sort.order === "ascend" ? "asc" : "desc", offset: (page - 1) * pageSize, limit: pageSize,
   };
   const bots = usePolling(() => tradingApi.botTable(query), 15_000, [JSON.stringify(query)]);
@@ -351,13 +355,19 @@ export default function TradingPage() {
   // The Sectors filter offers the badges of the shown broker's bots, the most common first
   const sectorChoices = useMemo(
     () => Object.entries(data?.sectors ?? {}).map(([s, n]) => ({ text: `${s} (${n})`, value: s })), [data?.sectors]);
+  // The Bot filter offers the kinds the shown broker has, the most common first
+  const kindChoices = useMemo(
+    () => (Object.entries(data?.kinds ?? {}) as [BotKind, number][]).map(([k, n]) => ({ text: `${KIND_LABEL[k]} (${n})`, value: k })),
+    [data?.kinds]);
   const sorted = useMemo(() => columns.map((c) => (
-    c.key === "sectors"
+    c.key === "bot"
+      ? { ...c, filters: kindChoices, filteredValue: kindPick }
+      : c.key === "sectors"
       ? { ...c, filters: sectorChoices, filteredValue: sectorPick }
       : c.key === "rating"
       ? { ...c, sortOrder: c.key === sort.key ? sort.order : null, render: (_: unknown, b: Bot) => <BotRating bot={b} onChanged={reloadBots} /> }
       : c.sorter ? { ...c, sortOrder: c.key === sort.key ? sort.order : null } : c
-  )), [sort, sectorChoices, sectorPick, reloadBots]);
+  )), [sort, kindChoices, kindPick, sectorChoices, sectorPick, reloadBots]);
   const phone = Grid.useBreakpoint().sm === false; // undefined before the first measure: the desktop control
   const events = usePolling(() => tradingApi.allEvents(broker === "all" ? undefined : broker), 15_000, [broker]);
 
@@ -522,7 +532,8 @@ export default function TradingPage() {
               } else setPage(p.current ?? 1);
               return;
             }
-            // A new sort or sector filter starts again from the first page
+            // A new sort, kind or sector filter starts again from the first page
+            setKindPick((filters.bot as BotKind[] | null) ?? null);
             setSectorPick((filters.sectors as string[] | null) ?? null);
             const one = Array.isArray(s) ? s[0] : s;
             const next = { key: one?.order ? String(one.columnKey) : "", order: one?.order ?? null };

@@ -33,7 +33,7 @@ from .db import SessionLocal, get_session, init_db, utcnow
 from .market import is_open, next_decision_time, ny_date, session_bounds
 from .models import (DIP, HOLDINGS_STRATEGIES, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPreset, DipStudy, DipTest,
                      EquitySnapshot, Event, Holding, Notification, Order, Signal, WatchItem)
-from .schemas import (AccountOut, BotBrief, BotCreate, BotOut, BotSort, BotTableOut, BotTotals, BotUpdate, CapitalAdd, CapitalWithdraw, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn,
+from .schemas import (AccountOut, BotBrief, BotCreate, BotKind, BotOut, BotSort, BotTableOut, BotTotals, BotUpdate, CapitalAdd, CapitalWithdraw, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn,
                       DipPresetOut, DipStudyIn, DipStudyOut, DipStudySummaryOut, DipTestDetailOut, DipTestIn, DipTestOut, DipTestPageOut,
                       EmailAlertsIn, EmailAlertsOut, EventOut, HoldingOut, NotificationOut, RiskReportOut, NotifyCategoryOut, OrderOut,
                       PRESET_CONFIGS, RatingIn, RotationBotCreate, RotationPresetIn, SectorsIn, SignalOut, SnapshotOut, StatusOut, StudyStrategy,
@@ -358,14 +358,20 @@ class _Row:
     keys: dict[str, float | None]  # BotSort -> its value (None: no tested setup, sorted last either way)
 
 
+def _kind(bot: Bot) -> str:
+    """Its BotKind, for the bot table's Bot filter."""
+    return "dip" if bot.strategy == DIP else "rotation" if bot.strategy == ROTATION else "symbol"
+
+
 @app.get("/bots/table", response_model=BotTableOut)
 def bot_table(broker: str = "all", include_archived: bool = False, sector: list[str] = Query([]),
-              sort: BotSort | None = None, order: Literal["asc", "desc"] = "desc", offset: int = Query(0, ge=0),
+              kind: list[BotKind] = Query([]), sort: BotSort | None = None, order: Literal["asc", "desc"] = "desc", offset: int = Query(0, ge=0),
               limit: int = Query(50, ge=1, le=500), session: Session = Depends(get_session)):
     """The overview's bot table, one page at a time: one broker's bots ("all", or a broker with none: every bot), those
-    with any of the `sector` badges, sorted by a column (none: newest first; ties keep that order; no tested setup:
-    last either way), from `offset`. With it, what the page shows of all of them: bots per broker, the broker's totals
-    and sector choices, the active bots for Halt all, and every bot's kind for the activity feed.
+    of any of the `kind`s (dip buyer, momentum rotation, single symbol) and with any of the `sector` badges, sorted by a
+    column (none: newest first; ties keep that order; no tested setup: last either way), from `offset`. With it, what
+    the page shows of all of them: bots per broker, the broker's totals, kind and sector choices, the active bots for
+    Halt all, and every bot's kind for the activity feed.
     Return and Position need every bot's equity: all their holdings and watchlists are read at once, and only the
     page's bots are built in full (_bot_out: watchlists, orders, setups ...)."""
     q = select(Bot).order_by(Bot.created_at.desc(), Bot.id.desc())
@@ -399,6 +405,9 @@ def bot_table(broker: str = "all", include_archived: bool = False, sector: list[
                        withdrawn=round(taken, 2), equity=round(equity, 2), pnl=round(equity + taken - put_in, 2),
                        active=sum(r.bot.status == "active" for r in running), count=len(running))
     sectors = Counter(s for r in rows for s in r.sectors)
+    kinds = Counter(_kind(r.bot) for r in rows)
+    if kind:
+        rows = [r for r in rows if _kind(r.bot) in kind]
     if sector:
         rows = [r for r in rows if set(r.sectors) & set(sector)]
     if sort:
@@ -411,7 +420,7 @@ def bot_table(broker: str = "all", include_archived: bool = False, sector: list[
     return BotTableOut(
         items=[_bot_out(session, r.bot, yahoo, live_setups) for r in page], total=len(rows), offset=offset, broker=shown,
         brokers=dict(brokers.most_common()), sectors=dict(sorted(sectors.items(), key=lambda kv: (-kv[1], kv[0]))),
-        totals=totals, active=sum(b.status == "active" for b in bots),
+        kinds=dict(kinds.most_common()), totals=totals, active=sum(b.status == "active" for b in bots),
         active_live=sum(b.status == "active" and b.broker in live for b in bots),
         brief=[BotBrief(id=b.id, strategy=b.strategy, symbol=b.symbol) for b in bots])
 

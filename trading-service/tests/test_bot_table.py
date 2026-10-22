@@ -1,12 +1,13 @@
-"""The overview's bot table, a page at a time (GET /bots/table): filtered by broker and sector, sorted by a column on
-the server, with what the page shows of every bot (counts per broker, totals, sector choices, Halt all's counts)."""
+"""The overview's bot table, a page at a time (GET /bots/table): filtered by broker, kind and sector, sorted by a column
+on the server, with what the page shows of every bot (counts per broker, totals, kind and sector choices, Halt all's
+counts)."""
 
 import pytest
 from conftest import make_bot
 from fastapi.testclient import TestClient
 
 from app import main
-from app.models import DIP, Holding, WatchItem
+from app.models import DIP, ROTATION, Holding, WatchItem
 
 PERIODS = {"practice": ["2025-04-09", "2026-01-08"], "exam": ["2026-01-09", "2026-10-09"],
            "stress": ["2024-07-09", "2025-04-08"]}
@@ -113,3 +114,20 @@ def test_a_broker_and_sectors_narrow_it_and_the_totals_are_the_brokers(client, b
     assert (archived["total"], archived["brokers"]["paper"]) == (7, 4)
     assert [x["id"] for x in archived["items"]] == [g, f, e, d, c, b, a]
     assert archived["totals"] == t["totals"]  # an archived bot is in the list, not in the totals
+
+
+def test_the_bot_filter_shows_dip_buyers_rotations_or_single_symbol_bots(client, bots, session):
+    a, b, c, d, e, g = (bots[k] for k in "abcdeg")
+    r = make_bot(session, symbol="ROT", strategy=ROTATION, broker="alpaca-paper", universe=["SPY", "TLT"], top_n=1).id
+    t = table(client)
+    assert t["kinds"] == {"symbol": 5, "dip": 1, "rotation": 1} and list(t["kinds"])[0] == "symbol"  # the most common first
+    assert ids(client, kind="dip") == [d]
+    assert ids(client, kind="rotation") == [r]
+    assert ids(client, kind=["dip", "rotation"]) == [r, d]  # any of them
+    assert ids(client, kind="symbol") == [g, e, c, b, a]
+    assert ids(client, kind="symbol", sector="Energy") == [b]  # and the sector filter too
+    assert ids(client, kind="rotation", sort="id", order="asc", limit=1) == [r]
+    assert table(client, kind="rotation")["totals"]["count"] == 7  # the cards don't follow the table's filter
+    assert table(client, kind="rotation")["total"] == 1
+    assert table(client, broker="alpaca-paper")["kinds"] == {"rotation": 1, "dip": 1, "symbol": 1}  # that broker's bots
+    assert client.get("/bots/table", params={"kind": "stock"}).status_code == 422

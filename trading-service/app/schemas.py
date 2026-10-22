@@ -796,6 +796,7 @@ class BotOut(StrategyParams):
 
 
 BotSort = Literal["id", "rating", "score", "all", "ret", "pos"]  # the bot table's sortable columns (main.bot_table)
+BotKind = Literal["dip", "rotation", "symbol"]  # the bot table's Bot filter: a dip buyer, a momentum rotation, one symbol
 
 
 class BotTotals(BaseModel):
@@ -822,11 +823,12 @@ class BotTableOut(BaseModel):
     """One page of the overview's bot table, and what the page shows of all the bots it was cut from."""
 
     items: list[BotOut]
-    total: int  # the bots the broker and sector filters leave
+    total: int  # the bots the broker, kind and sector filters leave
     offset: int  # where this page starts (moved back when the filters left fewer bots than the page asked for)
     broker: str  # the broker shown: "all", or the one asked for when it has bots
     brokers: dict[str, int]  # bots per broker (archived ones too when asked for)
     sectors: dict[str, int]  # the shown broker's sector badges -> its bots with that badge, the most common first
+    kinds: dict[str, int]  # the shown broker's bots per BotKind, the most common first
     totals: BotTotals
     active: int  # active bots on every account (Halt all)
     active_live: int  # of them trading real money
