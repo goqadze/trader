@@ -94,11 +94,12 @@ def holdings(session: Session, bot: Bot) -> list[Holding]:
     return list(session.scalars(select(Holding).where(Holding.bot_id == bot.id).order_by(Holding.symbol)))
 
 
-def bot_equity(session: Session, bot: Bot, price: float | None) -> float:
-    """Cash plus what the bot holds: its position at `price`, or a rotation or dip bot's holdings at their last prices."""
+def bot_equity(session: Session, bot: Bot, price: float | None, held: list[Holding] | None = None) -> float:
+    """Cash plus what the bot holds: its position at `price`, or a rotation or dip bot's holdings at their last prices.
+    held: its holdings, when the caller has read them already (the bot table reads every bot's at once)."""
     if bot.strategy in HOLDINGS_STRATEGIES:
-        return round(bot.cash + sum(h.shares * (h.last_price or h.cost_basis / h.shares) for h in holdings(session, bot)
-                                    if h.shares), 2)
+        return round(bot.cash + sum(h.shares * (h.last_price or h.cost_basis / h.shares)
+                                    for h in (holdings(session, bot) if held is None else held) if h.shares), 2)
     return round(bot.cash + bot.shares * (price or 0.0), 2)
 
 

@@ -11,7 +11,9 @@ import json
 import logging
 import os
 import time
+from collections import Counter
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Literal
@@ -30,8 +32,8 @@ from .config import settings
 from .db import SessionLocal, get_session, init_db, utcnow
 from .market import is_open, next_decision_time, ny_date, session_bounds
 from .models import (DIP, HOLDINGS_STRATEGIES, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPreset, DipStudy, DipTest,
-                     EquitySnapshot, Event, Notification, Order, Signal, WatchItem)
-from .schemas import (AccountOut, BotCreate, BotOut, BotUpdate, CapitalAdd, CapitalWithdraw, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn,
+                     EquitySnapshot, Event, Holding, Notification, Order, Signal, WatchItem)
+from .schemas import (AccountOut, BotBrief, BotCreate, BotOut, BotSort, BotTableOut, BotTotals, BotUpdate, CapitalAdd, CapitalWithdraw, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn,
                       DipPresetOut, DipStudyIn, DipStudyOut, DipStudySummaryOut, DipTestDetailOut, DipTestIn, DipTestOut, DipTestPageOut,
                       EmailAlertsIn, EmailAlertsOut, EventOut, HoldingOut, NotificationOut, RiskReportOut, NotifyCategoryOut, OrderOut,
                       PRESET_CONFIGS, RatingIn, RotationBotCreate, RotationPresetIn, SectorsIn, SignalOut, SnapshotOut, StatusOut, StudyStrategy,
@@ -93,19 +95,42 @@ def _live_setups(session: Session) -> dict[tuple[int, str], list[int]]:
     return out
 
 
+def _price(bot: Bot) -> float:
+    """What its one position is worth a share (a rotation or dip bot's "price": what its universe held equally is worth)."""
+    return bot.last_price or bot.entry_price or 0.0
+
+
+def _value(h: Holding) -> float:
+    """A holding at its last price (not priced yet: what it cost)."""
+    return round(h.shares * (h.last_price or h.cost_basis / h.shares), 2)
+
+
+def _unrealized(bot: Bot, held: list[Holding], price: float) -> float:
+    """Its open positions' gain or loss in dollars: its holdings', or its one position's at `price` (the Position column)."""
+    if held:
+        return round(sum(round(_value(h) - h.cost_basis, 2) for h in held), 2)
+    return round(bot.shares * price - bot.cost_basis if bot.shares else 0.0, 2)
+
+
+def _setup_all(bot: Bot) -> float | None:
+    """Its tested setup's All, worked out from the windows the bot keeps, so bots made before it was shown have it too."""
+    return studies.all_return(bot.setup["periods"], bot.setup["results"]) if bot.setup else None
+
+
 def _bot_out(session: Session, bot: Bot, yahoo: dict[str, str] | None = None,
              live_setups: dict[tuple[int, str], list[int]] | None = None) -> BotOut:
     """yahoo: the symbols' Yahoo sectors (sectors.yahoo_sectors) and live_setups (_live_setups), read once by a caller
     listing many bots."""
-    price = bot.last_price or bot.entry_price or 0.0  # a rotation bot's "price": what its universe held equally is worth
-    equity = bot_equity(session, bot, price)
+    price = _price(bot)
+    held_rows = holdings(session, bot)
+    equity = bot_equity(session, bot, price, held_rows)
     live = next((b["live"] for b in catalog() if b["name"] == bot.broker), False)
     now = utcnow()
     items = dip.watchlist(session, bot) if bot.strategy == DIP else []
     watched = {i.symbol for i in items}
     rows = []
-    for h in holdings(session, bot):
-        value = round(h.shares * (h.last_price or h.cost_basis / h.shares), 2)
+    for h in held_rows:
+        value = _value(h)
         rows.append(HoldingOut(symbol=h.symbol, shares=h.shares, cost_basis=h.cost_basis, last_price=h.last_price,
                                last_price_at=h.last_price_at, value=value, unrealized_pnl=round(value - h.cost_basis, 2),
                                weight_pct=round(value / equity * 100, 1) if equity else 0.0, opened_at=h.opened_at,
@@ -130,15 +155,13 @@ def _bot_out(session: Session, bot: Bot, yahoo: dict[str, str] | None = None,
         "sectors": sector_badges,
         "sectors_auto": sectors_auto,
         "sectors_from_symbols": from_symbols,
-        # The setup's All is worked out from the windows it keeps, so bots made before it was shown have it too
-        "setup": {**bot.setup, "all": studies.all_return(bot.setup["periods"], bot.setup["results"])} if bot.setup else None,
+        "setup": {**bot.setup, "all": _setup_all(bot)} if bot.setup else None,
         "setup_live": [i for i in (_live_setups(session) if live_setups is None else live_setups).get(
             (bot.setup["test_id"], bot.setup["code"]), []) if i != bot.id] if bot.setup else [],
         "equity": equity,
         "capital": capital(bot),
         "return_pct": return_pct(bot, equity),
-        "unrealized_pnl": round(sum(r.unrealized_pnl for r in rows) if rows else
-                                bot.shares * price - bot.cost_basis if bot.shares else 0.0, 2),
+        "unrealized_pnl": _unrealized(bot, held_rows, price),
         "buy_hold_return_pct": return_pct(bot, bh) if (bh := benchmark_value(bot, price)) else None,
         "pending_order": bool(open_orders(session, bot)),
         "stop_at_broker": resting_stop(session, bot) is not None,
@@ -322,6 +345,74 @@ def list_bots(include_archived: bool = False, session: Session = Depends(get_ses
         q = q.where(Bot.status != "archived")
     yahoo, live_setups = badges.yahoo_sectors(session), _live_setups(session)
     return [_bot_out(session, b, yahoo, live_setups) for b in session.scalars(q)]
+
+
+@dataclass
+class _Row:
+    """A bot's keys in the bot table: what it is sorted, filtered and added up by."""
+
+    bot: Bot
+    sectors: list[str]
+    equity: float
+    keys: dict[str, float | None]  # BotSort -> its value (None: no tested setup, sorted last either way)
+
+
+@app.get("/bots/table", response_model=BotTableOut)
+def bot_table(broker: str = "all", include_archived: bool = False, sector: list[str] = Query([]),
+              sort: BotSort | None = None, order: Literal["asc", "desc"] = "desc", offset: int = Query(0, ge=0),
+              limit: int = Query(50, ge=1, le=500), session: Session = Depends(get_session)):
+    """The overview's bot table, one page at a time: one broker's bots ("all", or a broker with none: every bot), those
+    with any of the `sector` badges, sorted by a column (none: newest first; ties keep that order; no tested setup:
+    last either way), from `offset`. With it, what the page shows of all of them: bots per broker, the broker's totals
+    and sector choices, the active bots for Halt all, and every bot's kind for the activity feed.
+    Return and Position need every bot's equity: all their holdings and watchlists are read at once, and only the
+    page's bots are built in full (_bot_out: watchlists, orders, setups ...)."""
+    q = select(Bot).order_by(Bot.created_at.desc(), Bot.id.desc())
+    if not include_archived:
+        q = q.where(Bot.status != "archived")
+    bots = list(session.scalars(q))
+    held: dict[int, list[Holding]] = {}
+    for h in session.scalars(select(Holding).order_by(Holding.symbol)):
+        held.setdefault(h.bot_id, []).append(h)
+    watched: dict[int, list[str]] = {}
+    for bot_id, symbol in session.execute(select(WatchItem.bot_id, WatchItem.symbol)):
+        watched.setdefault(bot_id, []).append(symbol)
+    yahoo = badges.yahoo_sectors(session)
+
+    def row(bot: Bot) -> _Row:
+        price, mine = _price(bot), held.get(bot.id, [])
+        equity = bot_equity(session, bot, price, mine)
+        return _Row(bot, badges.of_bot(bot, watched.get(bot.id, []), yahoo)[0], equity, {
+            "id": bot.id, "rating": bot.rating, "score": (bot.setup or {}).get("score"), "all": _setup_all(bot),
+            "ret": return_pct(bot, equity), "pos": _unrealized(bot, mine, price)})
+
+    rows = [row(b) for b in bots]
+    brokers = Counter(r.bot.broker for r in rows)
+    shown = broker if broker in brokers else "all"
+    rows = [r for r in rows if shown == "all" or r.bot.broker == shown]
+    running = [r for r in rows if r.bot.status != "archived"]
+    put_in = sum(capital(r.bot) for r in running)
+    taken = sum(r.bot.withdrawn_cash or 0.0 for r in running)
+    equity = sum(r.equity for r in running)
+    totals = BotTotals(capital=round(put_in, 2), added=round(sum(r.bot.added_cash or 0.0 for r in running), 2),
+                       withdrawn=round(taken, 2), equity=round(equity, 2), pnl=round(equity + taken - put_in, 2),
+                       active=sum(r.bot.status == "active" for r in running), count=len(running))
+    sectors = Counter(s for r in rows for s in r.sectors)
+    if sector:
+        rows = [r for r in rows if set(r.sectors) & set(sector)]
+    if sort:
+        rows = (sorted((r for r in rows if r.keys[sort] is not None), key=lambda r: r.keys[sort], reverse=order == "desc")
+                + [r for r in rows if r.keys[sort] is None])
+    if offset >= len(rows):  # the filters left fewer: the last page
+        offset = (len(rows) - 1) // limit * limit if rows else 0
+    live = {b["name"] for b in catalog() if b["live"]}
+    page, live_setups = rows[offset:offset + limit], _live_setups(session)
+    return BotTableOut(
+        items=[_bot_out(session, r.bot, yahoo, live_setups) for r in page], total=len(rows), offset=offset, broker=shown,
+        brokers=dict(brokers.most_common()), sectors=dict(sorted(sectors.items(), key=lambda kv: (-kv[1], kv[0]))),
+        totals=totals, active=sum(b.status == "active" for b in bots),
+        active_live=sum(b.status == "active" and b.broker in live for b in bots),
+        brief=[BotBrief(id=b.id, strategy=b.strategy, symbol=b.symbol) for b in bots])
 
 
 @app.get("/sectors", response_model=list[str])

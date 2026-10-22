@@ -13,16 +13,22 @@ export function usePolling<T>(fetcher: () => Promise<T>, intervalMs = 15_000, de
   const [loading, setLoading] = useState(true);
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
+  const latest = useRef(0);
 
   const reload = useCallback(async () => {
+    // Only the newest request's answer counts: a slower one asked before it (the page before a click on page 2, say)
+    // must not overwrite it when it finally arrives
+    const mine = ++latest.current;
     try {
       const result = await fetcherRef.current();
+      if (mine !== latest.current) return;
       setData(result);
       setError(null);
     } catch (e) {
+      if (mine !== latest.current) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (mine === latest.current) setLoading(false);
     }
   }, []);
 

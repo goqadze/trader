@@ -253,6 +253,33 @@ export interface Snapshot {
   benchmark?: number | null; // buy & hold's value that day, added money included (null on days from before)
 }
 
+/** The bot table's sortable columns (trading-service schemas.BotSort). */
+export type BotSort = "id" | "rating" | "score" | "all" | "ret" | "pos";
+
+export interface BotTableQuery {
+  broker: string; // "all" or a broker's name
+  archived: boolean;
+  sectors: string[]; // any of these badges ([] = every bot)
+  sort: BotSort | null; // null = newest first
+  order: "asc" | "desc";
+  offset: number;
+  limit: number;
+}
+
+/** One page of the overview's bot table and what the page shows of all the bots (trading-service schemas.BotTableOut). */
+export interface BotTable {
+  items: Bot[];
+  total: number; // the bots the broker and sector filters leave
+  offset: number; // where this page starts (moved back when the filters left fewer bots)
+  broker: string; // the broker shown: "all", or the one asked for when it has bots
+  brokers: Record<string, number>; // bots per broker
+  sectors: Record<string, number>; // the shown broker's sector badges -> bots, the most common first
+  totals: { capital: number; added: number; withdrawn: number; equity: number; pnl: number; active: number; count: number };
+  active: number; // active bots on every account (Halt all)
+  active_live: number;
+  brief: Pick<Bot, "id" | "strategy" | "symbol">[]; // every bot listed, for the activity feed
+}
+
 export interface TradingEvent {
   id: number;
   bot_id: number | null;

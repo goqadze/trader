@@ -6,7 +6,7 @@ import { request as http } from "../http";
 import type { RotationPresetConfig } from "../rotation/types";
 import type { SavedSetup, Study, StudyStrategy, StudySummary, StudyTestDetail, StudyTestPage, TestQuery } from "../studies/types";
 import type {
-  AccountInfo, Bot, BotCreate, BotUpdate, CapitalAdd, CapitalWithdraw, Decision, EmailAlert, EmailAlerts, EmailAlertsSave, Order, RotationBotCreate, RotationBotUpdate, Snapshot,
+  AccountInfo, Bot, BotCreate, BotTable, BotTableQuery, BotUpdate, CapitalAdd, CapitalWithdraw, Decision, EmailAlert, EmailAlerts, EmailAlertsSave, Order, RotationBotCreate, RotationBotUpdate, Snapshot,
   TradingEvent, TradingStatus, WithdrawalPlan,
 } from "./types";
 
@@ -18,6 +18,14 @@ export const tradingApi = {
   status: () => request<TradingStatus>("GET", "/status"),
   accounts: () => request<AccountInfo[]>("GET", "/accounts"),
   listBots: (includeArchived = false) => request<Bot[]>("GET", `/bots?include_archived=${includeArchived}`),
+  // The overview's bot table, one page at a time: filtered and sorted by trading-service (main.bot_table)
+  botTable: (query: BotTableQuery) => {
+    const params = new URLSearchParams({ broker: query.broker, include_archived: String(query.archived), offset: String(query.offset), limit: String(query.limit) });
+    if (query.sort) params.set("sort", query.sort);
+    params.set("order", query.order);
+    for (const s of query.sectors) params.append("sector", s);
+    return request<BotTable>("GET", `/bots/table?${params}`);
+  },
   getBot: (id: number) => request<Bot>("GET", `/bots/${id}`),
   createBot: (body: BotCreate) => request<Bot>("POST", "/bots", body),
   createRotationBot: (body: RotationBotCreate) => request<Bot>("POST", "/bots/rotation", body),

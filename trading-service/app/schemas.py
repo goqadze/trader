@@ -795,6 +795,44 @@ class BotOut(StrategyParams):
     watchlist: list[WatchItemOut] = []
 
 
+BotSort = Literal["id", "rating", "score", "all", "ret", "pos"]  # the bot table's sortable columns (main.bot_table)
+
+
+class BotTotals(BaseModel):
+    """The shown broker's bots that aren't archived, added up (the overview's cards)."""
+
+    capital: float  # what was put in: the starting capital plus money added
+    added: float
+    withdrawn: float  # money taken out (still counts as made)
+    equity: float
+    pnl: float  # equity + taken out - put in
+    active: int
+    count: int
+
+
+class BotBrief(BaseModel):
+    """What the activity feed calls a bot by (frontend botTitle)."""
+
+    id: int
+    strategy: str
+    symbol: str
+
+
+class BotTableOut(BaseModel):
+    """One page of the overview's bot table, and what the page shows of all the bots it was cut from."""
+
+    items: list[BotOut]
+    total: int  # the bots the broker and sector filters leave
+    offset: int  # where this page starts (moved back when the filters left fewer bots than the page asked for)
+    broker: str  # the broker shown: "all", or the one asked for when it has bots
+    brokers: dict[str, int]  # bots per broker (archived ones too when asked for)
+    sectors: dict[str, int]  # the shown broker's sector badges -> its bots with that badge, the most common first
+    totals: BotTotals
+    active: int  # active bots on every account (Halt all)
+    active_live: int  # of them trading real money
+    brief: list[BotBrief]  # every bot listed, for the activity feed
+
+
 class DecisionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

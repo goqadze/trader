@@ -18,7 +18,7 @@ import { strategyName } from "../strategies";
 import {
   STATUS_COLOR, botTitle, checkTimes, holdsMany, isDip, isRotation, localTime, nyTime, pct, pnlColor, relative, rotationRules, slotTimes, usd,
 } from "./format";
-import type { AccountInfo, Bot, BotCreate, TradingEvent, TradingStatus } from "./types";
+import type { AccountInfo, Bot, BotCreate, BotSort, BotTable, BotTableQuery, TradingEvent, TradingStatus } from "./types";
 import { usePolling } from "./usePolling";
 
 /** Market clock + scheduler heartbeat, shown on both trading pages. Given a bot, shows that bot's next decision. */
@@ -62,18 +62,15 @@ export function MarketStatus({ status, bot }: { status: TradingStatus | null; bo
   );
 }
 
-// A missing number (a bot not started from a tested setup) sorts last whichever way the column is sorted (antd turns
-// the result around for "descend", so it is turned around here too)
-const missingLast = (x: number | null | undefined, y: number | null | undefined, order?: SortOrder | null) =>
-  x == null || y == null ? (Number(x == null) - Number(y == null)) * (order === "descend" ? -1 : 1) : x - y;
-
+// The table is sorted, filtered and cut into pages by trading-service (GET /bots/table): `sorter: true` marks a column
+// it sorts by, under the same key (schemas.BotSort)
 const columns: ColumnsType<Bot> = [
   {
     // The number reports, emails and Claude call a bot by ("#7"); the same as in its page's address
     title: "ID",
     key: "id",
     width: 70,
-    sorter: (a, b) => a.id - b.id,
+    sorter: true,
     sortDirections: ["ascend", "descend"],
     render: (_, b) => <Link to={`/trading/${b.id}`} style={{ color: "#8b98b5", whiteSpace: "nowrap" }}>#{b.id}</Link>,
   },
@@ -93,16 +90,17 @@ const columns: ColumnsType<Bot> = [
     title: "Rating",
     key: "rating",
     width: 130,
-    sorter: (a, b) => a.rating - b.rating,
+    sorter: true,
     sortDirections: ["descend", "ascend"],
   },
   {
-    // Its tested setup's numbers (trading/setup.tsx), to sort bots by how their setup did in the backtests
+    // Its tested setup's numbers (trading/setup.tsx), to sort bots by how their setup did in the backtests; a bot not
+    // started from a test sorts last either way
     title: <Tooltip title="Its tested setup's score: the weaker of its practice and exam returns (— = not started from a test)">Score</Tooltip>,
     key: "score",
     width: 84,
     align: "right",
-    sorter: (a, b, order) => missingLast(a.setup?.score, b.setup?.score, order),
+    sorter: true,
     sortDirections: ["descend", "ascend"],
     render: (_, b) => <SetupPct v={b.setup?.score} />,
   },
@@ -111,7 +109,7 @@ const columns: ColumnsType<Bot> = [
     key: "all",
     width: 76,
     align: "right",
-    sorter: (a, b, order) => missingLast(a.setup?.all, b.setup?.all, order),
+    sorter: true,
     sortDirections: ["descend", "ascend"],
     render: (_, b) => <SetupPct v={b.setup?.all} digits={0} />,
   },
@@ -138,7 +136,7 @@ const columns: ColumnsType<Bot> = [
     title: "Return",
     key: "ret",
     align: "right",
-    sorter: (a, b) => a.return_pct - b.return_pct,
+    sorter: true,
     sortDirections: ["descend", "ascend"],
     render: (_, b) => (
       <Tooltip title={`${isRotation(b) ? `Its ${b.universe?.length} symbols held equally` : isDip(b) ? `Its starting ${b.universe?.length} symbols held equally` : "Buy & hold"} since the bot started: ${pct(b.buy_hold_return_pct)}`}>
@@ -151,7 +149,7 @@ const columns: ColumnsType<Bot> = [
     title: "Position",
     key: "pos",
     // By the open positions' gain or loss in dollars (flat or all cash: $0)
-    sorter: (a, b) => a.unrealized_pnl - b.unrealized_pnl,
+    sorter: true,
     sortDirections: ["descend", "ascend"],
     render: (_, b) =>
       holdsMany(b) ? (
@@ -213,11 +211,14 @@ function rememberBroker(broker: string) {
   }
 }
 
-// The bot table's sort (ID, Rating, Score, All, Return or Position, by a click on the column), remembered in this browser too
+// The bot table's sort (ID, Rating, Score, All, Return or Position, by a click on the column) and page size, remembered
+// in this browser too
 const SORT_KEY = "trading.botSort";
-type BotSort = { key: string; order: SortOrder };
+const PAGE_SIZE_KEY = "trading.botPageSize";
+const PAGE_SIZES = [25, 50, 100, 200];
+type ColumnSort = { key: string; order: SortOrder };
 
-function rememberedSort(): BotSort {
+function rememberedSort(): ColumnSort {
   try {
     const saved = JSON.parse(localStorage.getItem(SORT_KEY) ?? "null");
     if (columns.some((c) => c.sorter && c.key === saved?.key) && ["ascend", "descend"].includes(saved.order)) return saved;
@@ -227,7 +228,7 @@ function rememberedSort(): BotSort {
   return { key: "", order: null };
 }
 
-function rememberSort(sort: BotSort) {
+function rememberSort(sort: ColumnSort) {
   try {
     localStorage.setItem(SORT_KEY, JSON.stringify(sort));
   } catch {
@@ -235,8 +236,25 @@ function rememberSort(sort: BotSort) {
   }
 }
 
+function rememberedPageSize(): number {
+  try {
+    const n = Number(localStorage.getItem(PAGE_SIZE_KEY));
+    return PAGE_SIZES.includes(n) ? n : 50;
+  } catch {
+    return 50;
+  }
+}
+
+function rememberPageSize(n: number) {
+  try {
+    localStorage.setItem(PAGE_SIZE_KEY, String(n));
+  } catch {
+    /* pages, just not remembered */
+  }
+}
+
 /** Recent audit events across all bots (or one broker's). */
-function ActivityFeed({ events, bots, title, emptyText }: { events: TradingEvent[]; bots: Bot[]; title: string; emptyText: string }) {
+function ActivityFeed({ events, bots, title, emptyText }: { events: TradingEvent[]; bots: BotTable["brief"]; title: string; emptyText: string }) {
   const symbol = (id: number | null) => {
     const bot = id == null ? undefined : bots.find((b) => b.id === id);
     return id == null ? "system" : bot ? botTitle(bot) : `#${id}`;
@@ -305,32 +323,37 @@ export default function TradingPage() {
   const [initial, setInitial] = useState<BotFormInitial>({});
   const [brokerPick, setBrokerPick] = useState(rememberedBroker);
   const [sort, setSort] = useState(rememberedSort);
+  const [sectorPick, setSectorPick] = useState<string[] | null>(null);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(rememberedPageSize);
 
-  const bots = usePolling(() => tradingApi.listBots(showArchived), 15_000, [showArchived]);
+  // One page of the table, filtered, sorted and cut by trading-service, with the counts and totals of all the bots
+  const query: BotTableQuery = {
+    broker: brokerPick, archived: showArchived, sectors: sectorPick ?? [], sort: sort.order ? (sort.key as BotSort) : null,
+    order: sort.order === "ascend" ? "asc" : "desc", offset: (page - 1) * pageSize, limit: pageSize,
+  };
+  const bots = usePolling(() => tradingApi.botTable(query), 15_000, [JSON.stringify(query)]);
   const status = usePolling(tradingApi.status, 30_000);
   const accounts = usePolling(tradingApi.accounts, 30_000);
-  const list = bots.data ?? [];
+  const data = bots.data;
   const reloadBots = bots.reload;
-  // The brokers the listed bots use, live first. The filter shows with two or more; a remembered pick with no bots listed
-  // (any more), or with the filter hidden, shows them all (the pick holds while the list loads)
-  const brokers = [...BROKER_ORDER, ...list.map((b) => b.broker)].filter((n, i, all) => all.indexOf(n) === i && list.some((b) => b.broker === n));
-  const broker = !bots.data || (brokers.length > 1 && brokers.includes(brokerPick)) ? brokerPick : "all";
+  // The brokers the bots use, live first. The filter shows with two or more; a remembered pick with no bots (any more),
+  // or with the filter hidden, shows them all, as trading-service does (the pick holds while the page loads)
+  const counts = data?.brokers ?? {};
+  const brokers = [...BROKER_ORDER, ...Object.keys(counts)].filter((n, i, all) => all.indexOf(n) === i && counts[n]);
+  const broker = !data || (brokers.length > 1 && brokers.includes(brokerPick)) ? brokerPick : "all";
   const brokerLabel = (name: string) => BROKER_LABEL[name] ?? name;
   const brokerOptions = [
-    { label: `All (${list.length})`, value: "all" },
-    ...brokers.map((n) => ({ label: `${brokerLabel(n)} (${list.filter((b) => b.broker === n).length})`, value: n })),
+    { label: `All (${Object.values(counts).reduce((s, n) => s + n, 0)})`, value: "all" },
+    ...brokers.map((n) => ({ label: `${brokerLabel(n)} (${counts[n]})`, value: n })),
   ];
-  const pickBroker = (v: string) => { setBrokerPick(v); rememberBroker(v); };
-  // The Sectors filter offers the badges of the bots listed, the most common first
-  const [sectorPick, setSectorPick] = useState<string[] | null>(null);
-  const sectorChoices = useMemo(() => {
-    const count = new Map<string, number>();
-    list.forEach((b) => b.sectors.forEach((s) => count.set(s, (count.get(s) ?? 0) + 1)));
-    return [...count].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0])).map(([s, n]) => ({ text: `${s} (${n})`, value: s }));
-  }, [list]);
+  const pickBroker = (v: string) => { setBrokerPick(v); rememberBroker(v); setPage(1); };
+  // The Sectors filter offers the badges of the shown broker's bots, the most common first
+  const sectorChoices = useMemo(
+    () => Object.entries(data?.sectors ?? {}).map(([s, n]) => ({ text: `${s} (${n})`, value: s })), [data?.sectors]);
   const sorted = useMemo(() => columns.map((c) => (
     c.key === "sectors"
-      ? { ...c, filters: sectorChoices, filteredValue: sectorPick, onFilter: (v: boolean | React.Key, b: Bot) => b.sectors.includes(String(v)) }
+      ? { ...c, filters: sectorChoices, filteredValue: sectorPick }
       : c.key === "rating"
       ? { ...c, sortOrder: c.key === sort.key ? sort.order : null, render: (_: unknown, b: Bot) => <BotRating bot={b} onChanged={reloadBots} /> }
       : c.sorter ? { ...c, sortOrder: c.key === sort.key ? sort.order : null } : c
@@ -347,17 +370,14 @@ export default function TradingPage() {
     navigate(location.pathname, { replace: true, state: null }); // don't reopen on refresh
   }, [location, navigate]);
 
-  const shown = useMemo(() => (broker === "all" ? list : list.filter((b) => b.broker === broker)), [list, broker]);
-  const totals = useMemo(() => {
-    const running = shown.filter((b) => b.status !== "archived");
-    // Everything put in (the start plus Add money), so added money never shows as profit; money taken out still counts
-    // as made (what they're worth plus what came out, against what went in), like each bot's return
-    const allocated = running.reduce((s, b) => s + b.capital, 0);
-    const added = running.reduce((s, b) => s + (b.added_cash ?? 0), 0);
-    const withdrawn = running.reduce((s, b) => s + (b.withdrawn_cash ?? 0), 0);
-    const equity = running.reduce((s, b) => s + b.equity, 0);
-    return { allocated, added, withdrawn, equity, pnl: equity + withdrawn - allocated, active: running.filter((b) => b.status === "active").length, count: running.length };
-  }, [shown]);
+  // The filters left fewer bots than this page starts at: trading-service answered with the last page
+  useEffect(() => {
+    if (data && data.offset !== (page - 1) * pageSize) setPage(Math.floor(data.offset / pageSize) + 1);
+  }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The shown broker's bots that aren't archived, added up by trading-service: everything put in (the start plus Add
+  // money), so added money never shows as profit; money taken out still counts as made, like each bot's return
+  const totals = data?.totals ?? { capital: 0, added: 0, withdrawn: 0, equity: 0, pnl: 0, active: 0, count: 0 };
 
   const create = async (body: BotCreate | object) => {
     const bot = await tradingApi.createBot(body as BotCreate);
@@ -368,13 +388,13 @@ export default function TradingPage() {
 
   const confirm = useConfirm();
   const haltAll = () => {
-    const active = list.filter((b) => b.status === "active");
-    const live = active.filter((b) => b.live).length;
+    const active = data?.active ?? 0;
+    const live = data?.active_live ?? 0;
     confirm({
       title: "Pause ALL bots?",
       content: (
         <>
-          {`Pauses ${active.length} active bot${active.length === 1 ? "" : "s"} on every account`}
+          {`Pauses ${active} active bot${active === 1 ? "" : "s"} on every account`}
           {live > 0 && <> (<Tag color="red" style={{ marginInline: 0 }}>{live} LIVE — real money</Tag>)</>}
           {": no new decisions or buys until you resume each one. Stop-loss and targets keep protecting open positions."}
         </>
@@ -410,7 +430,7 @@ export default function TradingPage() {
             <Dropdown
               trigger={["click"]}
               menu={{
-                items: [{ key: "halt", danger: true, icon: <StopOutlined />, label: "Halt all bots", disabled: !list.some((b) => b.status === "active") }],
+                items: [{ key: "halt", danger: true, icon: <StopOutlined />, label: "Halt all bots", disabled: !data?.active }],
                 onClick: ({ key }) => { if (key === "halt") haltAll(); },
               }}
             >
@@ -451,7 +471,7 @@ export default function TradingPage() {
       <Row gutter={[16, 16]}>
         <Col xs={12} md={6}>
           <Card size="small">
-            <Statistic title="Capital allocated" value={usd(totals.allocated, 0)} />
+            <Statistic title="Capital allocated" value={usd(totals.capital, 0)} />
             {(totals.added > 0 || totals.withdrawn > 0) && (
               <span style={{ color: "#8b98b5", fontSize: 12 }}>
                 {[totals.added > 0 && `incl. ${usd(totals.added, 0)} added`, totals.withdrawn > 0 && `${usd(totals.withdrawn, 0)} taken out`].filter(Boolean).join(" · ")}
@@ -480,22 +500,35 @@ export default function TradingPage() {
         size="small"
         style={{ marginTop: 16 }}
         title={broker === "all" ? "Bots" : `Bots · ${brokerLabel(broker)}`}
-        extra={<Space><span style={{ color: "#8b98b5" }}>Show archived</span><Switch size="small" checked={showArchived} onChange={setShowArchived} /></Space>}
+        extra={<Space><span style={{ color: "#8b98b5" }}>Show archived</span><Switch size="small" checked={showArchived} onChange={(v) => { setShowArchived(v); setPage(1); }} /></Space>}
       >
         <Table<Bot>
           rowKey="id"
           columns={sorted}
-          dataSource={shown}
-          loading={bots.loading && !bots.data}
-          pagination={false}
+          dataSource={data?.items ?? []}
+          loading={bots.loading}
+          pagination={{
+            current: page, pageSize, total: data?.total ?? 0, showSizeChanger: true, pageSizeOptions: PAGE_SIZES,
+            showTotal: (n, [from, to]) => `${from}–${to} of ${n}`, size: phone ? "small" : "default",
+          }}
           size="middle"
           scroll={{ x: 1340 }}
-          onChange={(_, filters, s) => {
+          onChange={(p, filters, s, { action }) => {
+            if (action === "paginate") {
+              if (p.pageSize && p.pageSize !== pageSize) {
+                setPageSize(p.pageSize);
+                rememberPageSize(p.pageSize);
+                setPage(1);
+              } else setPage(p.current ?? 1);
+              return;
+            }
+            // A new sort or sector filter starts again from the first page
             setSectorPick((filters.sectors as string[] | null) ?? null);
             const one = Array.isArray(s) ? s[0] : s;
             const next = { key: one?.order ? String(one.columnKey) : "", order: one?.order ?? null };
             setSort(next);
             rememberSort(next);
+            setPage(1);
           }}
           onRow={(b) => ({ onClick: (e) => { if (!(e.target as HTMLElement).closest("a")) navigate(`/trading/${b.id}`); }, style: { cursor: "pointer" } })}
           locale={{ emptyText: "No bots yet. Run a backtest you trust, then click “Trade this strategy”, or create one with New bot." }}
@@ -504,7 +537,7 @@ export default function TradingPage() {
 
       <ActivityFeed
         events={events.data ?? []}
-        bots={list}
+        bots={data?.brief ?? []}
         title={broker === "all" ? "Recent activity" : `Recent activity · ${brokerLabel(broker)}`}
         emptyText={broker === "all" ? "Nothing yet. Create a bot to get started." : "Nothing yet for these bots."}
       />
