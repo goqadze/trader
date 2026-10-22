@@ -25,7 +25,7 @@ from pydantic import ValidationError
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session, defer
 
-from . import auth, dip, journal, notify, risk_report, rotation, scheduler, studies, withdraw
+from . import auth, dip, fees, journal, notify, risk_report, rotation, scheduler, studies, withdraw
 from . import sectors as badges
 from .brokers import SHARED_ACCOUNT_BROKERS, BrokerError, catalog, get_broker
 from .config import settings
@@ -56,9 +56,10 @@ async def lifespan(_app: FastAPI):
     init_db()
     auth.startup_checks()
     tasks = []
-    if settings.scheduler_enabled:  # the background work: the bots, the email alerts they queue, the daily risk report
+    if settings.scheduler_enabled:  # the background work: the bots, the email alerts they queue, the daily risk report,
+        # Alpaca's daily fees booked to the live bots
         tasks = [asyncio.create_task(scheduler.run_forever()), asyncio.create_task(notify.run_forever()),
-                 asyncio.create_task(risk_report.run_forever())]
+                 asyncio.create_task(risk_report.run_forever()), asyncio.create_task(fees.run_forever())]
     yield
     for task in tasks:
         task.cancel()

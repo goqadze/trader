@@ -44,6 +44,7 @@ ROUND_TTL = 30.0  # seconds a pass's prices and positions are used; a longer pas
 PAPER_KEEP_FREE = 10  # of the paper account's 200 trading requests a minute: below this its requests wait for the next one
 BUY_COST_MARGIN = 0.02  # a buy by shares may fill this much above the pass's price (what it takes off the buying power)
 ORDERS_PAGE = 500  # orders per request when a pass reads the paper account's recent orders (Alpaca's most)
+FEES_PAGE = 100  # fee lines per request (fees.py: two a trading day at most)
 ORDERS_MAX_PAGES = 4  # older ones are looked up one by one, as before
 
 # Alpaca order states that mean "still working" vs "finished"
@@ -555,6 +556,25 @@ class AlpacaBroker(Broker):
         a = self._account()
         num = {k: float(a[k]) if a.get(k) is not None else None for k in ("cash", "buying_power", "non_marginable_buying_power")}
         return num | {"spendable": self._spendable(a)}
+
+    def fees(self, since: date) -> list[dict]:
+        """The fees Alpaca took from the account from the day `since` on (its activity list, type FEE), oldest first:
+        {"id", "day", "amount" (what it took: 0.01; a refund is negative), "description"}. Alpaca charges them per day
+        for the whole account ("CAT fee for proceed of 25 trades on 2026-10-20", "REG fee for proceed of $452.6 on
+        ..."); orders come back without them (fee=0.0 in _parse). Canceled ones are left out."""
+        out, token = [], None
+        while True:
+            # `after` leaves that day itself out: ask from the day before
+            params = {"after": (since - timedelta(days=1)).isoformat(), "direction": "asc", "page_size": FEES_PAGE}
+            r = self._get(self._api, "/v2/account/activities/FEE", **params, **({"page_token": token} if token else {}))
+            if r.status_code != 200:
+                raise BrokerError(f"Alpaca fees {r.status_code}: {r.text[:200]}")
+            page = r.json()
+            out += [{"id": a["id"], "day": date.fromisoformat(str(a["date"])[:10]), "amount": -float(a["net_amount"]),
+                     "description": a.get("description") or ""} for a in page if a.get("status") != "canceled"]
+            if len(page) < FEES_PAGE:
+                return out
+            token = page[-1]["id"]
 
     def position_qty(self, symbol: str, cached: bool = False) -> float | None:
         if cached and (rd := _round) is not None:

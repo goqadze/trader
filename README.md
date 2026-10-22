@@ -356,6 +356,16 @@ leaves out the day's sales until they settle (T+1). After the Oct 16 sales it re
 money gone, it counts again once they settle. Read from Alpaca at most every 30 seconds. The Mac and the server keep
 separate bots on the same Alpaca paper account, so each counts only its own.
 
+Alpaca's fees (`fees.py`): Alpaca takes two small fees a trading day from the live account, not per order: a CAT fee
+($0.01 on any day with trades, buys too) and a REG fee (SEC and FINRA on the day's sales, rounded up to a cent). Its
+orders come back without them, so once an hour trading-service reads the account's fee lines of the last 30 days and
+books each one once (table `account_fees`): it comes out of the cash and realized P&L of the bot that caused most of it
+that day (the most sales in dollars for REG, the most filled orders for CAT), archived bots too, with a `fee` event on
+that bot. So the bots' cash stays what the account has and free cash stops drifting below zero by a cent or two a day.
+A fee of a bot archived since then stays in free cash: that bot's cash was already handed back. A fee from a day no bot
+traded, or of another kind, is kept with no bot and shows in the activity. Only the live account: the paper account is
+shared with the Mac, whose bots would book the same fee again.
+
 Money in and out of a running bot (both on its page; on Alpaca no money moves between accounts, only the bot's share
 of the account changes, so the account's free cash goes down or up):
 

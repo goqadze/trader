@@ -13,6 +13,7 @@
     Setting        small settings changed on the dashboard (the email alerts' addresses and choices); secrets stay in .env
     Decision       every time a bot asked decision-service for a signal, and what it did about it
     Order          every order sent to a broker (write-ahead: saved BEFORE it is sent, see trader.submit_order)
+    AccountFee     a fee Alpaca took from the live account for a day's trades, and the bot it was booked to (fees.py)
     EquitySnapshot one row per bot per trading day, for the equity chart
     Event          audit log: created, paused, parameters changed, stop-loss hit, errors, ...
     User           who may sign in to the dashboard (see auth.py)
@@ -443,6 +444,22 @@ class Order(Base):
     fee: Mapped[float] = mapped_column(Float, default=0.0)
     pnl: Mapped[float | None] = mapped_column(Float, nullable=True)  # SELLs only: round-trip profit/loss
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class AccountFee(Base):
+    """A fee Alpaca took from a real account for one trading day (its activity list: CAT on the day's trades, REG on its
+    sales), kept once by Alpaca's id, and the bot that paid it (fees.py). NULL bot: none of the bots traded that day."""
+
+    __tablename__ = "account_fees"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    broker: Mapped[str] = mapped_column(String(16))
+    activity_id: Mapped[str] = mapped_column(String(64), unique=True)  # Alpaca's id of the fee line
+    day: Mapped[date] = mapped_column(Date)  # the trading day it is for
+    amount: Mapped[float] = mapped_column(Float)  # what Alpaca took (0.01); a refund is negative
+    description: Mapped[str] = mapped_column(Text, default="")
+    bot_id: Mapped[int | None] = mapped_column(ForeignKey("bots.id"), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
 class EquitySnapshot(Base):
