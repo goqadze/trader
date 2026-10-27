@@ -38,7 +38,8 @@ grep -rn "<text on screen>" src --include='*.tsx'                     # the comp
 - `trading/usePolling.ts` `usePolling(fetcher, ms, deps)` → `{data, error, loading, reload}` (pauses in a hidden tab).
 - `trading/sectors.tsx`: `SectorTags` (colored badges), `SectorBadges` (bot page badges + edit dialog).
 - `trading/rating.tsx`: `BotRating` (a bot's 0-5 stars, saved on click; bot table and bot page).
-- `trading/setup.tsx`: `SetupButton` (a bot's tested setup: tag + popup with its results and the rules that differ), `FromSetupNote` (new-bot forms).
+- `trading/setup.tsx`: `SetupButton` (a bot's tested setup: tag + popup with its results, the rules that differ, and Save as a saved setup), `FromSetupNote` (new-bot forms).
+- `studies/SetupPicker.tsx`: saved setups (`onLoad(config, saved)`; `saved.setup` = the test it was saved from). A dip bot's Edit (`dip/DipParts.tsx` `DipEditForm`) can switch the bot to one: rules, watchlist, tested setup.
 - `trading/confirm.tsx` `useConfirm()` (every risky action asks first; shows `AccountTag` LIVE/paper).
 - `strategies.ts` (strategy list, kept in sync with the backends), `symbols.ts` (symbol groups, `symbolClash`),
   `periods.ts` (test windows).

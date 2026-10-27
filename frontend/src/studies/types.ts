@@ -2,6 +2,8 @@
 // momentum rotation (trading-service /dip/studies?strategy=, /dip/presets, /rotation/presets). C = a strategy's setup
 // as a saved setup keeps it (DipPresetConfig, RotationPresetConfig).
 
+import type { BotSetup } from "../trading/types";
+
 export type StudyStrategy = "dip" | "rotation";
 
 /** A setup saved under a name. */
@@ -10,6 +12,9 @@ export interface SavedSetup<C> {
   name: string;
   strategy?: StudyStrategy;
   config: C;
+  // The tested setup it was saved from (a bot's Tested setup popup, Test results), with its results: a bot started from
+  // it or switched to it keeps this. null = saved from a form
+  setup?: Omit<BotSetup, "started_at" | "switched" | "all"> | null;
   created_at: string;
   updated_at: string;
 }

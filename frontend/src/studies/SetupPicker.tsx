@@ -2,9 +2,11 @@
 // capital and periods under a name you pick, and pick it again later to fill a form with it (the backtest, a new bot,
 // a running dip bot's rules). trading-service keeps them (/dip/presets, /rotation/presets), so they survive a cleared
 // browser and show in every browser. What a strategy's setup is comes from its kit (dip/kit.tsx, rotation/kit.tsx).
+// One saved from a tested setup (a bot's Tested setup popup, Test results) keeps that test's results: its test code shows
+// in the list, and a bot started from it or switched to it keeps them too.
 
-import { DeleteOutlined, SaveOutlined } from "@ant-design/icons";
-import { App as AntApp, Button, Input, type InputRef, Modal, Popconfirm, Select, Space, Tooltip, Typography } from "antd";
+import { DeleteOutlined, ExperimentOutlined, SaveOutlined } from "@ant-design/icons";
+import { App as AntApp, Button, Input, type InputRef, Modal, Popconfirm, Select, Space, Tag, Tooltip, Typography } from "antd";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { StrategyKit } from "./kit";
 import type { SavedSetup } from "./types";
@@ -13,15 +15,18 @@ const MUTED = "#8b98b5";
 
 interface Props<C extends { symbols: string[] }> {
   kit: StrategyKit<C>;
-  /** Fill the form with this setup (every rule is there: one added since it was saved gets its default). */
-  onLoad: (c: C) => void;
+  /** Fill the form with this setup (every rule is there: one added since it was saved gets its default). saved: the saved
+   *  setup it came from (its tested setup, if any). */
+  onLoad: (c: C, saved: SavedSetup<C>) => void;
+  /** The picked setup was cleared from the box (the form keeps what it filled in). */
+  onClear?: () => void;
   /** The form's values as a setup right now, to say when they differ from the loaded one. */
   values?: C | null;
   /** Check the form and return its setup. Given: the setups can be saved and deleted here; left out: only loaded. */
   validate?: () => Promise<C>;
 }
 
-export default function SetupPicker<C extends { symbols: string[] }>({ kit, onLoad, values, validate }: Props<C>) {
+export default function SetupPicker<C extends { symbols: string[] }>({ kit, onLoad, onClear, values, validate }: Props<C>) {
   const { message } = AntApp.useApp();
   const { canon } = kit;
   const [presets, setPresets] = useState<SavedSetup<C>[] | null>(null);
@@ -57,7 +62,7 @@ export default function SetupPicker<C extends { symbols: string[] }>({ kit, onLo
   const pick = (id: number) => {
     setSelected(id);
     const p = presets?.find((x) => x.id === id);
-    if (p) onLoad(kit.complete(p.config));
+    if (p) onLoad(kit.complete(p.config), p);
   };
 
   const openSave = async () => {
@@ -79,7 +84,7 @@ export default function SetupPicker<C extends { symbols: string[] }>({ kit, onLo
       const p = await kit.presets.save(n, pending);
       await refresh();
       setSelected(p.id);
-      if (canon(p.config) !== canon(pending)) onLoad(kit.complete(p.config)); // tidied up (e.g. tickers)
+      if (canon(p.config) !== canon(pending)) onLoad(kit.complete(p.config), p); // tidied up (e.g. tickers)
       setPending(null);
       message.success(`Saved “${p.name}”`);
     } catch (e) {
@@ -111,7 +116,7 @@ export default function SetupPicker<C extends { symbols: string[] }>({ kit, onLo
           onSelect={pick}
           onOpenChange={(open) => open && void refresh()} // setups saved since (another tab, another form) show up too
           allowClear
-          onClear={() => setSelected(null)}
+          onClear={() => { setSelected(null); onClear?.(); }}
           showSearch
           optionFilterProp="label"
           loading={presets === null && !loadError}
@@ -120,10 +125,17 @@ export default function SetupPicker<C extends { symbols: string[] }>({ kit, onLo
               {loadError ? `Can't reach trading-service: ${loadError}` : validate ? "Nothing saved yet: set the rules you like, then Save" : "Nothing saved yet: save one on the Backtest tab"}
             </span>
           }
-          options={(presets ?? []).map((p) => ({ value: p.id, label: p.name, summary: kit.summary(p.config) }))}
+          options={(presets ?? []).map((p) => ({ value: p.id, label: p.name, summary: kit.summary(p.config), test: p.setup?.code }))}
           optionRender={(o) => (
             <div>
-              <div>{o.label}</div>
+              <div>
+                {o.label}
+                {o.data.test && (
+                  <Tooltip title="Saved from a tested setup: keeps its test results">
+                    <Tag icon={<ExperimentOutlined />} color="geekblue" style={{ marginInlineStart: 6, fontSize: 11, lineHeight: "16px", padding: "0 4px" }}>{o.data.test}</Tag>
+                  </Tooltip>
+                )}
+              </div>
               <div style={{ fontSize: 11, color: MUTED }}>{o.data.summary}</div>
             </div>
           )}

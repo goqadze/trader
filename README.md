@@ -152,14 +152,20 @@ them, sell one holding, and change any rule, including the news switch (`PATCH /
 
 **Saved setups**: liked a result? **Save** the backtest form under a name (the rules, the watchlist, the capital, the
 blacklist and the periods), then pick the name from the list to fill them all back in. The new-bot form loads a
-setup's rules, watchlist and capital; a running bot's Edit loads its rules only. Saving under an existing name
-replaces it. Kept in trading-db (`GET`/`POST /dip/presets`, `DELETE /dip/presets/{id}`), so every browser sees them.
+setup's rules, watchlist and capital; a running bot's Edit loads its rules, and ticks two more boxes where the saved
+setup differs: switch to its watchlist (a held symbol left out still exits at its target or stop) and to the tested setup
+it was saved from (`symbols` and `setup_preset_id` in `PATCH /bots/{id}/dip`, one change that is refused whole; a live
+bot asks first). Saving under an existing name replaces it. Kept in trading-db (`GET`/`POST /dip/presets`,
+`DELETE /dip/presets/{id}`), so every browser sees them. A setup saved from a test (Test results' Save, `test_id`; or
+**Save** in a bot's Tested setup popup, `POST /bots/{id}/setup/save`) keeps a copy of that test and its results
+(`setup` on the saved setup, the test's code shown in the list), so a bot started from it (`setup_preset_id` in
+`POST /bots/dip` and `/bots/rotation`) or switched to it gets the Tested setup tag too ("Bot switched to it" in the popup).
 In the Test results tab (dip and rotation), a tested setup's rocket button opens the new-bot form filled in with its
 rules, watchlist and capital, named after it: pick the broker, check it, create. The bot keeps a copy of that test
 (`setup_test_id` in `POST /bots/dip` and `/bots/rotation`; `setup` on the bot): its name, study, rules and results per
 window, so it stays when the study is replaced. A **Tested setup** tag (the test's code in the bot table, on the bot's
 page) opens them in a popup, with the rules the bot now trades differently from the test ("Stop: 8% → 10%"). The
-form's "Don't link", or loading a saved setup into it, starts the bot without the copy. The popup and the bot table's
+form's "Don't link", or loading a saved setup without a test into it, starts the bot without the copy. The popup and the bot table's
 Score and All columns show the setup's score and All (its windows back to back, as in the grid's All column; worked
 out from the windows the bot keeps, so `setup.all` is null where the grid has no All column); both columns sort, with
 bots not started from a test last. A red LIVE on the tag of a bot that isn't live means real money trades the same setup:

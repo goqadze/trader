@@ -33,7 +33,7 @@ from .db import SessionLocal, get_session, init_db, utcnow
 from .market import is_open, next_decision_time, ny_date, session_bounds
 from .models import (DIP, HOLDINGS_STRATEGIES, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPreset, DipStudy, DipTest,
                      EquitySnapshot, Event, Holding, Notification, Order, Signal, WatchItem)
-from .schemas import (AccountOut, BotBrief, BotCreate, BotKind, BotOut, BotSort, BotTableOut, BotTotals, BotUpdate, CapitalAdd, CapitalWithdraw, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn,
+from .schemas import (AccountOut, BotBrief, BotCreate, BotKind, BotOut, BotSetupSave, BotSort, BotTableOut, BotTotals, BotUpdate, CapitalAdd, CapitalWithdraw, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn,
                       DipPresetOut, DipStudyIn, DipStudyOut, DipStudySummaryOut, DipTestDetailOut, DipTestIn, DipTestOut, DipTestPageOut,
                       EmailAlertsIn, EmailAlertsOut, EventOut, HoldingOut, NotificationOut, RiskReportOut, NotifyCategoryOut, OrderOut,
                       PRESET_CONFIGS, RatingIn, RotationBotCreate, RotationPresetIn, SectorsIn, SignalOut, SnapshotOut, StatusOut, StudyStrategy,
@@ -456,6 +456,22 @@ def set_bot_rating(bot_id: int, body: RatingIn, session: Session = Depends(get_s
     return _bot_out(session, bot)
 
 
+@app.post("/bots/{bot_id}/setup/save", response_model=DipPresetOut)
+def save_bot_setup(bot_id: int, body: BotSetupSave, session: Session = Depends(get_session)):
+    """Save the tested setup a bot was started from (its Tested setup popup) as a saved setup of its kind, with its test
+    results: pick it later to start a new bot, or to switch a running dip bot to it (Edit). From the bot's copy, so it
+    works after the study is gone, and on any bot, archived ones too. A name that exists is replaced, as in the forms."""
+    bot = _get_bot(session, bot_id)
+    if not bot.setup:
+        raise HTTPException(404, "the bot wasn't started from a tested setup")
+    strategy = bot.setup["strategy"]
+    try:  # the rules as a saved setup keeps them (one added since the test gets its default)
+        config = PRESET_CONFIGS[strategy].model_validate(bot.setup["config"]).model_dump(mode="json")
+    except ValidationError as e:
+        raise HTTPException(422, f"its tested rules can't be saved: {e.errors()[0]['msg']}")
+    return _save_preset(session, body.name, config, strategy, _saved_copy(bot.setup))
+
+
 @app.post("/bots", response_model=BotOut, status_code=201)
 def create_bot(body: BotCreate, session: Session = Depends(get_session)):
     symbol = body.symbol.upper()
@@ -497,7 +513,7 @@ def create_rotation_bot(body: RotationBotCreate, session: Session = Depends(get_
     live = _usable_broker_or_422(body.broker, body.confirm_live)
     if clash := _symbol_clash(session, body.broker, body.universe, holdings_bot=True):
         raise HTTPException(409, _clash_text(clash, body.broker))
-    setup = _setup_snapshot(session, body.setup_test_id, "rotation") if body.setup_test_id else None
+    setup = _new_bot_setup(session, body, "rotation")
 
     # The universe's prices today: they validate the symbols and start the benchmark (the universe held equally)
     now = utcnow()
@@ -508,7 +524,7 @@ def create_rotation_bot(body: RotationBotCreate, session: Session = Depends(get_
     if missing := [s for s in body.universe if s not in prices]:
         raise HTTPException(422, f"no prices for {', '.join(missing)} (unknown symbols?)")
 
-    params = body.model_dump(exclude={"name", "broker", "allocated_cash", "confirm_live", "setup_test_id"})
+    params = body.model_dump(exclude={"name", "broker", "allocated_cash", "confirm_live", "setup_test_id", "setup_preset_id"})
     bot = Bot(name=body.name or f"Momentum top {body.top_n} of {len(body.universe)}", symbol="ROTATION",
               broker=body.broker, status="active", strategy=ROTATION, allocated_cash=body.allocated_cash,
               cash=body.allocated_cash, peak_equity=body.allocated_cash, benchmark_prices=prices,
@@ -571,6 +587,33 @@ def _setup_snapshot(session: Session, test_id: int, strategy: str) -> dict:
             "started_at": utcnow().isoformat()}
 
 
+def _saved_copy(setup: dict) -> dict:
+    """A bot's tested setup as a saved setup keeps it (DipPreset.setup): without when that bot got it."""
+    return {k: v for k, v in setup.items() if k not in ("started_at", "switched")}
+
+
+def _preset_setup(session: Session, preset_id: int, strategy: str, switched: bool = False) -> tuple[DipPreset, dict]:
+    """A saved setup and the tested setup it was saved from, as a bot's copy (Bot.setup) starting now: for a new bot
+    started from it, or a running one switched to it (switched). strategy: the bot's kind, "dip" or "rotation"."""
+    preset = session.get(DipPreset, preset_id)
+    if preset is None:
+        raise HTTPException(422, f"saved setup {preset_id} not found (deleted?): pick it again")
+    if preset.strategy != strategy:
+        raise HTTPException(422, f"“{preset.name}” is a {STRATEGY_WORDS[preset.strategy]} setup, not a {STRATEGY_WORDS[strategy]} one")
+    if not preset.setup:
+        raise HTTPException(422, f"“{preset.name}” wasn't saved from a tested setup, so it has no test results to keep")
+    return preset, {**preset.setup, "started_at": utcnow().isoformat(), **({"switched": True} if switched else {})}
+
+
+def _new_bot_setup(session: Session, body: DipBotCreate | RotationBotCreate, strategy: str) -> dict | None:
+    """The tested setup a new bot keeps: Test results' test, or the one a saved setup was saved from (None: neither)."""
+    if body.setup_test_id:
+        return _setup_snapshot(session, body.setup_test_id, strategy)
+    if body.setup_preset_id:
+        return _preset_setup(session, body.setup_preset_id, strategy)[1]
+    return None
+
+
 def _setup_text(setup: dict | None) -> str:
     return f" Started from the tested setup {setup['name']} ({setup['study']})." if setup else ""
 
@@ -582,10 +625,11 @@ def create_dip_bot(body: DipBotCreate, session: Session = Depends(get_session)):
     live = _usable_broker_or_422(body.broker, body.confirm_live)
     if clash := _symbol_clash(session, body.broker, body.symbols, holdings_bot=True):
         raise HTTPException(409, _clash_text(clash, body.broker))
-    setup = _setup_snapshot(session, body.setup_test_id, "dip") if body.setup_test_id else None
+    setup = _new_bot_setup(session, body, "dip")
     prices = _prices_or_422(body.symbols)  # also the benchmark: the starting watchlist held in equal parts
     now = utcnow()
-    params = body.model_dump(exclude={"name", "broker", "allocated_cash", "symbols", "confirm_live", "setup_test_id"})
+    params = body.model_dump(exclude={"name", "broker", "allocated_cash", "symbols", "confirm_live", "setup_test_id",
+                                      "setup_preset_id"})
     bot = Bot(name=body.name or f"Dip buyer on {len(body.symbols)} symbol{'s' if len(body.symbols) > 1 else ''}",
               symbol="DIP", broker=body.broker, status="active", strategy=DIP, allocated_cash=body.allocated_cash,
               cash=body.allocated_cash, peak_equity=body.allocated_cash, universe=body.symbols, benchmark_prices=prices,
@@ -636,11 +680,24 @@ def update_dip_bot(bot_id: int, body: DipBotUpdate, session: Session = Depends(g
     with _Locked(bot_id):
         bot = _dip_bot(session, bot_id)
         fields = body.model_dump(exclude_unset=True, exclude_none=True)
+        symbols, preset_id = fields.pop("symbols", None), fields.pop("setup_preset_id", None)
         merged = {k: fields.get(k, getattr(bot, k)) for k in ("interval", "lookback", "lookback_unit")}
         try:
             check_window(merged["interval"], merged["lookback"], merged["lookback_unit"])
         except ValueError as e:
             raise HTTPException(422, str(e))
+        # Everything that can refuse comes first, so a refusal leaves the bot as it was
+        preset, setup = _preset_setup(session, preset_id, "dip", switched=True) if preset_id else (None, None)
+        items = dip.watchlist(session, bot) if symbols is not None else []
+        new = [s for s in symbols if s not in {i.symbol for i in items}] if symbols is not None else []
+        gone = [i for i in items if i.symbol not in symbols] if symbols is not None else []
+        if new:
+            if clash := _symbol_clash(session, bot.broker, new, exclude=bot.id, holdings_bot=True):
+                raise HTTPException(409, _clash_text(clash, bot.broker))
+            _prices_or_422(new)
+
+        now = utcnow()
+        changed = False
         changes = []
         for field, value in fields.items():
             old = getattr(bot, field)
@@ -648,7 +705,26 @@ def update_dip_bot(bot_id: int, body: DipBotUpdate, session: Session = Depends(g
                 setattr(bot, field, value)
                 changes.append(f"{field} {old} → {value}")
         if changes:
-            log_event(session, bot.id, "params", "Changed: " + ", ".join(changes))
+            log_event(session, bot.id, "params", "Changed: " + ", ".join(changes), now=now)
+            changed = True
+        if new or gone:  # a symbol it holds stays held: it exits at its target or stop, like one removed by hand
+            held = {h.symbol for h in holdings(session, bot)}
+            for s in new:
+                session.add(WatchItem(bot_id=bot.id, symbol=s, status="watching", added_at=now))
+            for i in gone:
+                session.delete(i)
+            kept = [i.symbol for i in gone if i.symbol in held]
+            log_event(session, bot.id, "params", "Watchlist: " + "; ".join(x for x in (
+                new and f"added {', '.join(new)}", gone and f"removed {', '.join(i.symbol for i in gone)}") if x)
+                + (f" (still held: {', '.join(kept)} exit{'s' if len(kept) == 1 else ''} at the target or stop)" if kept else ""),
+                now=now)
+            changed = True
+        if setup and (not bot.setup or (bot.setup["test_id"], bot.setup["code"]) != (setup["test_id"], setup["code"])):
+            bot.setup = setup
+            log_event(session, bot.id, "params", f"Switched to the saved setup “{preset.name}”: its tested setup is now "
+                      f"{setup['name']} ({setup['study']})", now=now)
+            changed = True
+        if changed:
             session.commit()
         return _bot_out(session, bot)
 
@@ -1029,19 +1105,25 @@ def _presets(session: Session, strategy: str) -> list[DipPreset]:
     return list(session.scalars(select(DipPreset).where(DipPreset.strategy == strategy).order_by(func.lower(DipPreset.name))))
 
 
-def _save_preset(session: Session, name: str, config: dict, strategy: str) -> DipPreset:
-    """Save a setup under a name; a name that exists (ignoring case) is replaced, unless it is the other strategy's."""
+def _save_preset(session: Session, name: str, config: dict, strategy: str, setup: dict | None = None) -> DipPreset:
+    """Save a setup under a name; a name that exists (ignoring case) is replaced, unless it is the other strategy's.
+    setup: the tested setup it is saved from (DipPreset.setup); None = from a form, and a replaced one loses its own."""
     preset = session.scalar(select(DipPreset).where(func.lower(DipPreset.name) == name.lower()))
     if preset is None:
-        preset = DipPreset(name=name, strategy=strategy, config=config)
+        preset = DipPreset(name=name, strategy=strategy, config=config, setup=setup)
         session.add(preset)
     elif preset.strategy != strategy:
         raise HTTPException(409, f"a {STRATEGY_WORDS.get(preset.strategy, preset.strategy)} setup is called “{preset.name}”: "
                                  "pick another name")
     else:
-        preset.name, preset.config, preset.updated_at = name, config, utcnow()
+        preset.name, preset.config, preset.setup, preset.updated_at = name, config, setup, utcnow()
     session.commit()
     return preset
+
+
+def _test_copy(session: Session, test_id: int | None, strategy: str) -> dict | None:
+    """The Test results test a setup is saved from, as the saved setup keeps it (None: not saved from a test)."""
+    return _saved_copy(_setup_snapshot(session, test_id, strategy)) if test_id else None
 
 
 def _delete_preset(session: Session, preset_id: int, strategy: str) -> None:
@@ -1061,7 +1143,7 @@ def list_dip_presets(session: Session = Depends(get_session)):
 @app.post("/dip/presets", response_model=DipPresetOut)
 def save_dip_preset(body: DipPresetIn, session: Session = Depends(get_session)):
     """Save a dip buyer setup under a name. Saving under a name that exists (ignoring case) replaces that setup."""
-    return _save_preset(session, body.name, body.config.model_dump(mode="json"), "dip")
+    return _save_preset(session, body.name, body.config.model_dump(mode="json"), "dip", _test_copy(session, body.test_id, "dip"))
 
 
 @app.delete("/dip/presets/{preset_id}", status_code=204)
@@ -1078,7 +1160,8 @@ def list_rotation_presets(session: Session = Depends(get_session)):
 @app.post("/rotation/presets", response_model=DipPresetOut)
 def save_rotation_preset(body: RotationPresetIn, session: Session = Depends(get_session)):
     """Save a momentum rotation setup under a name. Saving under a name that exists (ignoring case) replaces it."""
-    return _save_preset(session, body.name, body.config.model_dump(mode="json"), "rotation")
+    return _save_preset(session, body.name, body.config.model_dump(mode="json"), "rotation",
+                        _test_copy(session, body.test_id, "rotation"))
 
 
 @app.delete("/rotation/presets/{preset_id}", status_code=204)

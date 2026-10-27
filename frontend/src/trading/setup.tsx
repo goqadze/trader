@@ -1,15 +1,18 @@
 // The tested setup a bot was started from (Test results' "Start a bot"): a button on the bot table and the bot's page
 // that opens its name, study, results per window and whether the bot's rules still match it. trading-service copies the
 // test into the bot when it is made (main._setup_snapshot), so this stays when the study is replaced. A red LIVE on the
-// button of a bot that isn't live: real money trades the same setup (BotOut.setup_live).
+// button of a bot that isn't live: real money trades the same setup (BotOut.setup_live). Save keeps the setup with its
+// results as a saved setup (POST /bots/{id}/setup/save), to start a bot from it later or switch a running dip bot to it.
 
-import { ExperimentOutlined } from "@ant-design/icons";
-import { Alert, Button, Descriptions, Modal, Table, Tag, Tooltip, Typography } from "antd";
+import { CheckCircleOutlined, ExperimentOutlined, SaveOutlined } from "@ant-design/icons";
+import { App as AntApp, Alert, Button, Descriptions, Input, type InputRef, Modal, Space, Table, Tag, Tooltip, Typography } from "antd";
 import dayjs from "dayjs";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { PERIOD_LABEL } from "../studies/kit";
-import { isRotation } from "./format";
+import type { SavedSetup } from "../studies/types";
+import { tradingApi } from "./api";
+import { isDip, isRotation } from "./format";
 import type { Bot, BotSetup, SetupNumbers } from "./types";
 
 const MUTED = "#8b98b5";
@@ -89,7 +92,8 @@ export function setupDifferences(bot: Bot, setup: BotSetup): string[] {
     out.push(`${label}: ${text(tested)} → ${text(now)}`);
   }
   const testedSymbols = (c.symbols as string[] | undefined) ?? [];
-  const start = bot.universe ?? [];
+  // A dip bot's watchlist as it is now (a switch to a saved setup, or a symbol added by hand, changes it); a rotation's universe
+  const start = isDip(bot) && bot.watchlist?.length ? bot.watchlist.map((w) => w.symbol) : bot.universe ?? [];
   const added = start.filter((s) => !testedSymbols.includes(s));
   const removed = testedSymbols.filter((s) => !start.includes(s));
   if (added.length) out.push(`Symbols added: ${added.join(" ")}`);
@@ -125,7 +129,7 @@ function SetupDetails({ bot, setup, close }: { bot: Bot; setup: BotSetup; close:
             <Tooltip title={allTip(setup)}><span style={{ color: color(setup.all) }}>{signed(setup.all, 0)}</span></Tooltip>
           </Descriptions.Item>
         )}
-        <Descriptions.Item label="Bot started from it">{day(setup.started_at)}</Descriptions.Item>
+        <Descriptions.Item label={setup.switched ? "Bot switched to it" : "Bot started from it"}>{day(setup.started_at)}</Descriptions.Item>
         {live.length > 0 && (
           <Descriptions.Item label={<span style={{ color: RED }}>{bot.live ? "Other live bots on it" : "Live bots on it"}</span>}>
             <Tooltip title="Bots trading real money (Alpaca live) that were started from this tested setup">
@@ -170,6 +174,75 @@ function SetupDetails({ bot, setup, close }: { bot: Bot; setup: BotSetup; close:
   );
 }
 
+/** The popup's footer: Save (the setup under a name you pick, its test's name to start with, as a saved setup of its kind
+ *  with its results) and Close. Says where it is saved already: a saved setup from the same test. */
+function SetupFooter({ bot, setup, close }: { bot: Bot; setup: BotSetup; close: () => void }) {
+  const { message } = AntApp.useApp();
+  const [saved, setSaved] = useState<SavedSetup<unknown>[] | null>(null); // its kind's saved setups
+  const [name, setName] = useState<string | null>(null); // the name dialog is open
+  const [busy, setBusy] = useState(false);
+  const nameRef = useRef<InputRef>(null);
+  const rotation = setup.strategy === "rotation";
+
+  useEffect(() => {
+    (rotation ? tradingApi.rotationPresets() : tradingApi.dipPresets()).then(setSaved, () => setSaved([]));
+  }, [rotation]);
+
+  const same = saved?.find((p) => p.setup?.test_id === setup.test_id && p.setup?.code === setup.code);
+  const typed = name?.trim() ?? "";
+  const clash = saved?.find((p) => p.name.toLowerCase() === typed.toLowerCase());
+
+  const save = async () => {
+    if (!typed) return;
+    setBusy(true);
+    try {
+      const p = await tradingApi.saveBotSetup(bot.id, typed);
+      setSaved((list) => [...(list ?? []).filter((x) => x.id !== p.id), p]);
+      setName(null);
+      message.success(`Saved as “${p.name}”: pick it under saved setups in a new bot${rotation ? "" : " or a dip bot's Edit"}`);
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    // On a phone the note takes its own line and the buttons stay together under it
+    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
+      {same && (
+        <Typography.Text style={{ color: MUTED, fontSize: 12, flex: "1 1 200px", textAlign: "left" }}>
+          <CheckCircleOutlined style={{ color: GREEN }} /> Saved as “{same.name}”
+        </Typography.Text>
+      )}
+      <Space>
+        <Tooltip title={`Keep this setup and its results under a name: start a new bot from it later${rotation ? "" : ", or switch a running dip bot to it (Edit on the bot's page)"}`}>
+          <Button icon={<SaveOutlined />} onClick={() => setName(same?.name ?? setup.name)} disabled={saved === null}>Save</Button>
+        </Tooltip>
+        <Button onClick={close}>Close</Button>
+      </Space>
+      <Modal
+        title="Save this tested setup"
+        open={name !== null}
+        onCancel={() => setName(null)}
+        onOk={save}
+        okText={clash ? "Replace" : "Save"}
+        okButtonProps={{ loading: busy, disabled: !typed }}
+        afterOpenChange={(open) => open && nameRef.current?.focus({ cursor: "all" })}
+        width={420}
+        destroyOnClose
+      >
+        <Input ref={nameRef} value={name ?? ""} onChange={(e) => setName(e.target.value)} onPressEnter={save} maxLength={60} />
+        <Typography.Text style={{ display: "block", fontSize: 12, color: clash ? "#d4a72c" : MUTED, marginTop: 8 }}>
+          {clash ? `Replaces the saved “${clash.name}”. ` : ""}
+          Keeps its rules, {rotation ? "universe" : "watchlist"}, capital and test results. Pick it later in a new bot's saved setups
+          {rotation ? "" : ", or in a running dip bot's Edit to switch that bot to it"}.
+        </Typography.Text>
+      </Modal>
+    </div>
+  );
+}
+
 /** "Tested setup": opens the setup a bot was started from. Nothing for a bot that wasn't. compact: the bot table's. */
 export function SetupButton({ bot, compact = false }: { bot: Bot; compact?: boolean }) {
   const [open, setOpen] = useState(false);
@@ -211,7 +284,7 @@ export function SetupButton({ bot, compact = false }: { bot: Bot; compact?: bool
         title={<><ExperimentOutlined /> {setup.name}</>}
         open={open}
         onCancel={() => setOpen(false)}
-        footer={<Button onClick={() => setOpen(false)}>Close</Button>}
+        footer={<SetupFooter bot={bot} setup={setup} close={() => setOpen(false)} />}
         width={760}
         destroyOnClose
       >

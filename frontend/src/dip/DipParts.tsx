@@ -1,10 +1,10 @@
 // The parts of a bot's page that differ for a dip buyer: what it holds (with each holding's target and stop), its
 // watchlist (changed while it runs), its rules (the news switch right there), and its signals.
 
-import { DeleteOutlined, PlusOutlined, StopOutlined, UndoOutlined } from "@ant-design/icons";
+import { DeleteOutlined, ExperimentOutlined, PlusOutlined, StopOutlined, UndoOutlined } from "@ant-design/icons";
 import {
-  Alert, App as AntApp, Button, Card, Col, Descriptions, Form, Input, InputNumber, Modal, Pagination, Progress, Row, Select, Space, Switch,
-  Table, Tag, Tooltip,
+  Alert, App as AntApp, Button, Card, Checkbox, Col, Descriptions, Form, Input, InputNumber, Modal, Pagination, Progress, Row, Select, Space,
+  Switch, Table, Tag, Tooltip,
 } from "antd";
 import { useEffect, useRef, useState } from "react";
 import { BOT_GROUPS, symbolOptions } from "../symbols";
@@ -16,7 +16,8 @@ import PresetPicker from "./PresetPicker";
 import RulesFields, { type RulesForm, fromRulesForm, toRulesForm } from "./RulesFields";
 import { SignalLine } from "./SignalBell";
 import {
-  DEFAULT_PRICE_TIERS, type DipPresetConfig, type DipRules, type DipSignal, INTERVALS, type WatchItem, fallText, pickRules, sellText,
+  DEFAULT_PRICE_TIERS, type DipBotUpdate, type DipPreset, type DipPresetConfig, type DipRules, type DipSignal, INTERVALS, type WatchItem,
+  fallText, pickRules, sellText,
 } from "./types";
 
 const MUTED = "#8b98b5";
@@ -356,11 +357,16 @@ interface EditValues extends RulesForm {
   max_drawdown_pct: number;
 }
 
-/** Change a dip bot's rules while it runs (from the next check on; held positions keep their target and stop). */
+/** Change a dip bot's rules while it runs (from the next check on; held positions keep their target and stop). A saved
+ *  setup fills in its rules, and can switch the bot to its watchlist and to the tested setup it was saved from too. */
 export function DipEditForm({ open, bot, onCancel, onSaved }: { open: boolean; bot: Bot; onCancel: () => void; onSaved: () => void }) {
   const [form] = Form.useForm<EditValues>();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const confirm = useConfirm();
+  const [switchTo, setSwitchTo] = useState<DipPreset | null>(null); // the saved setup picked
+  const [takeList, setTakeList] = useState(true);
+  const [takeTest, setTakeTest] = useState(true);
   // Load values only when the modal opens: the page re-polls the bot every 15s (see BotForm)
   const botRef = useRef(bot);
   botRef.current = bot;
@@ -375,41 +381,103 @@ export function DipEditForm({ open, bot, onCancel, onSaved }: { open: boolean; b
         max_drawdown_pct: +(b.max_drawdown_pct * 100).toFixed(4),
       });
       setError(null);
+      setSwitchTo(null);
     }
   }, [open, form]);
 
+  // What else the picked saved setup would switch: the watchlist (a held symbol left out still exits at its target or
+  // stop), and the tested setup it was saved from (the Tested setup popup's results)
+  const watching = (bot.watchlist ?? []).map((w) => w.symbol);
+  const target = switchTo?.config.symbols ?? [];
+  const added = target.filter((s) => !watching.includes(s));
+  const removed = watching.filter((s) => !target.includes(s));
+  const stillHeld = removed.filter((s) => bot.holdings.some((h) => h.symbol === s));
+  const listDiffers = added.length > 0 || removed.length > 0;
+  const listChange = [added.length > 0 && `adds ${added.join(" ")}`, removed.length > 0 && `leaves out ${removed.join(" ")}`]
+    .filter(Boolean).join(" · ") + (stillHeld.length ? ` (held ${stillHeld.join(" ")}: still sold at the target or stop)` : "");
+  const test = switchTo?.setup;
+  const testDiffers = !!test && (bot.setup?.test_id !== test.test_id || bot.setup?.code !== test.code);
+  const newList = !!switchTo && listDiffers && takeList;
+  const newTest = !!switchTo && testDiffers && takeTest;
+
   const submit = async () => {
     const v = await form.validateFields();
-    setSaving(true);
-    setError(null);
-    try {
-      await tradingApi.updateDip(bot.id, {
-        ...fromRulesForm(v),
-        name: v.name.trim(),
-        slippage_pct: +(v.slippage_pct / 100).toFixed(6),
-        fee_pct: +(v.fee_pct / 100).toFixed(6),
-        max_drawdown_pct: +(v.max_drawdown_pct / 100).toFixed(6),
-      });
-      onSaved();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(false);
-    }
+    const body: DipBotUpdate = {
+      ...fromRulesForm(v),
+      name: v.name.trim(),
+      slippage_pct: +(v.slippage_pct / 100).toFixed(6),
+      fee_pct: +(v.fee_pct / 100).toFixed(6),
+      max_drawdown_pct: +(v.max_drawdown_pct / 100).toFixed(6),
+      ...(newList && { symbols: target }),
+      ...(newTest && switchTo && { setup_preset_id: switchTo.id }),
+    };
+    const run = async () => {
+      setSaving(true);
+      setError(null);
+      try {
+        await tradingApi.updateDip(bot.id, body);
+        onSaved();
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setSaving(false);
+      }
+    };
+    if (!bot.live || !(newList || newTest) || !switchTo) return run();
+    confirm({
+      title: `Switch this real-money bot to “${switchTo.name}”?`,
+      content: (
+        <ul style={{ margin: 0, paddingLeft: 18 }}>
+          <li>The rules in the form, from the next check (what it holds keeps the target and stop it was bought with)</li>
+          {newList && <li>Watchlist: {listChange}</li>}
+          {newTest && test && <li>Tested setup: {test.name.startsWith(test.code) ? test.name : `${test.code} ${test.name}`}</li>}
+        </ul>
+      ),
+      okText: "Switch",
+      danger: true,
+      bot,
+      onOk: run,
+    });
   };
 
   const pctInput = (max: number, step: number) => <InputNumber min={0} max={max} step={step} addonAfter="%" style={{ width: "100%" }} />;
-  const load = (c: DipPresetConfig) => {
+  const load = (c: DipPresetConfig, saved: DipPreset) => {
     form.setFieldsValue(toRulesForm(pickRules(c)));
     void form.validateFields(["lookback"]).catch(() => undefined); // a backtest's window may be too long for a bot: say so now
+    setSwitchTo(saved);
+    setTakeList(true);
+    setTakeTest(true);
   };
   return (
     <Modal title="Edit dip buyer" open={open} onCancel={onCancel} onOk={submit} okText="Save" okButtonProps={{ loading: saving }} width={640} destroyOnClose>
       <Form<EditValues> form={form} layout="vertical" requiredMark={false}>
         <Form.Item name="name" label="Name" rules={[{ required: true, whitespace: true }]}><Input maxLength={80} /></Form.Item>
-        <Form.Item label="Rules from a saved setup" tooltip="Fills in its rules only: the watchlist stays as it is (change it on the Watchlist card)">
-          <PresetPicker onLoad={load} />
+        <Form.Item
+          label="From a saved setup"
+          tooltip="Fills in its rules. Where its watchlist or its tested setup differ from the bot's, you can switch those too (ticked below)"
+          style={switchTo && (listDiffers || testDiffers) ? { marginBottom: 8 } : undefined}
+        >
+          <PresetPicker onLoad={load} onClear={() => setSwitchTo(null)} />
         </Form.Item>
+        {switchTo && (listDiffers || testDiffers) && (
+          <div style={{ border: "1px solid #303030", borderRadius: 6, padding: "8px 12px", marginBottom: 16 }}>
+            <div style={{ color: MUTED, fontSize: 12, marginBottom: 4 }}>Switch to “{switchTo.name}” besides its rules:</div>
+            {listDiffers && (
+              <Checkbox checked={takeList} onChange={(e) => setTakeList(e.target.checked)} style={{ display: "flex", marginBottom: 4 }}>
+                Its watchlist ({target.length} symbol{target.length === 1 ? "" : "s"})
+                <div style={{ color: MUTED, fontSize: 12 }}>{listChange}</div>
+              </Checkbox>
+            )}
+            {testDiffers && test && (
+              <Checkbox checked={takeTest} onChange={(e) => setTakeTest(e.target.checked)} style={{ display: "flex" }}>
+                Its tested setup <Tag icon={<ExperimentOutlined />} color="geekblue" style={{ marginInlineEnd: 0 }}>{test.code}</Tag>
+                <div style={{ color: MUTED, fontSize: 12 }}>
+                  The Tested setup popup shows its results{bot.setup ? ` instead of ${bot.setup.code}'s` : ""}
+                </div>
+              </Checkbox>
+            )}
+          </div>
+        )}
         <RulesFields forBot />
         <Row gutter={12}>
           <Col span={8}><Form.Item name="max_drawdown_pct" label="Drawdown breaker">{pctInput(100, 5)}</Form.Item></Col>

@@ -31,7 +31,7 @@ export interface StrategyKit<C extends { symbols: string[] }> {
   complete: (c: C) => C;
   presets: {
     list: () => Promise<SavedSetup<C>[]>;
-    save: (name: string, config: C) => Promise<SavedSetup<C>>;
+    save: (name: string, config: C, testId?: number) => Promise<SavedSetup<C>>; // testId: saved from that test
     remove: (id: number) => Promise<void>;
   };
   /** What a saved setup keeps, in words: "the rules, the watchlist, ..." */

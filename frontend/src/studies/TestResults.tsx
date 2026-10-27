@@ -360,7 +360,7 @@ export default function TestResults<C extends { symbols: string[] }>({ kit, onLo
     if (!saving) return;
     setBusy(true);
     try {
-      await kit.presets.save(saving.name.trim(), kit.complete(saving.test.config));
+      await kit.presets.save(saving.name.trim(), kit.complete(saving.test.config), saving.test.id);
       message.success(`Saved as “${saving.name.trim()}”: pick it under Saved setups`);
       setSaving(null);
       loadPresets();

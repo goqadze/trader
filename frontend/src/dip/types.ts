@@ -225,9 +225,12 @@ export interface DipBotCreate extends DipRules {
   slippage_pct: number;
   max_drawdown_pct: number;
   setup_test_id?: number; // started from this Test results test: the bot keeps a copy of it
+  setup_preset_id?: number; // or from a saved setup that keeps one (SavedSetup.setup)
 }
 
-export type DipBotUpdate = Partial<DipRules & Pick<DipBotCreate, "name" | "fee_pct" | "slippage_pct" | "max_drawdown_pct">>;
+/** A running dip bot's changes. symbols + setup_preset_id: switching to a saved setup, its whole watchlist (a held symbol
+ *  left out still exits at its target or stop) and the tested setup it was saved from. */
+export type DipBotUpdate = Partial<DipRules & Pick<DipBotCreate, "name" | "fee_pct" | "slippage_pct" | "max_drawdown_pct" | "symbols" | "setup_preset_id">>;
 
 /** One symbol on a dip bot's watchlist, as of its last check. */
 export interface WatchItem {

@@ -4,6 +4,7 @@ import { ROTATION_KIT } from "../rotation/kit";
 import type { RotationPresetConfig } from "../rotation/types";
 import UniverseField, { SECTORS } from "../rotation/UniverseField";
 import SetupPicker from "../studies/SetupPicker";
+import type { SavedSetup } from "../studies/types";
 import { FromSetupNote } from "./setup";
 import type { BrokerInfo, RotationBotCreate } from "./types";
 
@@ -68,6 +69,7 @@ interface Props {
   initial: RotationBotInitial;
   fromSetup?: string | null; // the tested setup it starts from (Test results): the bot keeps a copy of it
   onUnlink?: () => void; // the bot won't keep it (also when a saved setup replaces its rules)
+  onLink?: (saved: SavedSetup<RotationPresetConfig>) => void; // a saved setup picked that keeps a tested setup: the bot keeps that one
   brokers: BrokerInfo[];
   onCancel: () => void;
   onSubmit: (body: RotationBotCreate) => Promise<void>;
@@ -75,7 +77,7 @@ interface Props {
 
 /** New momentum rotation bot: the rotation's rules (prefilled from a rotation backtest), the broker and the capital. A
  * real-money broker (only listed as usable once the server allows live trading) needs the "real money" box ticked. */
-export default function RotationBotForm({ open, initial, fromSetup, onUnlink, brokers, onCancel, onSubmit }: Props) {
+export default function RotationBotForm({ open, initial, fromSetup, onUnlink, onLink, brokers, onCancel, onSubmit }: Props) {
   const [form] = Form.useForm<FormValues>();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -107,8 +109,9 @@ export default function RotationBotForm({ open, initial, fromSetup, onUnlink, br
   };
 
   /** A saved setup: its rules, universe and capital (the broker, name and safety settings stay). */
-  const load = (c: RotationPresetConfig) => {
-    onUnlink?.(); // other rules now: not the tested setup's
+  const load = (c: RotationPresetConfig, saved: SavedSetup<RotationPresetConfig>) => {
+    if (saved.setup && onLink) onLink(saved); // its tested setup, results and all
+    else onUnlink?.(); // other rules now: not the tested setup's
     form.setFieldsValue({
       universe: c.symbols, top_n: c.top_n, lookback_months: c.lookback_months, skip_month: c.skip_months > 0, abs_filter: c.abs_filter,
       fractional: c.fractional, ...(c.initial_cash && { allocated_cash: c.initial_cash }),
@@ -150,7 +153,7 @@ export default function RotationBotForm({ open, initial, fromSetup, onUnlink, br
         </Form.Item>
 
         <Divider orientation="left" plain>Rotation</Divider>
-        <Form.Item label="Saved setups" tooltip="Fill the rules, the universe and the capital from a setup saved on the Momentum Rotation page">
+        <Form.Item label="Saved setups" tooltip="Fill the rules, the universe and the capital from a setup saved on the Momentum Rotation page, in Test results or from a bot's Tested setup. One saved from a tested setup links the bot to it">
           <SetupPicker kit={ROTATION_KIT} onLoad={load} />
         </Form.Item>
         <UniverseField name="universe" noCrypto />

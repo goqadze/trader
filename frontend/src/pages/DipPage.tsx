@@ -76,7 +76,8 @@ export default function DipPage() {
   const [tab, setTab] = useState(savedTab);
   const [formOpen, setFormOpen] = useState(false);
   const [initial, setInitial] = useState<DipBotInitial>({});
-  const [fromTest, setFromTest] = useState<{ id: number; name: string } | null>(null); // the form's tested setup, if any
+  // The form's tested setup, if any: a Test results test, or (preset) the saved setup that keeps one
+  const [fromTest, setFromTest] = useState<{ id: number; name: string; preset?: boolean } | null>(null);
   const [loadRequest, setLoadRequest] = useState<{ config: DipPresetConfig; seq: number } | null>(null);
   const bots = usePolling(() => tradingApi.listBots(true), 15_000); // archived too: their old signals keep their names
   const status = usePolling(tradingApi.status, 60_000);
@@ -135,7 +136,8 @@ export default function DipPage() {
   };
 
   const create = async (body: DipBotCreate) => {
-    const bot = await tradingApi.createDipBot(fromTest ? { ...body, setup_test_id: fromTest.id } : body);
+    const link = fromTest && (fromTest.preset ? { setup_preset_id: fromTest.id } : { setup_test_id: fromTest.id });
+    const bot = await tradingApi.createDipBot({ ...body, ...link });
     message.success(`Bot created: ${bot.name}`);
     setFormOpen(false);
     navigate(`/trading/${bot.id}`);
@@ -229,6 +231,7 @@ export default function DipPage() {
         initial={initial}
         fromSetup={fromTest?.name}
         onUnlink={() => setFromTest(null)}
+        onLink={(p) => setFromTest({ id: p.id, name: p.setup?.name ?? p.name, preset: true })}
         brokers={status.data?.brokers ?? [{ name: "paper", label: "Paper (built-in simulator)", live: false, available: true, reason: "" }]}
         onCancel={() => setFormOpen(false)}
         onSubmit={create}

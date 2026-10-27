@@ -287,6 +287,10 @@ class DipPreset(Base):
     # "dip" or "rotation" (schemas.StudyStrategy). server_default: the setups saved before were all dip setups
     strategy: Mapped[str] = mapped_column(String(16), default="dip", server_default="dip")
     config: Mapped[dict] = mapped_column(JSON)
+    # The tested setup it was saved from (a bot's Tested setup popup, Test results): a copy of that test's name, study,
+    # rules and results, like Bot.setup but without started_at. A bot started from it or switched to it gets this copy,
+    # so its Tested setup popup works even after the study is gone. NULL = saved from a form, not from a test
+    setup: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 

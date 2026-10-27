@@ -57,6 +57,13 @@ class BotCreate(StrategyParams):
         return v
 
 
+def one_setup(body):
+    """A new bot keeps one tested setup: from Test results or from a saved setup, not both."""
+    if body.setup_test_id and body.setup_preset_id:
+        raise ValueError("start from a tested setup or a saved setup, not both")
+    return body
+
+
 def _tickers(v: list[str]) -> list[str]:
     """Upper-cased tickers, each once, in the given order; crypto and anything that isn't a ticker is refused."""
     out = list(dict.fromkeys(s.strip().upper() for s in v if s.strip()))
@@ -165,6 +172,7 @@ class DipBotCreate(DipRules):
     slippage_pct: float = Field(0.0005, ge=0, le=0.05)
     max_drawdown_pct: float = Field(0.2, ge=0, le=1)
     setup_test_id: int | None = Field(None, ge=1)  # started from this Test results test: the bot keeps a copy of it
+    setup_preset_id: int | None = Field(None, ge=1)  # or from a saved setup that keeps one (DipPreset.setup)
 
     @field_validator("symbols")
     @classmethod
@@ -173,6 +181,10 @@ class DipBotCreate(DipRules):
         if not out:
             raise ValueError("pick at least one symbol")
         return out
+
+    @model_validator(mode="after")
+    def _one_setup(self):
+        return one_setup(self)
 
 
 class CapitalAdd(BaseModel):
@@ -244,11 +256,26 @@ class DipBotUpdate(BaseModel):
     fee_pct: float | None = Field(None, ge=0, le=0.05)
     slippage_pct: float | None = Field(None, ge=0, le=0.05)
     max_drawdown_pct: float | None = Field(None, ge=0, le=1)
+    # Switching to a saved setup: the whole watchlist becomes these symbols (one left out that the bot holds still exits
+    # at its target or stop) ...
+    symbols: list[str] | None = Field(None, min_length=1, max_length=60)
+    # ... and the bot's tested setup becomes the one this saved setup was saved from (DipPreset.setup)
+    setup_preset_id: int | None = Field(None, ge=1)
 
     @field_validator("price_tiers")
     @classmethod
     def _tiers(cls, v: list[PriceTier] | None) -> list[PriceTier] | None:
         return check_tiers(v)
+
+    @field_validator("symbols")
+    @classmethod
+    def _clean(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        out = _tickers(v)
+        if not out:
+            raise ValueError("pick at least one symbol")
+        return out
 
 
 class WatchSymbols(BaseModel):
@@ -333,6 +360,7 @@ class RotationPresetIn(BaseModel):
 
     name: str = Field(..., max_length=60)
     config: RotationPresetConfig
+    test_id: int | None = Field(None, ge=1)  # saved from this Test results test: keeps a copy of it (DipPreset.setup)
 
     @field_validator("name")
     @classmethod
@@ -348,6 +376,21 @@ class DipPresetIn(BaseModel):
 
     name: str = Field(..., max_length=60)
     config: DipPresetConfig
+    test_id: int | None = Field(None, ge=1)  # saved from this Test results test: keeps a copy of it (DipPreset.setup)
+
+    @field_validator("name")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = " ".join(v.split())
+        if not v:
+            raise ValueError("give it a name")
+        return v
+
+
+class BotSetupSave(BaseModel):
+    """Save a bot's tested setup under a name (POST /bots/{id}/setup/save): a saved setup like the backtest form's."""
+
+    name: str = Field(..., max_length=60)
 
     @field_validator("name")
     @classmethod
@@ -365,6 +408,7 @@ class DipPresetOut(BaseModel):
     name: str
     strategy: str = "dip"
     config: dict  # as saved: DipPresetConfig or RotationPresetConfig (the dashboard fills any rule added since with its default)
+    setup: "BotSetup | None" = None  # the tested setup it was saved from (no started_at); None = saved from a form
     created_at: datetime
     updated_at: datetime
 
@@ -622,6 +666,11 @@ class RotationBotCreate(BaseModel):
     slippage_pct: float = Field(0.0005, ge=0, le=0.05)
     max_drawdown_pct: float = Field(0.2, ge=0, le=1)
     setup_test_id: int | None = Field(None, ge=1)  # started from this Test results test: the bot keeps a copy of it
+    setup_preset_id: int | None = Field(None, ge=1)  # or from a saved setup that keeps one (DipPreset.setup)
+
+    @model_validator(mode="after")
+    def _one_setup(self):
+        return one_setup(self)
 
     @field_validator("universe")
     @classmethod
@@ -717,7 +766,11 @@ class BotSetup(BaseModel):
     periods: dict[str, tuple[date, date]]  # the study's windows, in the grid's order
     results: dict[str, dict]  # window -> return, buy & hold, worst drop, trades, win rate (as the grid has them)
     config: dict  # the tested rules (schemas.DipPresetConfig / RotationPresetConfig as JSON)
-    started_at: datetime  # when the bot was made from it
+    started_at: datetime | None = None  # when the bot was made from it or switched to it (None: a saved setup's copy)
+    switched: bool = False  # a running bot was switched to it (Edit, a saved setup), not made from it
+
+
+DipPresetOut.model_rebuild()  # its setup is a BotSetup, which comes after it in this file
 
 
 class BotOut(StrategyParams):

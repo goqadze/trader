@@ -1588,6 +1588,123 @@ def test_a_tested_setup_starts_only_a_bot_of_its_own_kind(api):
     assert (bot["setup"]["code"], bot["setup"]["strategy"], bot["setup"]["config"]["top_n"]) == ("M1", "rotation", 2)
     assert "Started from the tested setup M1 ETFs 4%/5d (Rotation sweep)." in c.get(f"/bots/{bot['id']}/events").text
 
+    # Saved from the bot, it is a rotation setup, and starts only a rotation bot
+    saved = c.post(f"/bots/{bot['id']}/setup/save", json={"name": "Momentum M1"}).json()
+    assert (saved["strategy"], saved["config"]["top_n"], saved["setup"]["code"]) == ("rotation", 2, "M1")
+    assert [p["name"] for p in c.get("/rotation/presets").json()] == ["Momentum M1"] and c.get("/dip/presets").json() == []
+    r = c.post("/bots/rotation", json={"universe": ["A", "B", "C"], "top_n": 2, "setup_preset_id": saved["id"]})
+    assert r.status_code == 201 and r.json()["setup"]["code"] == "M1"
+    r = c.post("/bots/dip", json={**BODY, "setup_preset_id": saved["id"]})
+    assert r.status_code == 422 and "is a momentum rotation setup, not a dip buyer one" in r.text
+
+
+def _tested_bot(c, **kw) -> tuple[dict, dict]:
+    """A study with one test (T3), and a dip bot started from it: (the test, the bot)."""
+    study = c.put("/dip/studies", json=STUDY).json()
+    results = {"practice": {"total_return_pct": 3.2, "num_trades": 12}, "exam": {"total_return_pct": 4.0}}
+    c.post(f"/dip/studies/{study['id']}/tests", json=[one_setup("T3", 4.0, results=results, **kw)])
+    test = c.get(f"/dip/studies/{study['id']}/tests").json()["items"][0]
+    r = c.post("/bots/dip", json={**BODY, "setup_test_id": test["id"]})
+    assert r.status_code == 201, r.text
+    return test, r.json()
+
+
+def test_a_bots_tested_setup_is_saved_with_its_results_and_starts_a_new_bot_from_it(api):
+    c, _, _ = api
+    test, bot = _tested_bot(c)
+    c.put("/dip/studies", json={**STUDY, "description": "again"})  # the study replaced: the bot's copy is what's saved
+
+    r = c.post(f"/bots/{bot['id']}/setup/save", json={"name": "  Best  ETFs "})
+    assert r.status_code == 200, r.text
+    saved = r.json()
+    assert (saved["name"], saved["strategy"], saved["config"]["symbols"], saved["config"]["stop_pct"]) == ("Best ETFs", "dip", ["XLK", "XLF"], 0.1)
+    assert saved["config"]["rebound"] is True  # a rule the test didn't name gets its default, as in the forms
+    setup = saved["setup"]
+    assert (setup["test_id"], setup["code"], setup["study"], setup["started_at"]) == (test["id"], "T3", "Sweep 1", None)
+    assert setup["results"]["practice"] == {"total_return_pct": 3.2, "num_trades": 12}
+    assert [(p["name"], p["setup"]["code"]) for p in c.get("/dip/presets").json()] == [("Best ETFs", "T3")]
+
+    # Later: a new bot from the saved setup keeps that tested setup, like one started from Test results
+    r = c.post("/bots/dip", json={**BODY, "setup_preset_id": saved["id"]})
+    assert r.status_code == 201, r.text
+    new = r.json()
+    assert (new["setup"]["code"], new["setup"]["name"], new["setup"]["switched"]) == ("T3", "T3 ETFs 4%/5d", False)
+    assert new["setup"]["started_at"] and "Started from the tested setup T3 ETFs 4%/5d (Sweep 1)." in c.get(f"/bots/{new['id']}/events").text
+
+    # Refused: a bot not from a test, a missing bot or name, both links at once, a saved setup without a test
+    plain = c.post("/bots/dip", json=BODY).json()
+    assert c.post(f"/bots/{plain['id']}/setup/save", json={"name": "x"}).status_code == 404
+    assert c.post("/bots/999/setup/save", json={"name": "x"}).status_code == 404
+    assert c.post(f"/bots/{bot['id']}/setup/save", json={"name": " "}).status_code == 422
+    r = c.post("/bots/dip", json={**BODY, "setup_preset_id": saved["id"], "setup_test_id": test["id"]})
+    assert r.status_code == 422 and "not both" in r.text
+    form = c.post("/dip/presets", json={"name": "From a form", "config": SETUP}).json()
+    assert form["setup"] is None
+    r = c.post("/bots/dip", json={**BODY, "setup_preset_id": form["id"]})
+    assert r.status_code == 422 and "wasn't saved from a tested setup" in r.text
+    r = c.post("/bots/rotation", json={"universe": ["A", "B", "C"], "top_n": 2, "setup_preset_id": saved["id"]})
+    assert r.status_code == 422 and "is a dip buyer setup, not a momentum rotation one" in r.text
+
+    # Saved again from a form under its name, it is that form's setup now: no test results of its own
+    again = c.post("/dip/presets", json={"name": "best etfs", "config": SETUP}).json()
+    assert again["id"] == saved["id"] and again["setup"] is None
+
+
+def test_test_results_saves_a_setup_with_its_test(api):
+    c, _, _ = api
+    test, _ = _tested_bot(c)
+    r = c.post("/dip/presets", json={"name": "T3", "config": SETUP, "test_id": test["id"]})
+    assert r.status_code == 200, r.text
+    assert (r.json()["setup"]["code"], r.json()["setup"]["results"]["exam"]) == ("T3", {"total_return_pct": 4.0})
+    assert c.post("/dip/presets", json={"name": "x", "config": SETUP, "test_id": 999}).status_code == 422
+    r = c.post("/rotation/presets", json={"name": "y", "test_id": test["id"], "config": {
+        "symbols": ["A", "B", "C"], "top_n": 2, "lookback_months": 12, "skip_months": 1, "abs_filter": True, "fractional": True}})
+    assert r.status_code == 422 and "is a dip setup, not a rotation one" in r.text
+
+
+def test_a_running_dip_bot_switches_to_a_saved_setup_its_rules_watchlist_and_tested_setup(api, monkeypatch):
+    c, clock, broker = api
+    _, tested = _tested_bot(c)
+    saved = c.post(f"/bots/{tested['id']}/setup/save", json={"name": "Best ETFs"}).json()
+    bot = c.post("/bots/dip", json=BODY).json()  # watches A and B, not from a test
+    clock["t"] = broker.now = OPEN
+    assert c.post(f"/bots/{bot['id']}/run").json()["action"] == "BUY"  # holds A
+    clock["t"] = broker.now = CLOSED
+    switch = {"stop_pct": 0.1, "reenable_days": 20, "symbols": ["b", "c"], "setup_preset_id": saved["id"]}
+
+    # Anything refused leaves the bot as it was: a symbol without prices, one another bot keeps to itself
+    r = c.patch(f"/bots/{bot['id']}/dip", json={**switch, "symbols": ["B", "ZZZZ"]})
+    assert r.status_code == 422 and "no prices for ZZZZ" in r.text
+    monkeypatch.setattr(main, "catalog", lambda: [{**b, "available": True} for b in real_catalog()])
+    other = c.post("/bots/dip", json={**BODY, "symbols": ["A"], "broker": "alpaca-paper"}).json()
+    single = c.post("/bots", json={"symbol": "C", "broker": "alpaca-paper"}).json()
+    r = c.patch(f"/bots/{other['id']}/dip", json={**switch, "symbols": ["A", "C"]})
+    assert r.status_code == 409 and "already trades C" in r.text
+    assert c.post(f"/bots/{single['id']}/archive").status_code == 200
+    after = c.get(f"/bots/{bot['id']}").json()
+    assert (after["stop_pct"], after["setup"], [w["symbol"] for w in after["watchlist"]]) == (0.05, None, ["A", "B"])
+
+    r = c.patch(f"/bots/{bot['id']}/dip", json=switch)
+    assert r.status_code == 200, r.text
+    now = r.json()
+    assert (now["stop_pct"], now["reenable_days"], [w["symbol"] for w in now["watchlist"]]) == (0.1, 20, ["B", "C"])
+    held = now["holdings"][0]
+    assert (held["symbol"], held["on_watchlist"], held["stop_price"]) == ("A", False, 97.85)  # still exits as it was bought
+    setup = now["setup"]
+    assert (setup["code"], setup["switched"], setup["started_at"] is not None) == ("T3", True, True)
+    assert now["universe"] == ["A", "B"]  # the buy & hold benchmark keeps the watchlist it started with
+    events = [e["message"] for e in c.get(f"/bots/{bot['id']}/events").json()]
+    assert events[:3] == ["Switched to the saved setup “Best ETFs”: its tested setup is now T3 ETFs 4%/5d (Sweep 1)",
+                          "Watchlist: added C; removed A (still held: A exits at the target or stop)",
+                          "Changed: stop_pct 0.05 → 0.1, reenable_days 0 → 20"]
+
+    # The same again changes nothing and logs nothing; the rules alone leave the watchlist and tested setup alone
+    c.patch(f"/bots/{bot['id']}/dip", json=switch)
+    r = c.patch(f"/bots/{bot['id']}/dip", json={"stop_pct": 0.12})
+    assert ([w["symbol"] for w in r.json()["watchlist"]], r.json()["setup"]["code"]) == (["B", "C"], "T3")
+    assert len(c.get(f"/bots/{bot['id']}/events").json()) == len(events) + 1
+    assert c.patch(f"/bots/{bot['id']}/dip", json={"symbols": []}).status_code == 422
+
 
 def test_a_setups_all_is_its_windows_back_to_back_where_the_grid_has_that_column():
     periods = {"practice": ["2025-04-09", "2026-01-08"], "exam": ["2026-01-09", "2026-10-09"],

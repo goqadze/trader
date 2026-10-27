@@ -52,6 +52,7 @@ export interface RotationBotCreate {
   slippage_pct: number;
   max_drawdown_pct: number;
   setup_test_id?: number; // started from this Test results test: the bot keeps a copy of it
+  setup_preset_id?: number; // or from a saved setup that keeps one (SavedSetup.setup)
 }
 
 /** A rotation bot changes only these: its universe and rules are fixed for its life. */
@@ -94,7 +95,8 @@ export interface BotSetup {
   periods: Record<string, [string, string]>; // the study's windows, in the grid's order
   results: Record<string, SetupNumbers>; // window -> how it did
   config: Record<string, unknown>; // the tested rules (a DipPresetConfig or RotationPresetConfig)
-  started_at: string;
+  started_at: string; // when the bot was made from it, or switched to it
+  switched?: boolean; // a running bot was switched to it (Edit, a saved setup), not made from it
 }
 
 /** A window's numbers a bot keeps from its tested setup (main.SETUP_NUMBERS): percents, trades as counts. */

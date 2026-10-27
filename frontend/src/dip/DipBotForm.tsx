@@ -5,7 +5,7 @@ import { FromSetupNote } from "../trading/setup";
 import type { BrokerInfo } from "../trading/types";
 import PresetPicker from "./PresetPicker";
 import RulesFields, { type RulesForm, fromRulesForm, toRulesForm } from "./RulesFields";
-import { DEFAULT_RULES, type DipBotCreate, type DipPresetConfig, pickRules } from "./types";
+import { DEFAULT_RULES, type DipBotCreate, type DipPreset, type DipPresetConfig, pickRules } from "./types";
 
 const MUTED = "#8b98b5";
 const COSTS = ["fee_pct", "slippage_pct", "max_drawdown_pct"] as const;
@@ -54,6 +54,7 @@ interface Props {
   initial: DipBotInitial;
   fromSetup?: string | null; // the tested setup it starts from (Test results): the bot keeps a copy of it
   onUnlink?: () => void; // the bot won't keep it (also when a saved setup replaces its rules)
+  onLink?: (saved: DipPreset) => void; // a saved setup picked that keeps a tested setup: the bot keeps that one
   brokers: BrokerInfo[];
   onCancel: () => void;
   onSubmit: (body: DipBotCreate) => Promise<void>;
@@ -61,7 +62,7 @@ interface Props {
 
 /** New dip buyer: the watchlist, the rules (prefilled from a backtest), the broker and the capital. A real-money broker
  * (only listed as usable once the server allows live trading) needs the "real money" box ticked. */
-export default function DipBotForm({ open, initial, fromSetup, onUnlink, brokers, onCancel, onSubmit }: Props) {
+export default function DipBotForm({ open, initial, fromSetup, onUnlink, onLink, brokers, onCancel, onSubmit }: Props) {
   const [form] = Form.useForm<FormValues>();
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -94,8 +95,9 @@ export default function DipBotForm({ open, initial, fromSetup, onUnlink, brokers
 
   const pctInput = (min: number, max: number, step: number) => <InputNumber min={min} max={max} step={step} addonAfter="%" style={{ width: "100%" }} />;
 
-  const load = (c: DipPresetConfig) => {
-    onUnlink?.(); // other rules now: not the tested setup's
+  const load = (c: DipPresetConfig, saved: DipPreset) => {
+    if (saved.setup && onLink) onLink(saved); // its tested setup, results and all
+    else onUnlink?.(); // other rules now: not the tested setup's
     form.setFieldsValue({ ...toRulesForm(pickRules(c)), symbols: c.symbols, ...(c.initial_cash && { allocated_cash: c.initial_cash }) });
     void form.validateFields(["lookback"]).catch(() => undefined); // a backtest's window may be too long for a bot: say so now
   };
@@ -109,7 +111,7 @@ export default function DipBotForm({ open, initial, fromSetup, onUnlink, brokers
       </Typography.Paragraph>
       {fromSetup && <FromSetupNote name={fromSetup} onUnlink={onUnlink} />}
       <Form<FormValues> form={form} layout="vertical" requiredMark={false}>
-        <Form.Item label="Start from a saved setup" tooltip="Fills in its rules, watchlist and capital (save setups on the Backtest tab)">
+        <Form.Item label="Start from a saved setup" tooltip="Fills in its rules, watchlist and capital (save setups on the Backtest tab, in Test results or from a bot's Tested setup). One saved from a tested setup links the bot to it">
           <PresetPicker onLoad={load} />
         </Form.Item>
         <Row gutter={12}>

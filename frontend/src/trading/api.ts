@@ -62,12 +62,16 @@ export const tradingApi = {
   signals: (afterId = 0, limit = 100) => request<DipSignal[]>("GET", `/signals?after_id=${afterId}&limit=${limit}`),
   // Saved dip buyer setups: saving under a name that exists (ignoring case) replaces it
   dipPresets: () => request<DipPreset[]>("GET", "/dip/presets"),
-  saveDipPreset: (name: string, config: DipPresetConfig) => request<DipPreset>("POST", "/dip/presets", { name, config }),
+  // testId: saved from that Test results test, so it keeps a copy of it (its results: a bot started from it shows them)
+  saveDipPreset: (name: string, config: DipPresetConfig, testId?: number) =>
+    request<DipPreset>("POST", "/dip/presets", { name, config, test_id: testId }),
   deleteDipPreset: (id: number) => request<void>("DELETE", `/dip/presets/${id}`),
   // Saved momentum rotation setups (the same names can't be a dip buyer's)
   rotationPresets: () => request<SavedSetup<RotationPresetConfig>[]>("GET", "/rotation/presets"),
-  saveRotationPreset: (name: string, config: RotationPresetConfig) =>
-    request<SavedSetup<RotationPresetConfig>>("POST", "/rotation/presets", { name, config }),
+  saveRotationPreset: (name: string, config: RotationPresetConfig, testId?: number) =>
+    request<SavedSetup<RotationPresetConfig>>("POST", "/rotation/presets", { name, config, test_id: testId }),
+  /** A bot's tested setup (its rules and test results) as a saved setup of its kind: a name that exists is replaced. */
+  saveBotSetup: (id: number, name: string) => request<SavedSetup<Record<string, unknown>>>("POST", `/bots/${id}/setup/save`, { name }),
   deleteRotationPreset: (id: number) => request<void>("DELETE", `/rotation/presets/${id}`),
   // Test batches (parameter sweeps) of a strategy, and each setup they tested (C = the strategy's setup)
   studies: (strategy: StudyStrategy) => request<Study[]>("GET", `/dip/studies?strategy=${strategy}`),
