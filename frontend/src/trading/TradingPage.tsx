@@ -127,6 +127,20 @@ const columns: ColumnsType<Bot> = [
     ),
   },
   {
+    // Return minus B&H, in points: the bots that beat holding what they trade by the most on top (no buy & hold yet:
+    // —, and last either way). trading-service sorts by the same two rounded numbers
+    title: <Tooltip title="Return minus B&H, in percentage points: how far the bot is ahead of buying and holding what it trades">vs B&amp;H</Tooltip>,
+    key: "beat",
+    width: 96,
+    align: "right",
+    sorter: true,
+    sortDirections: ["descend", "ascend"],
+    render: (_, b) => {
+      const v = b.buy_hold_return_pct == null ? null : b.return_pct - b.buy_hold_return_pct;
+      return <span style={{ color: pnlColor(v) }}>{pct(v)}</span>;
+    },
+  },
+  {
     title: "Position",
     key: "pos",
     // By the open positions' gain or loss in dollars (flat or all cash: $0)
@@ -214,7 +228,7 @@ function rememberBroker(broker: string) {
   }
 }
 
-// The bot table's sort (ID, Rating, Score, All, Return or Position, by a click on the column) and page size, remembered
+// The bot table's sort (ID, Rating, Score, All, Return, vs B&H or Position, by a click on the column) and page size, remembered
 // in this browser too
 const SORT_KEY = "trading.botSort";
 const PAGE_SIZE_KEY = "trading.botPageSize";
@@ -522,7 +536,7 @@ export default function TradingPage() {
             showTotal: (n, [from, to]) => `${from}–${to} of ${n}`, size: phone ? "small" : "default",
           }}
           size="middle"
-          scroll={{ x: 1340 }}
+          scroll={{ x: 1436 }}
           onChange={(p, filters, s, { action }) => {
             if (action === "paginate") {
               if (p.pageSize && p.pageSize !== pageSize) {

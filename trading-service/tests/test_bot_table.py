@@ -77,6 +77,22 @@ def test_the_table_is_sorted_by_any_column_on_the_server(client, bots):
     assert client.get("/bots/table", params={"sort": "name"}).status_code == 422
 
 
+def test_sorted_by_how_far_the_return_beats_buy_and_hold(client, bots, session):
+    a, b, c, d, e, g = (bots[k] for k in "abcdeg")
+    # b made the most (+2%) but XOM rose 20% (18 points behind holding it); w made +5% in cash while T fell 10% (15
+    # ahead); the other bots' symbols didn't move. n has no buy & hold yet: last either way.
+    w = make_bot(session, symbol="T", cash=10_500.0, last_price=90.0).id
+    n = make_bot(session, symbol="NEW", benchmark_price=None).id
+    assert ids(client, sort="ret", order="desc")[:2] == [w, b]
+    assert ids(client, sort="beat", order="desc") == [w, g, e, a, d, c, b, n]  # ties keep the newest-first order
+    assert ids(client, sort="beat", order="asc") == [b, c, d, g, e, a, w, n]
+
+    # The page's two numbers give what it was sorted by
+    page = table(client, sort="beat", order="desc")["items"]
+    assert [round(x["return_pct"] - x["buy_hold_return_pct"], 2) for x in page[:-1]] == [15.0, 0, 0, 0, -1.0, -5.0, -18.0]
+    assert page[-1]["buy_hold_return_pct"] is None
+
+
 def test_pages_and_a_page_past_the_end(client, bots):
     a, b, c, d, e, g = (bots[k] for k in "abcdeg")
     assert ids(client, limit=2) == [g, e]

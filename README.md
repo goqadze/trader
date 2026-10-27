@@ -347,9 +347,10 @@ remembered in that browser. Only a label: how the bot trades doesn't change, and
 
 The bot table comes a page at a time (`GET /bots/table`: 25, 50, 100 or 200 rows, the size remembered in the
 browser). trading-service filters it (broker tab, Bot: dip buyer, momentum rotation or single symbol, Sectors, Show archived), sorts it (ID, Rating, Score, All, Return,
-Position; none = newest first) and sends only that page's bots in full, with what the page shows of all of them: the
+vs B&H, Position; none = newest first) and sends only that page's bots in full, with what the page shows of all of them: the
 bots per broker, the broker's totals for the cards, the Bot and Sectors choices, the active bots for Halt all and every bot's
-kind for the activity feed. Return and Position need every bot's equity: all their holdings are read at once, so a
+kind for the activity feed. vs B&H is Return minus B&H in points: the bots that beat holding what they trade by the
+most come first, those without a buy & hold yet last. Return, vs B&H and Position need every bot's equity: all their holdings are read at once, so a
 page costs a fraction of `GET /bots` (every bot with its watchlist, ~2.5 MB for 200 bots), which other pages still use.
 
 Free cash (`GET /accounts`): under the totals, each Alpaca account (paper, live; only those with keys) shows the money

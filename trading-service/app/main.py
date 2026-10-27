@@ -355,7 +355,7 @@ class _Row:
     bot: Bot
     sectors: list[str]
     equity: float
-    keys: dict[str, float | None]  # BotSort -> its value (None: no tested setup, sorted last either way)
+    keys: dict[str, float | None]  # BotSort -> its value (None: no tested setup or buy & hold, sorted last either way)
 
 
 def _kind(bot: Bot) -> str:
@@ -369,7 +369,7 @@ def bot_table(broker: str = "all", include_archived: bool = False, sector: list[
               limit: int = Query(50, ge=1, le=500), session: Session = Depends(get_session)):
     """The overview's bot table, one page at a time: one broker's bots ("all", or a broker with none: every bot), those
     of any of the `kind`s (dip buyer, momentum rotation, single symbol) and with any of the `sector` badges, sorted by a
-    column (none: newest first; ties keep that order; no tested setup: last either way), from `offset`. With it, what
+    column (none: newest first; ties keep that order; no tested setup or buy & hold: last either way), from `offset`. With it, what
     the page shows of all of them: bots per broker, the broker's totals, kind and sector choices, the active bots for
     Halt all, and every bot's kind for the activity feed.
     Return and Position need every bot's equity: all their holdings and watchlists are read at once, and only the
@@ -389,9 +389,12 @@ def bot_table(broker: str = "all", include_archived: bool = False, sector: list[
     def row(bot: Bot) -> _Row:
         price, mine = _price(bot), held.get(bot.id, [])
         equity = bot_equity(session, bot, price, mine)
+        ret, bh = return_pct(bot, equity), benchmark_value(bot, price)
         return _Row(bot, badges.of_bot(bot, watched.get(bot.id, []), yahoo)[0], equity, {
             "id": bot.id, "rating": bot.rating, "score": (bot.setup or {}).get("score"), "all": _setup_all(bot),
-            "ret": return_pct(bot, equity), "pos": _unrealized(bot, mine, price)})
+            "ret": ret, "pos": _unrealized(bot, mine, price),
+            # How far its return is ahead of buy & hold, in points (the Return column's two numbers, as shown)
+            "beat": round(ret - return_pct(bot, bh), 2) if bh else None})
 
     rows = [row(b) for b in bots]
     brokers = Counter(r.bot.broker for r in rows)

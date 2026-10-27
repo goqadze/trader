@@ -256,7 +256,7 @@ export interface Snapshot {
 }
 
 /** The bot table's sortable columns (trading-service schemas.BotSort). */
-export type BotSort = "id" | "rating" | "score" | "all" | "ret" | "pos";
+export type BotSort = "id" | "rating" | "score" | "all" | "ret" | "beat" | "pos";
 // The Bot column's filter (schemas.BotKind): a dip buyer, a momentum rotation, a single-symbol bot
 export type BotKind = "dip" | "rotation" | "symbol";
 

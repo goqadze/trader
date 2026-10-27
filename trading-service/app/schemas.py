@@ -848,7 +848,7 @@ class BotOut(StrategyParams):
     watchlist: list[WatchItemOut] = []
 
 
-BotSort = Literal["id", "rating", "score", "all", "ret", "pos"]  # the bot table's sortable columns (main.bot_table)
+BotSort = Literal["id", "rating", "score", "all", "ret", "beat", "pos"]  # the bot table's sortable columns (main.bot_table)
 BotKind = Literal["dip", "rotation", "symbol"]  # the bot table's Bot filter: a dip buyer, a momentum rotation, one symbol
 
 
