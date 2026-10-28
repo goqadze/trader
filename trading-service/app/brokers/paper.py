@@ -13,18 +13,22 @@ from .base import Broker, BrokerError, BrokerOrder, Quote
 
 
 def yahoo_quote(symbol: str) -> Quote:
-    """Last 1-minute bar from Yahoo Finance (free; can lag a little and has no uptime guarantee)."""
+    """Last 1-minute bar from Yahoo Finance (free; can lag a little and has no uptime guarantee).
+
+    Today's bars first. In the first seconds after the open Yahoo has none yet (and now and then it answers with
+    nothing mid-session), so then the last bar of the past few days: its time shows how old it is, and a trade still
+    refuses it as stale. Only when both come back empty is the symbol unknown or the feed down."""
     try:
         # Yahoo writes share classes with a dash (BRK-B); Alpaca and the bots with a dot (BRK.B)
-        df = yf.Ticker(symbol.replace(".", "-")).history(period="1d", interval="1m", auto_adjust=True)
+        ticker = yf.Ticker(symbol.replace(".", "-"))
+        for period in ("1d", "5d"):
+            df = ticker.history(period=period, interval="1m", auto_adjust=True)
+            last = df["Close"].dropna() if df is not None and not df.empty else None
+            if last is not None and not last.empty:
+                return Quote(price=float(last.iloc[-1]), at=to_utc(last.index[-1]))
     except Exception as e:  # yfinance raises many different things on network trouble
         raise BrokerError(f"quote failed for {symbol}: {e}") from e
-    if df is None or df.empty:
-        raise BrokerError(f"no price data for {symbol} (unknown symbol or data feed down)")
-    last = df["Close"].dropna()
-    if last.empty:
-        raise BrokerError(f"no price data for {symbol}")
-    return Quote(price=float(last.iloc[-1]), at=to_utc(last.index[-1]))
+    raise BrokerError(f"no price data for {symbol} (unknown symbol or data feed down)")
 
 
 class PaperBroker(Broker):

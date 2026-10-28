@@ -56,3 +56,46 @@ def test_yahoo_quotes_ask_for_share_classes_with_a_dash(monkeypatch):
     monkeypatch.setattr(paper.yf, "Ticker", Ticker)
     assert paper.yahoo_quote("BRK.B").price == 500.0
     assert asked == ["BRK-B"]
+
+
+def _yahoo(monkeypatch, bars: dict):
+    """A fake Yahoo answering each period with its bars ({period: [(time, close)]}, missing = empty)."""
+    import pandas as pd
+
+    from app.brokers import paper
+
+    asked = []
+
+    class Ticker:
+        def __init__(self, symbol):
+            pass
+
+        def history(self, period, **kw):
+            asked.append(period)
+            rows = bars.get(period, [])
+            return pd.DataFrame({"Close": [c for _, c in rows]}, index=pd.to_datetime([t for t, _ in rows], utc=True))
+
+    monkeypatch.setattr(paper.yf, "Ticker", Ticker)
+    return paper, asked
+
+
+def test_yahoo_quote_at_the_open_falls_back_to_the_last_bar_of_recent_days(monkeypatch):
+    """At 09:30:29 Yahoo had no bar for today yet: that is not an unknown symbol. The last bar keeps its own time,
+    so a trade still refuses it as stale."""
+    paper, asked = _yahoo(monkeypatch, {"5d": [("2026-10-27 19:58", 68.1), ("2026-10-27 19:59", 68.25)]})
+    q = paper.yahoo_quote("XLE")
+    assert q.price == 68.25 and q.at == datetime(2026, 10, 27, 19, 59, tzinfo=timezone.utc)
+    assert asked == ["1d", "5d"]
+
+
+def test_yahoo_quote_uses_today_without_a_second_request(monkeypatch):
+    paper, asked = _yahoo(monkeypatch, {"1d": [("2026-10-28 13:34", 68.33)], "5d": [("2026-10-27 19:59", 68.25)]})
+    assert paper.yahoo_quote("XLE").price == 68.33
+    assert asked == ["1d"]
+
+
+def test_yahoo_quote_with_no_bars_at_all_is_an_error(monkeypatch):
+    paper, asked = _yahoo(monkeypatch, {"1d": [("2026-10-28 13:30", float("nan"))]})
+    with pytest.raises(BrokerError, match="no price data for NOPE"):
+        paper.yahoo_quote("NOPE")
+    assert asked == ["1d", "5d"]
