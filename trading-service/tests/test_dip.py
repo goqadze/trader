@@ -16,7 +16,7 @@ from app import dip, main, rotation, scheduler, splits, studies, trader
 from app.brokers import BrokerError, BrokerOrder
 from app.brokers import catalog as real_catalog
 from app.db import SessionLocal
-from app.models import DIP, Bot, Decision, Event, Holding, Order, Signal, SymbolSector, WatchItem
+from app.models import DIP, Bot, Decision, DipPreset, DipStudy, Event, Holding, Order, Signal, SymbolSector, WatchItem
 from app.shares import dollars
 from app.trader import add_capital, holdings
 
@@ -1705,6 +1705,61 @@ def test_a_running_dip_bot_switches_to_a_saved_setup_its_rules_watchlist_and_tes
     assert len(c.get(f"/bots/{bot['id']}/events").json()) == len(events) + 1
     assert c.patch(f"/bots/{bot['id']}/dip", json={"symbols": []}).status_code == 422
 
+
+def test_a_setup_saved_from_test_results_before_they_kept_their_test_gets_it_back(api):
+    """Saved setups from before 2026-10-27 kept only the rules, so switching a bot to one left its old tested setup.
+    At startup the test with the same name and rules is linked again."""
+    c, _, _ = api
+    tests = {}
+    for name in ("Sweep 1", "Sweep 2"):  # Sweep 2 tested T3 again later
+        study = c.put("/dip/studies", json={**STUDY, "name": name}).json()
+        c.post(f"/dip/studies/{study['id']}/tests", json=[one_setup("T3", 4.0), one_setup("T4", 5.0, config={**SETUP, "stop_pct": 0.2})])
+        tests[name] = {t["code"]: t["id"] for t in c.get(f"/dip/studies/{study['id']}/tests").json()["items"]}
+    # Saved before they kept their test: T3 as tested, T4 with a rule changed, and one from a form
+    saved = {n: c.post("/dip/presets", json={"name": n, "config": SETUP}).json() for n in ("T3 ETFs 4%/5d", "T4 ETFs 4%/5d", "Mine")}
+    assert all(p["setup"] is None for p in saved.values())
+
+    def link(studies_at: tuple[int, int], saved_at: int) -> int:
+        """Run the startup link with Sweep 1 and 2 made on these days of October, the setups saved on that day."""
+        with SessionLocal() as s:
+            for study, day in zip(s.scalars(select(DipStudy).order_by(DipStudy.id)), studies_at):
+                study.created_at = datetime(2026, 10, day, tzinfo=timezone.utc)
+            for p in s.scalars(select(DipPreset)):
+                p.updated_at = datetime(2026, 10, saved_at, tzinfo=timezone.utc)
+            s.commit()
+            return main.link_saved_setups(s)
+
+    assert link((1, 3), saved_at=2) == 1
+    setups = {p["name"]: p["setup"] for p in c.get("/dip/presets").json()}
+    assert (setups["T3 ETFs 4%/5d"]["test_id"], setups["T3 ETFs 4%/5d"]["study"]) == (tests["Sweep 1"]["T3"], "Sweep 1")
+    assert setups["T3 ETFs 4%/5d"]["results"]["exam"] == {"total_return_pct": 4.0}
+    assert (setups["T4 ETFs 4%/5d"], setups["Mine"]) == (None, None)
+    assert link((1, 3), saved_at=2) == 0  # once: a linked one is left alone
+
+    # A running bot switched to it now switches its tested setup too
+    bot = c.post("/bots/dip", json=BODY).json()
+    r = c.patch(f"/bots/{bot['id']}/dip", json={"setup_preset_id": saved["T3 ETFs 4%/5d"]["id"]})
+    assert r.status_code == 200, r.text
+    assert (r.json()["setup"]["code"], r.json()["setup"]["study"], r.json()["setup"]["switched"]) == ("T3", "Sweep 1", True)
+
+    # Saved when both studies existed: the newer; both studies replaced since: the older
+    for days, saved_at, study in (((1, 3), 4, "Sweep 2"), ((5, 6), 4, "Sweep 1")):
+        with SessionLocal() as s:
+            s.get(DipPreset, saved["T3 ETFs 4%/5d"]["id"]).setup = None
+            s.commit()
+        assert link(days, saved_at) == 1
+        assert {p["name"]: p["setup"] for p in c.get("/dip/presets").json()}["T3 ETFs 4%/5d"]["study"] == study
+
+
+
+def test_the_startup_links_the_old_saved_setups_and_starts_even_if_that_fails(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main, "link_saved_setups", lambda s: calls.append(s) or 1)
+    with TestClient(main.app):
+        assert len(calls) == 1
+    monkeypatch.setattr(main, "link_saved_setups", lambda s: 1 / 0)
+    with TestClient(main.app) as c:
+        assert c.get("/health").status_code == 200
 
 def test_a_setups_all_is_its_windows_back_to_back_where_the_grid_has_that_column():
     periods = {"practice": ["2025-04-09", "2026-01-08"], "exam": ["2026-01-09", "2026-10-09"],

@@ -160,6 +160,9 @@ bot asks first). Saving under an existing name replaces it. Kept in trading-db (
 **Save** in a bot's Tested setup popup, `POST /bots/{id}/setup/save`) keeps a copy of that test and its results
 (`setup` on the saved setup, the test's code shown in the list), so a bot started from it (`setup_preset_id` in
 `POST /bots/dip` and `/bots/rotation`) or switched to it gets the Tested setup tag too ("Bot switched to it" in the popup).
+Setups saved from Test results before they kept their test (2026-10-27) get it back at startup (`link_saved_setups`):
+the test with the same name and the same rules, from the newest study that existed when it was saved. Switching a bot
+to a saved setup without a test (saved from a form) keeps the bot's own tested setup, and the Edit form says so.
 In the Test results tab (dip and rotation), a tested setup's rocket button opens the new-bot form filled in with its
 rules, watchlist and capital, named after it: pick the broker, check it, create. The bot keeps a copy of that test
 (`setup_test_id` in `POST /bots/dip` and `/bots/rotation`; `setup` on the bot): its name, study, rules and results per

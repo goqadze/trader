@@ -399,6 +399,9 @@ export function DipEditForm({ open, bot, onCancel, onSaved }: { open: boolean; b
   const testDiffers = !!test && (bot.setup?.test_id !== test.test_id || bot.setup?.code !== test.code);
   const newList = !!switchTo && listDiffers && takeList;
   const newTest = !!switchTo && testDiffers && takeTest;
+  // A saved setup from a form has no tested setup to switch to: the bot keeps its own, say so
+  const keepsTest = !!switchTo && !test ? bot.setup : null;
+  const switchBox = !!switchTo && (listDiffers || testDiffers || !!keepsTest);
 
   const submit = async () => {
     const v = await form.validateFields();
@@ -455,13 +458,15 @@ export function DipEditForm({ open, bot, onCancel, onSaved }: { open: boolean; b
         <Form.Item
           label="From a saved setup"
           tooltip="Fills in its rules. Where its watchlist or its tested setup differ from the bot's, you can switch those too (ticked below)"
-          style={switchTo && (listDiffers || testDiffers) ? { marginBottom: 8 } : undefined}
+          style={switchBox ? { marginBottom: 8 } : undefined}
         >
           <PresetPicker onLoad={load} onClear={() => setSwitchTo(null)} />
         </Form.Item>
-        {switchTo && (listDiffers || testDiffers) && (
+        {switchTo && switchBox && (
           <div style={{ border: "1px solid #303030", borderRadius: 6, padding: "8px 12px", marginBottom: 16 }}>
-            <div style={{ color: MUTED, fontSize: 12, marginBottom: 4 }}>Switch to “{switchTo.name}” besides its rules:</div>
+            {(listDiffers || testDiffers) && (
+              <div style={{ color: MUTED, fontSize: 12, marginBottom: 4 }}>Switch to “{switchTo.name}” besides its rules:</div>
+            )}
             {listDiffers && (
               <Checkbox checked={takeList} onChange={(e) => setTakeList(e.target.checked)} style={{ display: "flex", marginBottom: 4 }}>
                 Its watchlist ({target.length} symbol{target.length === 1 ? "" : "s"})
@@ -475,6 +480,13 @@ export function DipEditForm({ open, bot, onCancel, onSaved }: { open: boolean; b
                   The Tested setup popup shows its results{bot.setup ? ` instead of ${bot.setup.code}'s` : ""}
                 </div>
               </Checkbox>
+            )}
+            {keepsTest && (
+              <div style={{ color: MUTED, fontSize: 12, marginTop: listDiffers ? 4 : 0 }}>
+                “{switchTo.name}” has no tested setup (saved from a form), so the bot stays linked to{" "}
+                <Tag icon={<ExperimentOutlined />} color="geekblue" style={{ marginInlineEnd: 0 }}>{keepsTest.code}</Tag>
+                {" "}and its results
+              </div>
             )}
           </div>
         )}

@@ -55,6 +55,12 @@ if os.getenv("SENTRY_DSN"):
 async def lifespan(_app: FastAPI):
     init_db()
     auth.startup_checks()
+    try:  # a fix of old data (once: a linked one is skipped next time); a failure only leaves them without
+        with SessionLocal() as session:
+            if n := link_saved_setups(session):
+                logger.info("linked %d saved setup(s) to the Test results test they were saved from", n)
+    except Exception:
+        logger.exception("couldn't link the old saved setups to their tests")
     tasks = []
     if settings.scheduler_enabled:  # the background work: the bots, the email alerts they queue, the daily risk report,
         # Alpaca's daily fees booked to the live bots
@@ -1127,6 +1133,42 @@ def _save_preset(session: Session, name: str, config: dict, strategy: str, setup
 def _test_copy(session: Session, test_id: int | None, strategy: str) -> dict | None:
     """The Test results test a setup is saved from, as the saved setup keeps it (None: not saved from a test)."""
     return _saved_copy(_setup_snapshot(session, test_id, strategy)) if test_id else None
+
+
+def _same_rules(a: dict, b: dict, strategy: str) -> bool:
+    """Two setups of a strategy with the same rules, a rule added since either was saved counting as its default."""
+    kind = PRESET_CONFIGS[strategy]
+    try:
+        return kind.model_validate(a).model_dump(mode="json") == kind.model_validate(b).model_dump(mode="json")
+    except ValidationError:  # an old setup today's rules refuse: not the same
+        return False
+
+
+def link_saved_setups(session: Session) -> int:
+    """Give the setups saved from Test results before saved setups kept their test (2026-10-27) that test back, so a
+    bot started from one or switched to one gets its tested setup too: a test with the same name and the same rules is
+    the one it was saved from. When a later study tested the same setup again, the newest study that existed when it was
+    saved. Runs at startup; returns how many it linked. One saved from a form, or changed since, stays without."""
+    old = [p for p in session.scalars(select(DipPreset)) if not p.setup]
+    if not old:
+        return 0
+    found: dict[str, list[tuple[DipTest, DipStudy]]] = {}
+    for test, study in session.execute(select(DipTest, DipStudy).join(DipStudy, DipStudy.id == DipTest.study_id)
+                                       .where(DipTest.name.in_([p.name for p in old])).options(defer(DipTest.detail))):
+        found.setdefault(test.name, []).append((test, study))
+    linked = 0
+    for preset in old:
+        same = [(t, s) for t, s in found.get(preset.name, [])
+                if s.strategy == preset.strategy and _same_rules(t.config, preset.config, s.strategy)]
+        if not same:
+            continue
+        saved = preset.updated_at or preset.created_at
+        before = [x for x in same if saved and x[1].created_at <= saved]  # none (a study replaced since): the oldest
+        test, _ = max(before, key=lambda x: x[1].created_at) if before else min(same, key=lambda x: x[1].created_at)
+        preset.setup = _test_copy(session, test.id, preset.strategy)
+        linked += 1
+    session.commit()
+    return linked
 
 
 def _delete_preset(session: Session, preset_id: int, strategy: str) -> None:
