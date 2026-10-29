@@ -6,7 +6,7 @@ import { request as http } from "../http";
 import type { RotationPresetConfig } from "../rotation/types";
 import type { SavedSetup, Study, StudyStrategy, StudySummary, StudyTestDetail, StudyTestPage, TestQuery } from "../studies/types";
 import type {
-  AccountInfo, Bot, BotCreate, BotTable, BotTableQuery, BotUpdate, CapitalAdd, CapitalWithdraw, Decision, EmailAlert, EmailAlerts, EmailAlertsSave, Order, RotationBotCreate, RotationBotUpdate, Snapshot,
+  AccountInfo, ArchivedBots, Bot, BotCreate, BotTable, BotTableQuery, BotUpdate, CapitalAdd, CapitalWithdraw, Decision, EmailAlert, EmailAlerts, EmailAlertsSave, Order, RotationBotCreate, RotationBotUpdate, Snapshot,
   TradingEvent, TradingStatus, WithdrawalPlan,
 } from "./types";
 
@@ -27,6 +27,7 @@ export const tradingApi = {
     for (const s of query.sectors) params.append("sector", s);
     return request<BotTable>("GET", `/bots/table?${params}`);
   },
+  archivedBots: (broker: string) => request<ArchivedBots>("GET", `/bots/archived?${new URLSearchParams({ broker })}`),
   getBot: (id: number) => request<Bot>("GET", `/bots/${id}`),
   createBot: (body: BotCreate) => request<Bot>("POST", "/bots", body),
   createRotationBot: (body: RotationBotCreate) => request<Bot>("POST", "/bots/rotation", body),

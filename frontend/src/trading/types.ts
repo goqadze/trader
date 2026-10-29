@@ -271,6 +271,27 @@ export interface BotTableQuery {
   limit: number;
 }
 
+/** One archived bot in the history of the archived bots (trading-service schemas.ArchivedBot). */
+export interface ArchivedBot {
+  id: number;
+  name: string;
+  broker: string;
+  strategy: Bot["strategy"];
+  symbol: string;
+  created_at: string;
+  archived_at: string | null; // null: no "archived" event (archived by a script)
+  put_in: number; // the starting capital plus money added
+  came_out: number; // its cash at the end plus money taken out while it ran
+  result: number; // came_out - put_in
+  running: number; // the results of it and every bot archived before it, added up
+}
+
+/** The shown broker's archived bots, the earliest archived first (GET /bots/archived). */
+export interface ArchivedBots {
+  items: ArchivedBot[];
+  result: number;
+}
+
 /** One page of the overview's bot table and what the page shows of all the bots (trading-service schemas.BotTableOut). */
 export interface BotTable {
   items: Bot[];
@@ -280,7 +301,10 @@ export interface BotTable {
   brokers: Record<string, number>; // bots per broker
   sectors: Record<string, number>; // the shown broker's sector badges -> bots, the most common first
   kinds: Partial<Record<BotKind, number>>; // the shown broker's bots per kind, the most common first
-  totals: { capital: number; added: number; withdrawn: number; equity: number; pnl: number; active: number; count: number };
+  totals: {
+    capital: number; added: number; withdrawn: number; equity: number; pnl: number; active: number; count: number;
+    archived: number; archived_pnl: number; // the shown broker's archived bots, left out of the numbers above, and what they made or lost
+  };
   active: number; // active bots on every account (Halt all)
   active_live: number;
   brief: Pick<Bot, "id" | "strategy" | "symbol">[]; // every bot listed, for the activity feed

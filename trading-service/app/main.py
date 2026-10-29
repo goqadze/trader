@@ -33,7 +33,7 @@ from .db import SessionLocal, get_session, init_db, utcnow
 from .market import is_open, next_decision_time, ny_date, session_bounds
 from .models import (DIP, HOLDINGS_STRATEGIES, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPreset, DipStudy, DipTest,
                      EquitySnapshot, Event, Holding, Notification, Order, Signal, WatchItem)
-from .schemas import (AccountOut, BotBrief, BotCreate, BotKind, BotOut, BotSetupSave, BotSort, BotTableOut, BotTotals, BotUpdate, CapitalAdd, CapitalWithdraw, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn,
+from .schemas import (AccountOut, ArchivedBot, ArchivedOut, BotBrief, BotCreate, BotKind, BotOut, BotSetupSave, BotSort, BotTableOut, BotTotals, BotUpdate, CapitalAdd, CapitalWithdraw, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn,
                       DipPresetOut, DipStudyIn, DipStudyOut, DipStudySummaryOut, DipTestDetailOut, DipTestIn, DipTestOut, DipTestPageOut,
                       EmailAlertsIn, EmailAlertsOut, EventOut, HoldingOut, NotificationOut, RiskReportOut, NotifyCategoryOut, OrderOut,
                       PRESET_CONFIGS, RatingIn, RotationBotCreate, RotationPresetIn, SectorsIn, SignalOut, SnapshotOut, StatusOut, StudyStrategy,
@@ -369,6 +369,13 @@ def _kind(bot: Bot) -> str:
     return "dip" if bot.strategy == DIP else "rotation" if bot.strategy == ROTATION else "symbol"
 
 
+def _archived_result(bot: Bot) -> float:
+    """What an archived bot made or lost from start to archive: its cash plus what was taken out, minus what was put
+    in. A bot is archived only when it holds nothing, so its cash is all it has (an Alpaca fee booked later comes out
+    of it too). Its cash is handed back to the account, so the totals of the running bots no longer show this."""
+    return round(bot.cash + (bot.withdrawn_cash or 0.0) - capital(bot), 2)
+
+
 @app.get("/bots/table", response_model=BotTableOut)
 def bot_table(broker: str = "all", include_archived: bool = False, sector: list[str] = Query([]),
               kind: list[BotKind] = Query([]), sort: BotSort | None = None, order: Literal["asc", "desc"] = "desc", offset: int = Query(0, ge=0),
@@ -410,9 +417,11 @@ def bot_table(broker: str = "all", include_archived: bool = False, sector: list[
     put_in = sum(capital(r.bot) for r in running)
     taken = sum(r.bot.withdrawn_cash or 0.0 for r in running)
     equity = sum(r.equity for r in running)
+    gone = [b for b in session.scalars(select(Bot).where(Bot.status == "archived")) if shown == "all" or b.broker == shown]
     totals = BotTotals(capital=round(put_in, 2), added=round(sum(r.bot.added_cash or 0.0 for r in running), 2),
                        withdrawn=round(taken, 2), equity=round(equity, 2), pnl=round(equity + taken - put_in, 2),
-                       active=sum(r.bot.status == "active" for r in running), count=len(running))
+                       active=sum(r.bot.status == "active" for r in running), count=len(running),
+                       archived=len(gone), archived_pnl=round(sum(_archived_result(b) for b in gone), 2))
     sectors = Counter(s for r in rows for s in r.sectors)
     kinds = Counter(_kind(r.bot) for r in rows)
     if kind:
@@ -432,6 +441,28 @@ def bot_table(broker: str = "all", include_archived: bool = False, sector: list[
         kinds=dict(kinds.most_common()), totals=totals, active=sum(b.status == "active" for b in bots),
         active_live=sum(b.status == "active" and b.broker in live for b in bots),
         brief=[BotBrief(id=b.id, strategy=b.strategy, symbol=b.symbol) for b in bots])
+
+
+@app.get("/bots/archived", response_model=ArchivedOut)
+def archived_bots(broker: str = "all", session: Session = Depends(get_session)):
+    """The history of the archived bots of one broker ("all": every broker): the earliest archived first, each with
+    what it made or lost and the running total. Archiving hands a bot's cash back to the account, so the overview's
+    totals (the running bots only) drop its loss or gain: this is where it stays visible."""
+    q = select(Bot).where(Bot.status == "archived")
+    if broker != "all":
+        q = q.where(Bot.broker == broker)
+    bots = list(session.scalars(q))
+    when = dict(session.execute(select(Event.bot_id, func.max(Event.created_at)).where(
+        Event.kind == "archived", Event.bot_id.in_([b.id for b in bots])).group_by(Event.bot_id)).all())
+    bots.sort(key=lambda b: (when.get(b.id) or b.created_at, b.id))
+    items, running = [], 0.0
+    for b in bots:
+        result = _archived_result(b)
+        running = round(running + result, 2)
+        items.append(ArchivedBot(id=b.id, name=b.name, broker=b.broker, strategy=b.strategy, symbol=b.symbol,
+                                 created_at=b.created_at, archived_at=when.get(b.id), put_in=capital(b),
+                                 came_out=round(b.cash + (b.withdrawn_cash or 0.0), 2), result=result, running=running))
+    return ArchivedOut(items=items, result=running)
 
 
 @app.get("/sectors", response_model=list[str])

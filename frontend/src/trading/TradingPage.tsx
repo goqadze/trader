@@ -8,6 +8,7 @@ import type { SortOrder } from "antd/es/table/interface";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { tradingApi } from "./api";
+import { ArchivedLine } from "./ArchivedHistory";
 import BotForm, { type BotFormInitial } from "./BotForm";
 import { useConfirm } from "./confirm";
 import { BotRating } from "./rating";
@@ -401,7 +402,7 @@ export default function TradingPage() {
 
   // The shown broker's bots that aren't archived, added up by trading-service: everything put in (the start plus Add
   // money), so added money never shows as profit; money taken out still counts as made, like each bot's return
-  const totals = data?.totals ?? { capital: 0, added: 0, withdrawn: 0, equity: 0, pnl: 0, active: 0, count: 0 };
+  const totals = data?.totals ?? { capital: 0, added: 0, withdrawn: 0, equity: 0, pnl: 0, active: 0, count: 0, archived: 0, archived_pnl: 0 };
 
   const create = async (body: BotCreate | object) => {
     const bot = await tradingApi.createBot(body as BotCreate);
@@ -507,6 +508,8 @@ export default function TradingPage() {
         <Col xs={12} md={6}>
           <Card size="small">
             <Statistic title="Total P&L" value={usd(totals.pnl)} valueStyle={{ color: pnlColor(totals.pnl) }} />
+            <ArchivedLine broker={data?.broker ?? "all"} label={broker === "all" ? "every broker" : brokerLabel(broker)}
+              count={totals.archived} result={totals.archived_pnl} runningPnl={totals.pnl} />
           </Card>
         </Col>
         <Col xs={12} md={6}>

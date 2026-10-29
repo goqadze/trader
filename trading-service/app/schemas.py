@@ -862,6 +862,33 @@ class BotTotals(BaseModel):
     pnl: float  # equity + taken out - put in
     active: int
     count: int
+    # The shown broker's archived bots, which the numbers above leave out: what they made or lost from start to archive
+    # (main._archived_result), so money lost in a bot that was closed still shows somewhere
+    archived: int = 0
+    archived_pnl: float = 0.0
+
+
+class ArchivedBot(BaseModel):
+    """One archived bot in the history of the archived bots (GET /bots/archived)."""
+
+    id: int
+    name: str
+    broker: str
+    strategy: str
+    symbol: str
+    created_at: datetime
+    archived_at: datetime | None  # when it was archived (None: no "archived" event, e.g. archived by a script)
+    put_in: float  # the starting capital plus money added
+    came_out: float  # its cash at the end plus money taken out while it ran
+    result: float  # came_out - put_in
+    running: float  # the results of it and every bot archived before it, added up
+
+
+class ArchivedOut(BaseModel):
+    """The shown broker's archived bots, the earliest archived first, and what they made or lost in all."""
+
+    items: list[ArchivedBot]
+    result: float
 
 
 class BotBrief(BaseModel):

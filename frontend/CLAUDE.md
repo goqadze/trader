@@ -16,7 +16,7 @@ grep -rn "<text on screen>" src --include='*.tsx'                     # the comp
 
 | Path | Page | Parts |
 |---|---|---|
-| `/` | `trading/TradingPage.tsx` (bot overview: totals, free cash per Alpaca account (`FreeCash`), broker filter, bot table `columns` incl. the Bot (kind) and Sectors filters and the Rating stars, paged, sorted and filtered by trading-service (`tradingApi.botTable`), activity feed, `MarketStatus`) | `trading/BotForm.tsx` (new single-symbol bot) |
+| `/` | `trading/TradingPage.tsx` (bot overview: totals, the archived bots' line + History popup (`ArchivedHistory.tsx` `ArchivedLine`), free cash per Alpaca account (`FreeCash`), broker filter, bot table `columns` incl. the Bot (kind) and Sectors filters and the Rating stars, paged, sorted and filtered by trading-service (`tradingApi.botTable`), activity feed, `MarketStatus`) | `trading/BotForm.tsx` (new single-symbol bot) |
 | `/trading/:id` | `trading/BotPage.tsx` (one bot: chart, decisions, orders, events, Edit/Pause/Archive) | `dip/DipParts.tsx` (dip holdings, watchlist, rules, signals), `trading/RotationParts.tsx`, `trading/AddMoney.tsx`, `trading/WithdrawMoney.tsx` |
 | `/dip` | `pages/DipPage.tsx` (dip backtest + Test results tab) | `dip/` (`DipBacktestForm`, `DipBotForm`, `RulesFields`, `PresetPicker`, `SymbolChart`, `useDip`), `studies/TestResults.tsx` |
 | `/rotation` | `pages/RotationPage.tsx` | `rotation/` (`RotationForm`, `RotationResult`, `UniverseField`, `useRotation`), `trading/RotationBotForm.tsx` |

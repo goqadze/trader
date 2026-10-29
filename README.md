@@ -366,6 +366,14 @@ leaves out the day's sales until they settle (T+1). After the Oct 16 sales it re
 money gone, it counts again once they settle. Read from Alpaca at most every 30 seconds. The Mac and the server keep
 separate bots on the same Alpaca paper account, so each counts only its own.
 
+Archived bots (`GET /bots/archived`): the cards add up only the bots that aren't archived, and archiving hands a bot's
+cash back to the account, so a bot closed at a loss would drop out of every number. The Total P&L card has a line for
+the shown broker's archived bots: how many, and what they made or lost from start to archive (cash at the end plus money
+taken out, minus money put in; Alpaca fees booked after the archive included). History opens the list, the earliest
+archived first, with the date, put in, came out, result and a running total, and adds the running bots' Total P&L to
+give every bot together. E.g. a bot started with $400 and archived with $360 left adds -$40: the running bots' capital
+is $40 less than was deposited, and the line says where it went.
+
 Alpaca's fees (`fees.py`): Alpaca takes two small fees a trading day from the live account, not per order: a CAT fee
 ($0.01 on any day with trades, buys too) and a REG fee (SEC and FINRA on the day's sales, rounded up to a cent). Its
 orders come back without them, so once an hour trading-service reads the account's fee lines of the last 30 days and
