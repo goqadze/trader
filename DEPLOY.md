@@ -255,14 +255,16 @@ UTC is after the US close all year. The script keeps 7 days of `backups/trading-
 
 A backup on the same server is lost with the server, so your laptop keeps copies too.
 `scripts/pull-server-backups.sh` copies the server's newest backup into `backups/server/` and deletes copies there
-older than 7 days. It deletes only after a good download, and never the newest copy. If it fails, it writes the
-failure to `backups/server/pull.log` and shows a macOS notification. Try it once:
+older than 7 days. It deletes only after a good download, and never the newest copy. A failure goes to
+`backups/server/pull.log`; once no copy is from the last 36 hours, it also shows a macOS notification. Try it once:
 
 ```bash
 BACKUP_SERVER=trader@SERVER_IP ./scripts/pull-server-backups.sh
 ```
 
-On a Mac, launchd runs it every morning at 09:00 (if the Mac is asleep then, it runs on wake). Save this as
+On a Mac, launchd runs it every hour on the hour (if the Mac is asleep then, it runs on wake). Once the newest
+backup is here, a run only checks the server's list. Hourly matters on a laptop: a run that starts while the lid is
+closed is cut off when the Mac goes back to sleep, and the next hour tries again. Save this as
 `~/Library/LaunchAgents/com.trading.pull-server-backups.plist`, with your server and paths:
 
 ```xml
@@ -276,7 +278,7 @@ On a Mac, launchd runs it every morning at 09:00 (if the Mac is asleep then, it 
   <key>EnvironmentVariables</key>
   <dict><key>BACKUP_SERVER</key><string>trader@SERVER_IP</string></dict>
   <key>StartCalendarInterval</key>
-  <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
+  <dict><key>Minute</key><integer>0</integer></dict>
   <key>StandardOutPath</key><string>/Users/YOU/ClaudeProjects/Trading/backups/server/pull.log</string>
   <key>StandardErrorPath</key><string>/Users/YOU/ClaudeProjects/Trading/backups/server/pull.log</string>
 </dict>

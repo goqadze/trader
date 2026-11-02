@@ -56,7 +56,7 @@ Mac for development and on a Hetzner server (Ubuntu, Docker) for the real bots.
 | `backtest-service/` (:8001) | Replays history through decision-service; scans | `app/runner.py`, `engines/` (`simple`, `dip`, `rotation`, `intraday`), `scan.py`, `verdict.py`, `models.py` |
 | `frontend/` (:8080) | React 18 + TypeScript + antd 5, Vite build served by nginx | `src/App.tsx` (routes: `/` = live trading, `/backtest`, `/compare`, `/dip`, `/rotation`, `/scan`, `/journal`, `/alerts`, `/trading/:id`), `src/trading/`, `src/dip/`, `src/rotation/`, `src/studies/`, `src/journal/`, `nginx.conf` (auth_request on every API call), `public/guides/` |
 | `watchdog/` | Server only: emails when a service is down, the scheduler is stuck, disk is low, backup is old | `watchdog.py` |
-| `scripts/` | `deploy.sh` (deploy + server checks), `mutation-check.sh`, `backup-trading-db.sh` (server cron 22:30 UTC, keeps 7 days), `pull-server-backups.sh` (Mac launchd 09:00) | |
+| `scripts/` | `deploy.sh` (deploy + server checks), `mutation-check.sh`, `backup-trading-db.sh` (server cron 22:30 UTC, keeps 7 days), `pull-server-backups.sh` (Mac launchd hourly) | |
 | `.claude/skills/` | Claude Code workflows: `deploy`, `ui-check` | |
 | `docker-compose.yml` | Mac: code bind-mounted, backends run with `--reload` | |
 | `docker-compose.server.yml` | Server: code baked into images, profiles (`news`, `backtest`, `monitoring`, `pgadmin`, `full`, `public`) | |
