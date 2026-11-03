@@ -198,8 +198,8 @@ const columns: ColumnsType<Bot> = [
     render: (_, b) => <SetupPct v={b.setup?.all} digits={0} />,
   },
   {
-    // The bot page's Win rate, with how many trades it rests on: 100% of one sale says little. No closed trade yet: —,
-    // and last either way
+    // The bot page's Win rate, with how many trades it rests on: 100% of one sale says little. trading-service sorts by
+    // the whole percent shown, equal ones with the most trades first. No closed trade yet: —, and last either way
     title: <Tooltip title="The share of its closed trades that made money (a trade's profit or loss comes after fees)">Win rate</Tooltip>,
     key: "win",
     width: 96,

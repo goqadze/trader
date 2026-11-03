@@ -123,6 +123,33 @@ def test_sorted_by_win_rate(client, bots, session):
         x["id"]: (x["win_rate_pct"], x["closed_trades"]) for x in page}
 
 
+def test_equal_win_rates_put_the_most_trades_first(client, bots, session):
+    """Whichever way the column is sorted, and by the percent the table shows: 9 of 13 (69.2%) and 11 of 16 (68.8%) both
+    show 69%, 5 of 8 (62.5%) and 17 of 27 (63.0%) both show 63%."""
+    a, b, c, d, e, g = (bots[k] for k in "abcdeg")
+    sells(session, a, 1.0)
+    sells(session, b, 1.0, 1.0, 1.0)
+    sells(session, c, 1.0, 1.0)
+    sells(session, d, -1.0)
+    sells(session, e, -1.0, -1.0, -1.0)
+    newer = make_bot(session, symbol="F").id  # as many trades as a: the newest first, like every other tie
+    sells(session, newer, 1.0)
+    fewer, more = make_bot(session, symbol="T").id, make_bot(session, symbol="KO").id
+    sells(session, fewer, *[1.0] * 9, *[-1.0] * 4)
+    sells(session, more, *[1.0] * 11, *[-1.0] * 5)
+    half, most = make_bot(session, symbol="PG").id, make_bot(session, symbol="PEP").id
+    sells(session, half, *[1.0] * 5, *[-1.0] * 3)
+    sells(session, most, *[1.0] * 17, *[-1.0] * 10)
+
+    assert ids(client, sort="win", order="desc") == [b, c, newer, a, more, fewer, most, half, e, d, g]
+    assert ids(client, sort="win", order="asc") == [e, d, most, half, more, fewer, b, c, newer, a, g]  # none closed: last
+
+    page = table(client, sort="win", order="desc")["items"]
+    assert [(x["win_rate_pct"], x["closed_trades"]) for x in page] == [
+        (100.0, 3), (100.0, 2), (100.0, 1), (100.0, 1), (68.8, 16), (69.2, 13), (63.0, 27), (62.5, 8), (0.0, 3), (0.0, 1), (None, 0)]
+    assert ids(client, sort="rating", order="desc") == [b, e, a, most, half, more, fewer, newer, g, d, c]  # other columns' ties: the newest first
+
+
 def test_the_win_rate_counts_every_trade_not_a_page_of_orders(client, session, bots):
     """GET /bots/{id}/orders gives the newest 200, which once decided the bot page's number: here those all won."""
     a = bots["a"]

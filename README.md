@@ -354,7 +354,7 @@ vs B&H, Position, Win rate; none = newest first) and sends only that page's bots
 bots per broker, the broker's totals for the cards, the Bot and Sectors choices, the active bots for Halt all and every bot's
 kind for the activity feed. vs B&H is Return minus B&H in points: the bots that beat holding what they trade by the
 most come first, those without a buy & hold yet last. Win rate is the share of a bot's closed trades that made money, the same number
-as on its page, with how many trades it rests on; those with none closed yet come last. Hovering a bot's name shows its strategy. Return, vs B&H and Position need every bot's equity: all their holdings are read at once, so a
+as on its page, with how many trades it rests on; bots showing the same percent are sorted by the most trades first, whichever way the column is sorted, and those with none closed yet come last. Hovering a bot's name shows its strategy. Return, vs B&H and Position need every bot's equity: all their holdings are read at once, so a
 page costs a fraction of `GET /bots` (every bot with its watchlist, ~2.5 MB for 200 bots), which other pages still use.
 
 Free cash (`GET /accounts`): under the totals, each Alpaca account (paper, live; only those with keys) shows the money

@@ -9,6 +9,7 @@ Interactive docs: http://localhost:8002/docs
 import asyncio
 import json
 import logging
+import math
 import os
 import time
 from collections import Counter
@@ -137,6 +138,12 @@ def _closed_trades(session: Session, bot_id: int | None = None) -> dict[int, tup
 def _win_rate(closed: tuple[int, int] | None) -> float | None:
     """The % of its closed trades that made money (None: none closed yet, so nothing to say)."""
     return round(closed[1] / closed[0] * 100, 1) if closed else None
+
+
+def _win_shown(rate: float | None) -> int | None:
+    """The win rate as the bot table shows it, a whole percent: two bots that both show 69% are equal when sorting.
+    Rounds .5 up like the dashboard's toFixed(0) (Python's round would send 62.5 down to 62, where it shows 63%)."""
+    return None if rate is None else math.floor(rate + 0.5)
 
 
 def _bot_out(session: Session, bot: Bot, yahoo: dict[str, str] | None = None,
@@ -401,7 +408,7 @@ def bot_table(broker: str = "all", include_archived: bool = False, sector: list[
               limit: int = Query(50, ge=1, le=500), session: Session = Depends(get_session)):
     """The overview's bot table, one page at a time: one broker's bots ("all", or a broker with none: every bot), those
     of any of the `kind`s (dip buyer, momentum rotation, single symbol) and with any of the `sector` badges, sorted by a
-    column (none: newest first; ties keep that order; no tested setup, buy & hold or closed trade: last either way), from `offset`. With it, what
+    column (none: newest first; ties keep that order, but equal win rates put the most trades first; no tested setup, buy & hold or closed trade: last either way), from `offset`. With it, what
     the page shows of all of them: bots per broker, the broker's totals, kind and sector choices, the active bots for
     Halt all, and every bot's kind for the activity feed.
     Return and Position need every bot's equity: all their holdings and watchlists are read at once, and only the
@@ -424,7 +431,7 @@ def bot_table(broker: str = "all", include_archived: bool = False, sector: list[
         ret, bh = return_pct(bot, equity), benchmark_value(bot, price)
         return _Row(bot, badges.of_bot(bot, watched.get(bot.id, []), yahoo)[0], equity, {
             "id": bot.id, "rating": bot.rating, "score": (bot.setup or {}).get("score"), "all": _setup_all(bot),
-            "ret": ret, "pos": _unrealized(bot, mine, price), "win": _win_rate(closed.get(bot.id)),
+            "ret": ret, "pos": _unrealized(bot, mine, price), "win": _win_shown(_win_rate(closed.get(bot.id))),
             # How far its return is ahead of buy & hold, in points (the Return column's two numbers, as shown)
             "beat": round(ret - return_pct(bot, bh), 2) if bh else None})
 
@@ -447,6 +454,8 @@ def bot_table(broker: str = "all", include_archived: bool = False, sector: list[
         rows = [r for r in rows if _kind(r.bot) in kind]
     if sector:
         rows = [r for r in rows if set(r.sectors) & set(sector)]
+    if sort == "win":  # equal win rates, either way: the most trades first (100% of 20 trades says more than 100% of one)
+        rows.sort(key=lambda r: closed.get(r.bot.id, (0, 0))[0], reverse=True)
     if sort:
         rows = (sorted((r for r in rows if r.keys[sort] is not None), key=lambda r: r.keys[sort], reverse=order == "desc")
                 + [r for r in rows if r.keys[sort] is None])
