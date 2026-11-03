@@ -815,6 +815,8 @@ class BotOut(StrategyParams):
     return_pct: float
     unrealized_pnl: float
     buy_hold_return_pct: float | None  # the same for buy & hold, which got the same money in and out on the same days
+    closed_trades: int  # sells that booked a profit or loss (a rotation bot's trims and a withdrawal's sales count too)
+    win_rate_pct: float | None  # the % of those that made money (None = none closed yet)
     pending_order: bool  # a market order is still working at the broker
     stop_at_broker: bool  # the stop-loss rests at the broker as a real order (Alpaca), not only in this service
     # --- rotation bots only (None / empty on the others) ---
@@ -848,7 +850,7 @@ class BotOut(StrategyParams):
     watchlist: list[WatchItemOut] = []
 
 
-BotSort = Literal["id", "rating", "score", "all", "ret", "beat", "pos"]  # the bot table's sortable columns (main.bot_table)
+BotSort = Literal["id", "rating", "score", "all", "ret", "beat", "pos", "win"]  # the bot table's sortable columns (main.bot_table)
 BotKind = Literal["dip", "rotation", "symbol"]  # the bot table's Bot filter: a dip buyer, a momentum rotation, one symbol
 
 

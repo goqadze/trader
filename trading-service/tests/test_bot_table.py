@@ -9,7 +9,7 @@ from conftest import make_bot
 from fastapi.testclient import TestClient
 
 from app import main
-from app.models import DIP, ROTATION, Event, Holding, WatchItem
+from app.models import DIP, ROTATION, Event, Holding, Order, WatchItem
 
 PERIODS = {"practice": ["2025-04-09", "2026-01-08"], "exam": ["2026-01-09", "2026-10-09"],
            "stress": ["2024-07-09", "2025-04-08"]}
@@ -93,6 +93,43 @@ def test_sorted_by_how_far_the_return_beats_buy_and_hold(client, bots, session):
     page = table(client, sort="beat", order="desc")["items"]
     assert [round(x["return_pct"] - x["buy_hold_return_pct"], 2) for x in page[:-1]] == [15.0, 0, 0, 0, -1.0, -5.0, -18.0]
     assert page[-1]["buy_hold_return_pct"] is None
+
+
+def sells(session, bot_id: int, *pnls: float | None, side: str = "SELL") -> None:
+    """Orders with these profits or losses (None: a sell not filled yet, nothing booked)."""
+    session.add_all([Order(bot_id=bot_id, side=side, symbol="AAPL", qty=1, reason="signal", status="filled", pnl=p,
+                           client_order_id=f"w-{bot_id}-{side}-{i}") for i, p in enumerate(pnls)])
+    session.commit()
+
+
+def test_sorted_by_win_rate(client, bots, session):
+    a, b, c, d, e, g = (bots[k] for k in "abcdeg")
+    sells(session, a, 5.0, -2.0, 1.0)  # 2 of 3
+    sells(session, b, 3.0)  # 1 of 1
+    sells(session, c, -1.0, -1.0)  # 0 of 2: a real 0%, not "no trades"
+    sells(session, d, 4.0, 0.0)  # 1 of 2: breaking even isn't a win
+    sells(session, e, 4.0, None)  # 1 of 1: the unfilled sell doesn't count
+    sells(session, g, 9.0, 9.0, side="BUY")  # no sell yet, whatever its buys say
+    assert ids(client, sort="win", order="desc") == [e, b, a, d, c, g]  # ties keep the newest-first order
+    assert ids(client, sort="win", order="asc") == [c, d, a, e, b, g]  # none closed: last either way
+
+    # The page's numbers are what it was sorted by, and the bot's own page and GET /bots say the same
+    page = table(client, sort="win", order="desc")["items"]
+    assert [(x["win_rate_pct"], x["closed_trades"]) for x in page] == [
+        (100.0, 1), (100.0, 1), (66.7, 3), (50.0, 2), (0.0, 2), (None, 0)]
+    one = client.get(f"/bots/{a}").json()
+    assert (one["win_rate_pct"], one["closed_trades"]) == (66.7, 3)
+    assert {x["id"]: (x["win_rate_pct"], x["closed_trades"]) for x in client.get("/bots").json()} == {
+        x["id"]: (x["win_rate_pct"], x["closed_trades"]) for x in page}
+
+
+def test_the_win_rate_counts_every_trade_not_a_page_of_orders(client, session, bots):
+    """GET /bots/{id}/orders gives the newest 200, which once decided the bot page's number: here those all won."""
+    a = bots["a"]
+    sells(session, a, *[-1.0] * 100, *[1.0] * 200)
+    assert len(client.get(f"/bots/{a}/orders").json()) == 200
+    one = client.get(f"/bots/{a}").json()
+    assert (one["win_rate_pct"], one["closed_trades"]) == (66.7, 300)
 
 
 def test_pages_and_a_page_past_the_end(client, bots):

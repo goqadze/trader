@@ -18,7 +18,7 @@ import { SectorBadges } from "./sectors";
 import { SetupButton } from "./setup";
 import {
   ACTION_COLOR, ORDER_STATUS_COLOR, SENTIMENT_COLOR, STATUS_COLOR, botTitle, checkTimes, frac, holdsMany, isDip, isRotation, localTime, pct,
-  pnlColor, slotTimes, usd,
+  pnlColor, slotTimes, usd, winRate,
 } from "./format";
 import { DipEditForm, DipHoldingsCard, DipParamsCard, SignalsList, WatchlistCard } from "../dip/DipParts";
 import { strategyInfo, strategyName, type StrategyId } from "../strategies";
@@ -192,12 +192,6 @@ export default function BotPage() {
   );
   const status = usePolling(tradingApi.status, 30_000);
   const [bot, decisions = [], orders = [], events = [], snapshots = [], signals = []] = page.data ?? [];
-
-  const stats = useMemo(() => {
-    const closed = orders.filter((o) => o.side === "SELL" && o.pnl != null);
-    const wins = closed.filter((o) => (o.pnl ?? 0) > 0).length;
-    return { trades: closed.length, winRate: closed.length ? (wins / closed.length) * 100 : null };
-  }, [orders]);
 
   // Why is it paused? Show the most recent event that paused it (user, breaker, reconcile, halt)
   const pauseReason = useMemo(
@@ -401,10 +395,10 @@ export default function BotPage() {
         <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="Cash" value={usd(bot.cash)} /><span style={{ color: MUTED, fontSize: 12 }}>uninvested</span></Card></Col>
         <Col xs={12} md={8} xl={4}>
           <Card size="small">
-            <Statistic title="Win rate" value={stats.winRate == null ? "—" : `${stats.winRate.toFixed(0)}%`} />
+            <Statistic title="Win rate" value={winRate(bot)} />
             <span style={{ color: MUTED, fontSize: 12 }}>
               {/* a rotation bot's trims count too: each sale books its slice of the cost as P&L */}
-              {stats.trades} {rotation ? "sale" : "closed trade"}{stats.trades === 1 ? "" : "s"}
+              {bot.closed_trades} {rotation ? "sale" : "closed trade"}{bot.closed_trades === 1 ? "" : "s"}
             </span>
           </Card>
         </Col>

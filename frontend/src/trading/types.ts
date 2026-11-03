@@ -148,6 +148,8 @@ export interface Bot extends Omit<StrategyParams, "strategy"> {
   return_pct: number; // (equity + withdrawn_cash) / capital - 1, in %: taking money out doesn't move it
   unrealized_pnl: number;
   buy_hold_return_pct: number | null;
+  closed_trades: number; // sells that booked a profit or loss (a rotation bot's trims and a withdrawal's sales count too)
+  win_rate_pct: number | null; // the % of those that made money (null = none closed yet)
   pending_order: boolean; // a market order is still working at the broker
   stop_at_broker: boolean; // the stop-loss rests at the broker as a real order (Alpaca), so it works while this app is off
   // Rotation bots only (null / empty on the others). Their benchmark_price / last_price are what the universe held in
@@ -256,7 +258,7 @@ export interface Snapshot {
 }
 
 /** The bot table's sortable columns (trading-service schemas.BotSort). */
-export type BotSort = "id" | "rating" | "score" | "all" | "ret" | "beat" | "pos";
+export type BotSort = "id" | "rating" | "score" | "all" | "ret" | "beat" | "pos" | "win";
 // The Bot column's filter (schemas.BotKind): a dip buyer, a momentum rotation, a single-symbol bot
 export type BotKind = "dip" | "rotation" | "symbol";
 

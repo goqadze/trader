@@ -22,7 +22,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import case, delete, func, select, text
 from sqlalchemy.orm import Session, defer
 
 from . import auth, dip, fees, journal, notify, risk_report, rotation, scheduler, studies, withdraw
@@ -124,11 +124,28 @@ def _setup_all(bot: Bot) -> float | None:
     return studies.all_return(bot.setup["periods"], bot.setup["results"]) if bot.setup else None
 
 
+def _closed_trades(session: Session, bot_id: int | None = None) -> dict[int, tuple[int, int]]:
+    """Per bot (or just the one): how many sells booked a profit or loss, and how many of those made money. Counted in
+    the database, as a bot can have more orders than one page of them, and one query for all the bots in a list."""
+    q = (select(Order.bot_id, func.count(), func.sum(case((Order.pnl > 0, 1), else_=0)))
+         .where(Order.side == "SELL", Order.pnl.is_not(None)).group_by(Order.bot_id))
+    if bot_id is not None:
+        q = q.where(Order.bot_id == bot_id)
+    return {i: (n, wins) for i, n, wins in session.execute(q)}
+
+
+def _win_rate(closed: tuple[int, int] | None) -> float | None:
+    """The % of its closed trades that made money (None: none closed yet, so nothing to say)."""
+    return round(closed[1] / closed[0] * 100, 1) if closed else None
+
+
 def _bot_out(session: Session, bot: Bot, yahoo: dict[str, str] | None = None,
-             live_setups: dict[tuple[int, str], list[int]] | None = None) -> BotOut:
-    """yahoo: the symbols' Yahoo sectors (sectors.yahoo_sectors) and live_setups (_live_setups), read once by a caller
-    listing many bots."""
+             live_setups: dict[tuple[int, str], list[int]] | None = None,
+             closed: dict[int, tuple[int, int]] | None = None) -> BotOut:
+    """yahoo: the symbols' Yahoo sectors (sectors.yahoo_sectors), live_setups (_live_setups) and closed (_closed_trades),
+    read once by a caller listing many bots."""
     price = _price(bot)
+    trades = (_closed_trades(session, bot.id) if closed is None else closed).get(bot.id)
     held_rows = holdings(session, bot)
     equity = bot_equity(session, bot, price, held_rows)
     live = next((b["live"] for b in catalog() if b["name"] == bot.broker), False)
@@ -170,6 +187,8 @@ def _bot_out(session: Session, bot: Bot, yahoo: dict[str, str] | None = None,
         "return_pct": return_pct(bot, equity),
         "unrealized_pnl": _unrealized(bot, held_rows, price),
         "buy_hold_return_pct": return_pct(bot, bh) if (bh := benchmark_value(bot, price)) else None,
+        "closed_trades": trades[0] if trades else 0,
+        "win_rate_pct": _win_rate(trades),
         "pending_order": bool(open_orders(session, bot)),
         "stop_at_broker": resting_stop(session, bot) is not None,
         "next_decision_at": scheduler.next_decision_at(bot, now),
@@ -350,8 +369,8 @@ def list_bots(include_archived: bool = False, session: Session = Depends(get_ses
     q = select(Bot).order_by(Bot.created_at.desc())
     if not include_archived:
         q = q.where(Bot.status != "archived")
-    yahoo, live_setups = badges.yahoo_sectors(session), _live_setups(session)
-    return [_bot_out(session, b, yahoo, live_setups) for b in session.scalars(q)]
+    yahoo, live_setups, closed = badges.yahoo_sectors(session), _live_setups(session), _closed_trades(session)
+    return [_bot_out(session, b, yahoo, live_setups, closed) for b in session.scalars(q)]
 
 
 @dataclass
@@ -361,7 +380,7 @@ class _Row:
     bot: Bot
     sectors: list[str]
     equity: float
-    keys: dict[str, float | None]  # BotSort -> its value (None: no tested setup or buy & hold, sorted last either way)
+    keys: dict[str, float | None]  # BotSort -> its value (None: no tested setup, buy & hold or closed trade, sorted last either way)
 
 
 def _kind(bot: Bot) -> str:
@@ -382,7 +401,7 @@ def bot_table(broker: str = "all", include_archived: bool = False, sector: list[
               limit: int = Query(50, ge=1, le=500), session: Session = Depends(get_session)):
     """The overview's bot table, one page at a time: one broker's bots ("all", or a broker with none: every bot), those
     of any of the `kind`s (dip buyer, momentum rotation, single symbol) and with any of the `sector` badges, sorted by a
-    column (none: newest first; ties keep that order; no tested setup or buy & hold: last either way), from `offset`. With it, what
+    column (none: newest first; ties keep that order; no tested setup, buy & hold or closed trade: last either way), from `offset`. With it, what
     the page shows of all of them: bots per broker, the broker's totals, kind and sector choices, the active bots for
     Halt all, and every bot's kind for the activity feed.
     Return and Position need every bot's equity: all their holdings and watchlists are read at once, and only the
@@ -397,7 +416,7 @@ def bot_table(broker: str = "all", include_archived: bool = False, sector: list[
     watched: dict[int, list[str]] = {}
     for bot_id, symbol in session.execute(select(WatchItem.bot_id, WatchItem.symbol)):
         watched.setdefault(bot_id, []).append(symbol)
-    yahoo = badges.yahoo_sectors(session)
+    yahoo, closed = badges.yahoo_sectors(session), _closed_trades(session)
 
     def row(bot: Bot) -> _Row:
         price, mine = _price(bot), held.get(bot.id, [])
@@ -405,7 +424,7 @@ def bot_table(broker: str = "all", include_archived: bool = False, sector: list[
         ret, bh = return_pct(bot, equity), benchmark_value(bot, price)
         return _Row(bot, badges.of_bot(bot, watched.get(bot.id, []), yahoo)[0], equity, {
             "id": bot.id, "rating": bot.rating, "score": (bot.setup or {}).get("score"), "all": _setup_all(bot),
-            "ret": ret, "pos": _unrealized(bot, mine, price),
+            "ret": ret, "pos": _unrealized(bot, mine, price), "win": _win_rate(closed.get(bot.id)),
             # How far its return is ahead of buy & hold, in points (the Return column's two numbers, as shown)
             "beat": round(ret - return_pct(bot, bh), 2) if bh else None})
 
@@ -436,7 +455,7 @@ def bot_table(broker: str = "all", include_archived: bool = False, sector: list[
     live = {b["name"] for b in catalog() if b["live"]}
     page, live_setups = rows[offset:offset + limit], _live_setups(session)
     return BotTableOut(
-        items=[_bot_out(session, r.bot, yahoo, live_setups) for r in page], total=len(rows), offset=offset, broker=shown,
+        items=[_bot_out(session, r.bot, yahoo, live_setups, closed) for r in page], total=len(rows), offset=offset, broker=shown,
         brokers=dict(brokers.most_common()), sectors=dict(sorted(sectors.items(), key=lambda kv: (-kv[1], kv[0]))),
         kinds=dict(kinds.most_common()), totals=totals, active=sum(b.status == "active" for b in bots),
         active_live=sum(b.status == "active" and b.broker in live for b in bots),

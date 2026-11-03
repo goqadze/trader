@@ -17,7 +17,7 @@ import { SetupButton, SetupPct } from "./setup";
 import { dipRules } from "../dip/DipParts";
 import { strategyName } from "../strategies";
 import {
-  STATUS_COLOR, botTitle, checkTimes, holdsMany, isDip, isRotation, localTime, nyTime, pct, pnlColor, relative, rotationRules, slotTimes, usd,
+  STATUS_COLOR, botTitle, checkTimes, holdsMany, isDip, isRotation, localTime, nyTime, pct, pnlColor, relative, rotationRules, slotTimes, usd, winRate,
 } from "./format";
 import type { AccountInfo, Bot, BotCreate, BotKind, BotSort, BotTable, BotTableQuery, TradingEvent, TradingStatus } from "./types";
 import { usePolling } from "./usePolling";
@@ -63,6 +63,13 @@ export function MarketStatus({ status, bot }: { status: TradingStatus | null; bo
   );
 }
 
+/** A bot's rules in one line: shown when hovering its name in the bot table. */
+function strategyText(b: Bot): string {
+  if (isRotation(b)) return `Momentum rotation · ${rotationRules(b)} · month ends at ${slotTimes().close}`;
+  if (isDip(b)) return `Dip buyer on ${b.watchlist.length} · ${dipRules(b)}${b.news ? " · news on" : ""}`;
+  return `${strategyName(b.strategy)} · conf ≥ ${b.min_confidence} · every ${b.rebalance_days}d at ${checkTimes(b.decide_at, slotTimes())} · stop ${+(b.stop_pct * 100).toFixed(1)}% / tgt ${+(b.target_pct * 100).toFixed(1)}%`;
+}
+
 // The table is sorted, filtered and cut into pages by trading-service (GET /bots/table): `sorter: true` marks a column
 // it sorts by, under the same key (schemas.BotSort)
 const columns: ColumnsType<Bot> = [
@@ -76,13 +83,18 @@ const columns: ColumnsType<Bot> = [
     render: (_, b) => <Link to={`/trading/${b.id}`} style={{ color: "#8b98b5", whiteSpace: "nowrap" }}>#{b.id}</Link>,
   },
   {
-    // Filterable by kind (the choices and their counts come from trading-service, see below)
+    // Filterable by kind (the choices and their counts come from trading-service, see below). Hovering its title or
+    // name shows its rules; the tested setup's tag beside them has a popup of its own
     title: "Bot",
     key: "bot",
     render: (_, b) => (
       <Space direction="vertical" size={0}>
-        <Link to={`/trading/${b.id}`} style={{ fontWeight: 600, fontSize: 15 }}>{botTitle(b)}</Link>
-        <span style={{ color: "#8b98b5", fontSize: 12 }}>{b.name} <SetupButton bot={b} compact /></span>
+        <Tooltip title={strategyText(b)}>
+          <Link to={`/trading/${b.id}`} style={{ fontWeight: 600, fontSize: 15 }}>{botTitle(b)}</Link>
+        </Tooltip>
+        <span style={{ color: "#8b98b5", fontSize: 12 }}>
+          <Tooltip title={strategyText(b)}><span>{b.name}</span></Tooltip> <SetupButton bot={b} compact />
+        </span>
       </Space>
     ),
   },
@@ -187,17 +199,22 @@ const columns: ColumnsType<Bot> = [
   },
   { title: "Last price", key: "last_price", align: "right", render: (_, b) => (holdsMany(b) ? "—" : usd(b.last_price)) },
   {
-    title: "Strategy",
-    key: "params",
-    render: (_, b) => (isRotation(b) ? (
-      <span style={{ fontSize: 12, color: "#8b98b5" }}>Momentum rotation · {rotationRules(b)} · month ends at {slotTimes().close}</span>
-    ) : isDip(b) ? (
-      <span style={{ fontSize: 12, color: "#8b98b5" }}>Dip buyer on {b.watchlist.length} · {dipRules(b)}{b.news ? " · news on" : ""}</span>
-    ) : (
-      <span style={{ fontSize: 12, color: "#8b98b5" }}>
-        {strategyName(b.strategy)} · conf ≥ {b.min_confidence} · every {b.rebalance_days}d at {checkTimes(b.decide_at, slotTimes())} · stop {+(b.stop_pct * 100).toFixed(1)}% / tgt {+(b.target_pct * 100).toFixed(1)}%
-      </span>
-    )),
+    // The bot page's Win rate, with how many trades it rests on: 100% of one sale says little. No closed trade yet: —,
+    // and last either way
+    title: <Tooltip title="The share of its closed trades that made money (a trade's profit or loss comes after fees)">Win rate</Tooltip>,
+    key: "win",
+    width: 96,
+    align: "right",
+    sorter: true,
+    sortDirections: ["descend", "ascend"],
+    render: (_, b) => (
+      <Space direction="vertical" size={0}>
+        {winRate(b)}
+        <span style={{ color: "#8b98b5", fontSize: 12, whiteSpace: "nowrap" }}>
+          {b.closed_trades} {isRotation(b) ? "sale" : "trade"}{b.closed_trades === 1 ? "" : "s"}
+        </span>
+      </Space>
+    ),
   },
   { title: "Last decision", key: "last", render: (_, b) => (b.last_decision_at ? nyTime(b.last_decision_at) : b.last_decision_date ?? "—") },
   { title: "Next decision", dataIndex: "next_decision_at", render: (v: string | null) => (v ? nyTime(v) : "—") },
@@ -229,7 +246,7 @@ function rememberBroker(broker: string) {
   }
 }
 
-// The bot table's sort (ID, Rating, Score, All, Return, vs B&H or Position, by a click on the column) and page size, remembered
+// The bot table's sort (ID, Rating, Score, All, Return, vs B&H, Position or Win rate, by a click on the column) and page size, remembered
 // in this browser too
 const SORT_KEY = "trading.botSort";
 const PAGE_SIZE_KEY = "trading.botPageSize";

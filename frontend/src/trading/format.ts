@@ -4,6 +4,9 @@
 import { DIP, ROTATION, type Bot, type DecideAt, type TradingStatus } from "./types";
 
 // Values within half a cent of zero print as $0.00 (float dust would otherwise show "-$0.00")
+/** A bot's win rate, the same on its page and in the bot table (— = no closed trade yet). */
+export const winRate = (b: { win_rate_pct: number | null }) => (b.win_rate_pct == null ? "—" : `${b.win_rate_pct.toFixed(0)}%`);
+
 export const usd = (v: number | null | undefined, digits = 2) =>
   v == null
     ? "—"
