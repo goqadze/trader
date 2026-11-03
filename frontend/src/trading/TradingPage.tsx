@@ -197,7 +197,6 @@ const columns: ColumnsType<Bot> = [
     sortDirections: ["descend", "ascend"],
     render: (_, b) => <SetupPct v={b.setup?.all} digits={0} />,
   },
-  { title: "Last price", key: "last_price", align: "right", render: (_, b) => (holdsMany(b) ? "—" : usd(b.last_price)) },
   {
     // The bot page's Win rate, with how many trades it rests on: 100% of one sale says little. No closed trade yet: —,
     // and last either way
