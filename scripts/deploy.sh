@@ -11,7 +11,7 @@
 #   scripts/deploy.sh --at <sha> --restart frontend ...    ...then restart them (refuses at a risky moment) and verify
 #   scripts/deploy.sh restart trading-service              only the restart + verify, after a deploy without --restart
 #   scripts/deploy.sh moment                               is now a quiet moment to restart trading-service?
-#   scripts/deploy.sh verify                               check the server
+#   scripts/deploy.sh verify                               check the server, now (a restart's own verify waits for a pass)
 # --at <sha>: the commit the dry run showed. Refuses if HEAD has moved since (another session committed in between),
 #   so what goes to the server is what the dry run listed. verify/restart --at <sha>: the commit the server must be at.
 # --expect "text" (with --restart, restart or verify): the new frontend bundle must contain that text.
@@ -26,6 +26,7 @@ SERVICES="trading-service decision-service backtest-service frontend watchdog"
 LOGS="${TMPDIR:-/tmp}"
 EXPECT=""
 DEPLOYED=""  # full sha of the commit being deployed (--at, else HEAD): what verify expects on the server
+WAIT_PASS=0  # 1 after a restart: verify first waits for a finished scheduler pass
 remote() { ssh -o BatchMode=yes "$SERVER" "cd trading && $1"; }
 say() { printf '\n== %s\n' "$*"; }
 die() { printf 'deploy: %b\n' "$*" >&2; exit 1; }
@@ -34,18 +35,13 @@ die() { printf 'deploy: %b\n' "$*" >&2; exit 1; }
 verify() {
   say "verify"
   local out
-  out=$(ssh -o BatchMode=yes "$SERVER" "EXPECT=$(printf %q "$EXPECT") HEAD_SHA=${DEPLOYED:-$(git rev-parse HEAD)} bash -s" <<'EOF'
+  out=$(ssh -o BatchMode=yes "$SERVER" "EXPECT=$(printf %q "$EXPECT") WAIT_PASS=$WAIT_PASS HEAD_SHA=${DEPLOYED:-$(git rev-parse HEAD)} bash -s" <<'EOF'
 # Every docker command reads </dev/null: this script itself arrives on stdin, and `docker compose exec` would eat it
 cd trading
 bad=0
 fail() { echo "FAIL $*"; bad=$((bad + 1)); }
-up=0
-for c in $(docker compose ps -q </dev/null); do
-  set -- $(docker inspect -f '{{.Name}} {{.RestartCount}} {{.State.Status}}' "$c" </dev/null)
-  if [ "$2" = 0 ] && [ "$3" = running ]; then up=$((up + 1)); else fail "container ${1#/}: $3, $2 restarts"; fi
-done
-echo "containers: $up running, 0 restarts"
-curl -sf localhost:8002/status | python3 -c '
+status() {
+  curl -sf localhost:8002/status | python3 -c '
 import datetime as d, json, sys
 s = json.load(sys.stdin)
 t = s.get("scheduler_last_tick")
@@ -55,7 +51,24 @@ live = "allowed" if s.get("live_trading_allowed") else "NOT allowed"
 market = "open" if s.get("market_open") else "closed"
 print(f"status: scheduler {sched}, last tick {age}s ago, live trading {live}, market {market}")
 sys.exit(0 if s.get("scheduler_enabled") and age is not None and age < 180 else 1)
-' || fail "trading-service /status: scheduler off, not ticking, or no answer"
+'
+}
+# The scheduler stamps a pass when it ends, with the time it began. So after a restart there is no stamp for the whole
+# first pass (about 2 minutes in market hours, with ~235 paper bots), and a slow pass's stamp is already too old when it
+# appears. Wait for a recent one before any check, so the checks also see how that pass went. 5 minutes is when /health
+# calls the scheduler stuck; after that the status check below reports it.
+if [ "$WAIT_PASS" = 1 ]; then
+  waited=0
+  until status >/dev/null 2>&1 || [ "$waited" -ge 300 ]; do sleep 10; waited=$((waited + 10)); done
+  [ "$waited" = 0 ] || echo "scheduler: waited ${waited}s for a finished pass"
+fi
+up=0
+for c in $(docker compose ps -q </dev/null); do
+  set -- $(docker inspect -f '{{.Name}} {{.RestartCount}} {{.State.Status}}' "$c" </dev/null)
+  if [ "$2" = 0 ] && [ "$3" = running ]; then up=$((up + 1)); else fail "container ${1#/}: $3, $2 restarts"; fi
+done
+echo "containers: $up running, 0 restarts"
+status || fail "trading-service /status: scheduler off, not ticking, or no answer"
 wd=$(docker compose exec -T watchdog python watchdog.py --once </dev/null 2>&1) || true
 notok=$(printf '%s\n' "$wd" | awk 'NF && $NF != "ok"')
 if [ -z "$notok" ]; then echo "watchdog: $(printf '%s\n' "$wd" | grep -c ok) checks ok"; else fail "watchdog: $notok"; fi
@@ -103,7 +116,9 @@ restart() {
   remote "docker compose up -d --no-deps $*" > "$LOGS/deploy-restart.log" 2>&1 \
     || { cat "$LOGS/deploy-restart.log"; die "docker compose up failed"; }
   grep -E 'Started|Running|Recreated' "$LOGS/deploy-restart.log" | sed 's/^ */  /' || true
-  sleep 40  # the scheduler's first tick, and nginx/uvicorn up, before the checks
+  sleep 40  # nginx and uvicorn up before the checks
+  echo "  next, the checks; they first wait for a finished scheduler pass (up to 5 min)"
+  WAIT_PASS=1
   verify
 }
 

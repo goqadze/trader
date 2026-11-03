@@ -27,6 +27,9 @@ Real money runs on the server. Deploy only on the user's request, and only what 
      orders. If it refuses, run `scripts/deploy.sh restart <services>` in a few minutes; it rebuilds nothing.
      `scripts/deploy.sh moment` asks without doing anything.
    - Frontend, backtest-service and watchdog restart at any time.
+   - After a trading-service restart the checks first wait for a finished scheduler pass (about 2 minutes in market
+     hours, 5 at most, then a failure). `scripts/deploy.sh verify` alone doesn't wait: right after a restart it reports
+     the missing pass as a failure.
    - Without `--restart` it stops after the build: `scripts/deploy.sh restart --at <sha> <services>` later.
 6. **Report** with numbers from the output: files copied, tests passed, `verify: all ok` (14 containers, 0
    restarts, scheduler ticking, live trading allowed, 11 watchdog checks, git clean at the commit, bundle string).

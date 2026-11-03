@@ -1,11 +1,15 @@
 # Convenience commands. Run `make test` to run every test suite.
 # Tests run inside the service containers, so no local Python setup is needed.
 
-.PHONY: test test-decision test-backtest test-trading test-watchdog backup-trading-db guide-charts lock
+.PHONY: test test-decision test-backtest test-trading test-watchdog test-deploy backup-trading-db guide-charts lock
 
 # Run all backend tests (both services).
 # SENTRY_DSN is blanked in every test run: the tests' deliberate failures must not land in GlitchTip as real errors.
-test: test-decision test-backtest test-trading test-watchdog
+test: test-decision test-backtest test-trading test-watchdog test-deploy
+
+# scripts/deploy.sh's restart and checks, against a fake server. Runs here, not in a container (bash, git, python3).
+test-deploy:
+	./scripts/test-deploy.sh
 
 # decision-service tests (risk sizing, decision rules, indicators, news RAG).
 # The news store tests run against Postgres + pgvector in a separate `news_test` database.
