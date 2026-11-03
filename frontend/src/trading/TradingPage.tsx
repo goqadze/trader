@@ -25,8 +25,10 @@ import { usePolling } from "./usePolling";
 /** Market clock + scheduler heartbeat, shown on both trading pages. Given a bot, shows that bot's next decision. */
 export function MarketStatus({ status, bot }: { status: TradingStatus | null; bot?: Bot }) {
   if (!status) return null;
-  // The scheduler ticks every ~30s; no tick for 3 minutes means the loop is stuck or the service is down
-  const stale = !status.scheduler_last_tick || Date.now() - new Date(status.scheduler_last_tick).getTime() > 180_000;
+  // No finished pass for 5 minutes means the loop is stuck or the service is down: the same limit as /health, which the
+  // watchdog emails about. The stamp is when the paper bots' last finished pass began, and at a check moment such a pass
+  // can take 2 minutes, so a shorter limit showed this badge while the bots were fine.
+  const stale = !status.scheduler_last_tick || Date.now() - new Date(status.scheduler_last_tick).getTime() > 300_000;
   const t = slotTimes(status);
   const next = bot ? bot.next_decision_at : status.next_decision_at;
   return (
@@ -50,7 +52,7 @@ export function MarketStatus({ status, bot }: { status: TradingStatus | null; bo
       {!status.scheduler_enabled ? (
         <Tag color="red">Scheduler disabled</Tag>
       ) : stale ? (
-        <Tooltip title="No scheduler tick in the last 3 minutes. Check `docker compose logs trading-service`.">
+        <Tooltip title="No scheduler tick in the last 5 minutes. Check `docker compose logs trading-service`.">
           <Tag color="orange">Scheduler not ticking</Tag>
         </Tooltip>
       ) : (
