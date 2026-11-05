@@ -33,6 +33,7 @@ grep -n "<column>" app/models.py app/schemas.py ../frontend/src/trading/types.ts
 | `notify.py` | Email outbox | `enqueue`, `trade`, `from_event`, `dip_signal`, `compose` (HTML), `send_pending`, `run_forever`; links use `dashboard_url()/trading/{id}` |
 | `risk_report.py` | Daily pre-open risk email | `build`, `run_once`, `due`, `run_forever`; `macro_dates.json` |
 | `fees.py` | Alpaca's daily CAT/REG fees on the live account, booked hourly to the bot that caused most of each (`AccountFee`) | `run_forever`, `run_once`, `book`, `_payer`; `AlpacaBroker.fees` reads them |
+| `ledger.py` | A real account's money from its start: the sum against the account, and every move (`MoneyMove`; `trader.add_capital` and `withdraw.take_out` write the bots' rows) | `account` (`GET /accounts/{broker}/ledger`), `_moves`, `backfill` (startup: old adds and withdrawals, from their events); endpoints in `main.py`: `account_ledger`, `record_account_money`, `delete_account_money` |
 | `studies.py` | Test results grid (server-side paging; each test's sector badges from its symbols, `sector` filter) | `index`, `forget`, `page`, `sort_keys` |
 | `sectors.py` | Sector badges per bot (from its symbols, or set by hand: `Bot.sectors`) | `badges` (the rule), `SYMBOLS` (hand-made symbol → sector), `YAHOO` (fallback), `of_bot`, `clean`; endpoints `GET /sectors`, `PUT /bots/{id}/sectors` |
 | `journal.py` | Journal API (`/journal`, per signed-in user) | `list_trades`, `create_trade`, `apply`, `stats`, `import_bot_trades` |

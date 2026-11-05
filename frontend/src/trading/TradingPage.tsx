@@ -7,6 +7,7 @@ import type { ColumnsType } from "antd/es/table";
 import type { SortOrder } from "antd/es/table/interface";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { AccountCards, SetStart } from "./AccountLedger";
 import { tradingApi } from "./api";
 import { ArchivedLine } from "./ArchivedHistory";
 import BotForm, { type BotFormInitial } from "./BotForm";
@@ -393,6 +394,12 @@ export default function TradingPage() {
     ...brokers.map((n) => ({ label: `${brokerLabel(n)} (${counts[n]})`, value: n })),
   ];
   const pickBroker = (v: string) => { setBrokerPick(v); rememberBroker(v); setPage(1); };
+  // A real account's tab measures from what the account started with, once that's written down (ledger.py)
+  const realAccount = status.data?.brokers.some((b) => b.name === broker && b.live) ?? false;
+  const ledger = usePolling(() => (realAccount ? tradingApi.ledger(broker) : Promise.resolve(null)), 15_000, [realAccount, broker]);
+  const money = realAccount && ledger.data?.broker === broker ? ledger.data : null;
+  // Until it's known which it is, no bots' sum: it would flash a number that isn't this tab's
+  const waiting = broker !== "all" && (!status.data || (realAccount && !money && !ledger.error));
   // The Sectors filter offers the badges of the shown broker's bots, the most common first
   const sectorChoices = useMemo(
     () => Object.entries(data?.sectors ?? {}).map(([s, n]) => ({ text: `${s} (${n})`, value: s })), [data?.sectors]);
@@ -520,24 +527,33 @@ export default function TradingPage() {
       ))}
 
       <Row gutter={[16, 16]}>
-        <Col xs={12} md={6}>
-          <Card size="small">
-            <Statistic title="Capital allocated" value={usd(totals.capital, 0)} />
-            {(totals.added > 0 || totals.withdrawn > 0) && (
-              <span style={{ color: "#8b98b5", fontSize: 12 }}>
-                {[totals.added > 0 && `incl. ${usd(totals.added, 0)} added`, totals.withdrawn > 0 && `${usd(totals.withdrawn, 0)} taken out`].filter(Boolean).join(" · ")}
-              </span>
-            )}
-          </Card>
-        </Col>
-        <Col xs={12} md={6}><Card size="small"><Statistic title="Current equity" value={usd(totals.equity, 0)} /></Card></Col>
-        <Col xs={12} md={6}>
-          <Card size="small">
-            <Statistic title="Total P&L" value={usd(totals.pnl)} valueStyle={{ color: pnlColor(totals.pnl) }} />
-            <ArchivedLine broker={data?.broker ?? "all"} label={broker === "all" ? "every broker" : brokerLabel(broker)}
-              count={totals.archived} result={totals.archived_pnl} runningPnl={totals.pnl} />
-          </Card>
-        </Col>
+        {money?.start != null ? (
+          <AccountCards ledger={money} archived={totals.archived} onChanged={ledger.reload} />
+        ) : (
+          <>
+            <Col xs={12} md={6}>
+              <Card size="small">
+                <Statistic title="Capital allocated" value={usd(totals.capital, 0)} loading={waiting} />
+                {!waiting && (totals.added > 0 || totals.withdrawn > 0) && (
+                  <span style={{ color: "#8b98b5", fontSize: 12 }}>
+                    {[totals.added > 0 && `incl. ${usd(totals.added, 0)} added`, totals.withdrawn > 0 && `${usd(totals.withdrawn, 0)} taken out`].filter(Boolean).join(" · ")}
+                  </span>
+                )}
+                {money && <SetStart ledger={money} onChanged={ledger.reload} />}
+              </Card>
+            </Col>
+            <Col xs={12} md={6}><Card size="small"><Statistic title="Current equity" value={usd(totals.equity, 0)} loading={waiting} /></Card></Col>
+            <Col xs={12} md={6}>
+              <Card size="small">
+                <Statistic title="Total P&L" value={usd(totals.pnl)} valueStyle={{ color: pnlColor(totals.pnl) }} loading={waiting} />
+                {!waiting && (
+                  <ArchivedLine broker={data?.broker ?? "all"} label={broker === "all" ? "every broker" : brokerLabel(broker)}
+                    count={totals.archived} result={totals.archived_pnl} runningPnl={totals.pnl} />
+                )}
+              </Card>
+            </Col>
+          </>
+        )}
         <Col xs={12} md={6}>
           <Card size="small">
             <Statistic title="Active bots" value={totals.active} suffix={`/ ${totals.count}`} />

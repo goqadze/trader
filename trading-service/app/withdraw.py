@@ -47,7 +47,7 @@ from sqlalchemy.orm import Session
 from .brokers import SHARED_ACCOUNT_BROKERS, Broker, BrokerError
 from .dip import end_fall
 from .market import is_open, ny_date
-from .models import DIP, HOLDINGS_STRATEGIES, ROTATION, Bot, Order, WatchItem
+from .models import DIP, HOLDINGS_STRATEGIES, ROTATION, Bot, MoneyMove, Order, WatchItem
 from .rotation import _quote
 from .shares import MIN_FRACTIONAL_ORDER, QTY_DECIMALS, fmt_qty, same_qty, tidy
 from .trader import (_describe, bot_equity, capital, holdings, log_event, mark_to_market, open_orders, protect,
@@ -225,6 +225,7 @@ def take_out(session: Session, bot: Bot, amount: float, now: datetime) -> None:
         bot.peak_equity = round(bot.peak_equity * (equity - amount) / equity, 2)
     bot.cash = round(bot.cash - amount, 2)
     bot.withdrawn_cash = round((bot.withdrawn_cash or 0.0) + amount, 2) or None
+    session.add(MoneyMove(broker=bot.broker, bot_id=bot.id, kind="take_out", amount=-amount, at=now))
     if price:
         mark_to_market(session, bot, price, now)
 

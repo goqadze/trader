@@ -6,7 +6,7 @@ import { request as http } from "../http";
 import type { RotationPresetConfig } from "../rotation/types";
 import type { SavedSetup, Study, StudyStrategy, StudySummary, StudyTestDetail, StudyTestPage, TestQuery } from "../studies/types";
 import type {
-  AccountInfo, ArchivedBots, Bot, BotCreate, BotTable, BotTableQuery, BotUpdate, CapitalAdd, CapitalWithdraw, Decision, EmailAlert, EmailAlerts, EmailAlertsSave, Order, RotationBotCreate, RotationBotUpdate, Snapshot,
+  AccountInfo, ArchivedBots, Bot, BotCreate, BotTable, BotTableQuery, BotUpdate, CapitalAdd, CapitalWithdraw, Decision, EmailAlert, EmailAlerts, EmailAlertsSave, Ledger, MoneyIn, Order, RotationBotCreate, RotationBotUpdate, Snapshot,
   TradingEvent, TradingStatus, WithdrawalPlan,
 } from "./types";
 
@@ -17,6 +17,9 @@ const request = <T>(method: string, path: string, body?: unknown) => http<T>(met
 export const tradingApi = {
   status: () => request<TradingStatus>("GET", "/status"),
   accounts: () => request<AccountInfo[]>("GET", "/accounts"),
+  ledger: (broker: string) => request<Ledger>("GET", `/accounts/${broker}/ledger`),
+  recordMoney: (broker: string, body: MoneyIn) => request<Ledger>("POST", `/accounts/${broker}/money`, body),
+  deleteMoney: (broker: string, id: number) => request<Ledger>("DELETE", `/accounts/${broker}/money/${id}`),
   listBots: (includeArchived = false) => request<Bot[]>("GET", `/bots?include_archived=${includeArchived}`),
   // The overview's bot table, one page at a time: filtered and sorted by trading-service (main.bot_table)
   botTable: (query: BotTableQuery) => {

@@ -1006,6 +1006,58 @@ class StatusOut(BaseModel):
     brokers: list[BrokerInfo]
 
 
+class MoneyIn(BaseModel):
+    """The real account's own money, written down by hand (POST /accounts/{broker}/money). Only a record: nothing is
+    sent to the broker."""
+
+    kind: Literal["start", "deposit", "withdrawal"]
+    amount: float = Field(gt=0, le=10_000_000)
+    day: date | None = None  # when (none: the day of the account's first bot for the start, today otherwise)
+    note: str = Field("", max_length=200)
+
+
+class LedgerMove(BaseModel):
+    """One line of a real account's money history: how much its free cash moved, seen from the account."""
+
+    id: int | None  # a row written down by hand, which can be deleted (None: comes from the bots' records)
+    at: datetime
+    kind: Literal["start", "deposit", "withdrawal", "new_bot", "add", "take_out", "archived", "fee"]
+    bot_id: int | None
+    bot_name: str | None
+    amount: float  # into free cash; negative: out of it
+    free_after: float  # free cash by the records after this line
+    note: str
+
+
+class LedgerOut(BaseModel):
+    """A real account's money from its start (ledger.py has the sum): start + deposits - withdrawals + result = expected,
+    against what is in the account: bots_equity + free_cash = equity. difference = equity - expected."""
+
+    broker: str
+    label: str
+    start: float | None  # None: not written down yet, so there's nothing to measure against
+    deposits: float
+    withdrawals: float
+    capital: float  # start + deposits - withdrawals
+    added: float  # Add money and money taken out of all its bots, archived ones too: moves inside the account
+    taken_out: float
+    running_result: float  # the gains and losses of the bots that aren't archived, after their fees
+    archived_result: float  # of the archived ones
+    fees: float  # Alpaca's fees in all (those booked to a bot are already in its result)
+    fees_no_bot: float  # those no bot paid
+    result: float  # running_result + archived_result - fees_no_bot
+    result_pct: float | None  # of the capital
+    expected: float | None  # capital + result
+    bots_equity: float
+    free_cash: float | None  # the account's cash - its running bots' cash (None: the account couldn't be read)
+    equity: float | None  # bots_equity + free_cash
+    difference: float | None
+    error: str  # why the account couldn't be read
+    checked_at: datetime | None
+    first_bot_day: date | None
+    moves: list[LedgerMove]  # the earliest first
+
+
 class AccountOut(BaseModel):
     """One real broker account (Alpaca paper or live) and how much of its own money no bot holds (GET /accounts)."""
     broker: str

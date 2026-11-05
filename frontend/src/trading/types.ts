@@ -365,6 +365,53 @@ export interface AccountInfo {
   checked_at: string | null;
 }
 
+/** The real account's own money, written down by hand (POST /accounts/{broker}/money, MoneyIn). */
+export interface MoneyIn {
+  kind: "start" | "deposit" | "withdrawal";
+  amount: number;
+  day?: string; // YYYY-MM-DD; none: the first bot's day for the start, today otherwise
+  note?: string;
+}
+
+/** One line of a real account's money history: how much its free cash moved (LedgerMove). */
+export interface LedgerMove {
+  id: number | null; // written down by hand, so it can be deleted
+  at: string;
+  kind: MoneyIn["kind"] | "new_bot" | "add" | "take_out" | "archived" | "fee";
+  bot_id: number | null;
+  bot_name: string | null;
+  amount: number; // into free cash; negative: out of it
+  free_after: number; // free cash by the records after this line
+  note: string;
+}
+
+/** A real account's money from its start (trading-service GET /accounts/{broker}/ledger, ledger.py). */
+export interface Ledger {
+  broker: string;
+  label: string;
+  start: number | null; // null: not written down yet
+  deposits: number;
+  withdrawals: number;
+  capital: number; // start + deposits - withdrawals
+  added: number; // moves inside the account: Add money and money taken out of its bots
+  taken_out: number;
+  running_result: number;
+  archived_result: number;
+  fees: number; // Alpaca's fees in all (those booked to a bot are already in its result)
+  fees_no_bot: number;
+  result: number;
+  result_pct: number | null;
+  expected: number | null; // capital + result
+  bots_equity: number;
+  free_cash: number | null; // null: the account couldn't be read (error says why)
+  equity: number | null; // bots_equity + free_cash
+  difference: number | null; // equity - expected
+  error: string;
+  checked_at: string | null;
+  first_bot_day: string | null;
+  moves: LedgerMove[]; // the earliest first
+}
+
 // --- Email alerts (trading-service notify.py, /email-alerts) ---
 
 export type NotifyCategory = "trades" | "risk" | "problems" | "signals" | "report";

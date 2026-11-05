@@ -32,7 +32,7 @@ from .brokers import SHARED_ACCOUNT_BROKERS, Broker, BrokerError, BrokerOrder, Q
 from .config import settings
 from .decision_client import SignalError, get_signal
 from .market import NY, ny_date
-from .models import DIP, HOLDINGS_STRATEGIES, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, EquitySnapshot, Event, Holding, Order
+from .models import DIP, HOLDINGS_STRATEGIES, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, EquitySnapshot, Event, Holding, MoneyMove, Order
 from .shares import fmt_qty, same_qty, tidy
 
 logger = logging.getLogger("trading-service")
@@ -208,6 +208,7 @@ def add_capital(session: Session, bot: Bot, amount: float, now: datetime) -> Non
         bot.benchmark_added = (bot.benchmark_added or 0.0) + amount / price
     bot.cash = round(bot.cash + amount, 2)
     bot.added_cash = round((bot.added_cash or 0.0) + amount, 2)
+    session.add(MoneyMove(broker=bot.broker, bot_id=bot.id, kind="add", amount=amount, at=now))
     bot.peak_equity = round(bot.peak_equity + amount, 2)
     if price:
         mark_to_market(session, bot, price, now)

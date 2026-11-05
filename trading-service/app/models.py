@@ -14,6 +14,7 @@
     Decision       every time a bot asked decision-service for a signal, and what it did about it
     Order          every order sent to a broker (write-ahead: saved BEFORE it is sent, see trader.submit_order)
     AccountFee     a fee Alpaca took from the live account for a day's trades, and the bot it was booked to (fees.py)
+    MoneyMove      money going into or out of a bot or a real account, one row per move (ledger.py)
     EquitySnapshot one row per bot per trading day, for the equity chart
     Event          audit log: created, paused, parameters changed, stop-loss hit, errors, ...
     User           who may sign in to the dashboard (see auth.py)
@@ -464,6 +465,23 @@ class AccountFee(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     bot_id: Mapped[int | None] = mapped_column(ForeignKey("bots.id"), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class MoneyMove(Base):
+    """Money going into or out of a bot or a real account, one row per move: a bot's added_cash and withdrawn_cash keep
+    only the totals, so this is what the history is read from (ledger.py). With a bot: Add money ("add") or a withdrawal
+    ("take_out"), on any broker. Without one: the account's own money, written down by its owner, as no bot can know it:
+    what it started with ("start"), real deposits and withdrawals at the broker ("deposit", "withdrawal")."""
+
+    __tablename__ = "money_moves"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    broker: Mapped[str] = mapped_column(String(16), index=True)
+    bot_id: Mapped[int | None] = mapped_column(ForeignKey("bots.id"), nullable=True, index=True)
+    kind: Mapped[str] = mapped_column(String(12))
+    amount: Mapped[float] = mapped_column(Float)  # into the bot, or the account; negative: out of it
+    at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    note: Mapped[str] = mapped_column(Text, default="")
 
 
 class EquitySnapshot(Base):

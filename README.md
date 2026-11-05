@@ -384,6 +384,21 @@ archived first, with the date, put in, came out, result and a running total, and
 give every bot together. E.g. a bot started with $400 and archived with $360 left adds -$40: the running bots' capital
 is $40 less than was deposited, and the line says where it went.
 
+The live account's money history (`GET /accounts/{broker}/ledger`, `ledger.py`): the cards above add up what was put in the
+bots still running, so moving money between bots, or archiving one and starting another with its cash, moves them up and
+down while no new money comes in. Once what the account started with is written down (the Alpaca live tab's Capital card
+offers it), that tab measures from it instead: Starting capital (plus real deposits, minus real withdrawals), Current
+equity (the bots plus free cash) and Total P&L (running and archived bots, after fees, also as a percent of the capital).
+E.g. a $1,000 start with running bots at -$30 and archived ones at -$40 should leave $930; the bots' $370 + free cash $560
+is $930, so the difference is $0. Money history shows that sum and every move, the newest first: bots started, money added
+and taken out, archived bots' cash coming back, real deposits and withdrawals, each with the free cash after it. Add money
+and Take out record themselves (table `money_moves`; older ones are read from their events at startup). The start and the
+real deposits and withdrawals are written by hand (`POST /accounts/{broker}/money`; a mistake can be deleted): only a
+record, nothing reaches Alpaca. The difference is what the records can't explain: a deposit not written down, a dividend,
+a fractional fill's rounding, or for a minute around a fill the account's read being up to 30 seconds old. These amounts
+stay in the database, not in the code or `.env`: this repo is public, they change without a restart and the backups keep
+them. Only real-money accounts: the paper account is shared with the Mac's bots, and the simulator has no account.
+
 Alpaca's fees (`fees.py`): Alpaca takes two small fees a trading day from the live account, not per order: a CAT fee
 ($0.01 on any day with trades, buys too) and a REG fee (SEC and FINRA on the day's sales, rounded up to a cent). Its
 orders come back without them, so once an hour trading-service reads the account's fee lines of the last 30 days and

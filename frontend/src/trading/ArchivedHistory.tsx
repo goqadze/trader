@@ -7,18 +7,20 @@ import { botTitle, nyTime, pnlColor, usd } from "./format";
 import type { ArchivedBot, ArchivedBots } from "./types";
 
 const signed = (v: number) => `${v > 0.005 ? "+" : ""}${usd(v)}`;
-const Money = ({ v }: { v: number }) => <span style={{ color: pnlColor(v) }}>{signed(v)}</span>;
-const day = (iso: string) => new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
+export const Money = ({ v }: { v: number }) => <span style={{ color: pnlColor(v) }}>{signed(v)}</span>;
+export const day = (iso: string) => new Date(iso).toLocaleDateString("en-US", { timeZone: "America/New_York", month: "short", day: "numeric" });
 
 /** The line under Total P&L: what the shown broker's archived bots made or lost from start to archive. Total P&L
  * counts only the bots that aren't archived (archiving hands a bot's cash back to the account), so without this a loss
- * in a bot that was closed would show nowhere. History lists them, the earliest archived first, with a running total. */
-export function ArchivedLine({ broker, label, count, result, runningPnl }: {
+ * in a bot that was closed would show nowhere. History lists them, the earliest archived first, with a running total.
+ * A real account's Total P&L is measured from its start (AccountCards), so there this is part of it: `included`. */
+export function ArchivedLine({ broker, label, count, result, runningPnl, included }: {
   broker: string; // the broker shown ("all": every broker)
   label: string;
   count: number;
   result: number;
-  runningPnl: number; // the running bots' Total P&L, for "all bots together"
+  runningPnl: number; // the running bots' result, for "all bots together"
+  included?: boolean;
 }) {
   const phone = Grid.useBreakpoint().sm === false;
   const [open, setOpen] = useState(false);
@@ -79,7 +81,7 @@ export function ArchivedLine({ broker, label, count, result, runningPnl }: {
   return (
     <>
       <div style={{ color: "#8b98b5", fontSize: 12 }}>
-        <Tooltip title={`What the ${count} archived bot${count === 1 ? "" : "s"} made or lost from start to archive. Not in the Total P&L above: it counts only the bots that aren't archived, because archiving hands a bot's cash back to the account.`}>
+        <Tooltip title={`What the ${count} archived bot${count === 1 ? "" : "s"} made or lost from start to archive. ${included ? "Part of the Total P&L above." : "Not in the Total P&L above: it counts only the bots that aren't archived, because archiving hands a bot's cash back to the account."}`}>
           {count} archived:{" "}
         </Tooltip>
         <Money v={result} /> ·{" "}
@@ -97,7 +99,7 @@ export function ArchivedLine({ broker, label, count, result, runningPnl }: {
         {data && (
           <p style={{ color: "#8b98b5" }}>
             {data.items.length} archived bot{data.items.length === 1 ? "" : "s"}: <Money v={data.result} /> in all. With the running bots'
-            Total P&L (<Money v={runningPnl} />), every bot together: <Money v={data.result + runningPnl} />.
+            result (<Money v={runningPnl} />), every bot together: <Money v={data.result + runningPnl} />.
           </p>
         )}
         <Table<ArchivedBot>

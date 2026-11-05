@@ -26,17 +26,17 @@ from pydantic import ValidationError
 from sqlalchemy import case, delete, func, select, text
 from sqlalchemy.orm import Session, defer
 
-from . import auth, dip, fees, journal, notify, risk_report, rotation, scheduler, studies, withdraw
+from . import auth, dip, fees, journal, ledger, notify, risk_report, rotation, scheduler, studies, withdraw
 from . import sectors as badges
 from .brokers import SHARED_ACCOUNT_BROKERS, BrokerError, catalog, get_broker
 from .config import settings
 from .db import SessionLocal, get_session, init_db, utcnow
 from .market import is_open, next_decision_time, ny_date, session_bounds
 from .models import (DIP, HOLDINGS_STRATEGIES, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPreset, DipStudy, DipTest,
-                     EquitySnapshot, Event, Holding, Notification, Order, Signal, WatchItem)
+                     EquitySnapshot, Event, Holding, MoneyMove, Notification, Order, Signal, WatchItem)
 from .schemas import (AccountOut, ArchivedBot, ArchivedOut, BotBrief, BotCreate, BotKind, BotOut, BotSetupSave, BotSort, BotTableOut, BotTotals, BotUpdate, CapitalAdd, CapitalWithdraw, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn,
                       DipPresetOut, DipStudyIn, DipStudyOut, DipStudySummaryOut, DipTestDetailOut, DipTestIn, DipTestOut, DipTestPageOut,
-                      EmailAlertsIn, EmailAlertsOut, EventOut, HoldingOut, NotificationOut, RiskReportOut, NotifyCategoryOut, OrderOut,
+                      EmailAlertsIn, EmailAlertsOut, EventOut, HoldingOut, LedgerOut, MoneyIn, NotificationOut, RiskReportOut, NotifyCategoryOut, OrderOut,
                       PRESET_CONFIGS, RatingIn, RotationBotCreate, RotationPresetIn, SectorsIn, SignalOut, SnapshotOut, StatusOut, StudyStrategy,
                       WatchItemOut, WatchSymbols, WithdrawalPlanOut, WithdrawalSaleOut, check_window)
 from .trader import (add_capital, benchmark_value, bot_equity, bot_lock, capital, close_position, evaluate, holdings,
@@ -62,6 +62,12 @@ async def lifespan(_app: FastAPI):
                 logger.info("linked %d saved setup(s) to the Test results test they were saved from", n)
     except Exception:
         logger.exception("couldn't link the old saved setups to their tests")
+    try:  # the adds and withdrawals from before the money history was kept (once, as above)
+        with SessionLocal() as session:
+            if n := ledger.backfill(session):
+                logger.info("wrote %d old add(s) and withdrawal(s) into the money history", n)
+    except Exception:
+        logger.exception("couldn't write the old adds and withdrawals into the money history")
     tasks = []
     if settings.scheduler_enabled:  # the background work: the bots, the email alerts they queue, the daily risk report,
         # Alpaca's daily fees booked to the live bots
@@ -354,6 +360,62 @@ def accounts(session: Session = Depends(get_session)):
                               bots_cash=held, bots=len(bots), free=None if cash is None else round(cash - held, 2),
                               open_buys=open_buys, error=error, checked_at=at))
     return out
+
+
+def _live_account(broker: str) -> dict:
+    """A real-money broker (keys or not: the history stays readable with live trading off), or a 404 (ledger.py says why)."""
+    if not (b := next((b for b in catalog() if b["name"] == broker and b["live"]), None)):
+        raise HTTPException(404, f"{broker} isn't a real-money account: only those have a money history")
+    return b
+
+
+def _ledger(session: Session, b: dict) -> LedgerOut:
+    bots = session.scalars(select(Bot).where(Bot.broker == b["name"], Bot.status != "archived"))
+    funds, error, at = _funds(b["name"])
+    return ledger.account(session, b["name"], b["label"], {x.id: bot_equity(session, x, _price(x)) for x in bots},
+                          (funds or {}).get("cash"), error, at)
+
+
+@app.get("/accounts/{broker}/ledger", response_model=LedgerOut)
+def account_ledger(broker: str, session: Session = Depends(get_session)):
+    """A real account's money from its start: the sum that checks the bots' records against the account, and every move
+    of its money (ledger.py)."""
+    return _ledger(session, _live_account(broker))
+
+
+@app.post("/accounts/{broker}/money", response_model=LedgerOut, status_code=201)
+def record_account_money(broker: str, body: MoneyIn, session: Session = Depends(get_session)):
+    """Writes down what the account started with, or a real deposit or withdrawal at the broker. Only a record: no money
+    moves and the broker isn't asked. Money moved between bots isn't this: Add money and Take out record themselves."""
+    b = _live_account(broker)
+    today = ny_date(utcnow())
+    if body.day and body.day > today:
+        raise HTTPException(422, "that day hasn't come yet")
+    day = body.day or today
+    if body.kind == "start":
+        if session.scalar(select(MoneyMove.id).where(MoneyMove.broker == broker, MoneyMove.bot_id.is_(None), MoneyMove.kind == "start")):
+            raise HTTPException(409, "the start is already written down: delete it first to change it")
+        if not body.day:
+            first = session.scalar(select(func.min(Bot.created_at)).where(Bot.broker == broker))
+            day = ny_date(first) if first else today
+    amount = -body.amount if body.kind == "withdrawal" else body.amount
+    session.add(MoneyMove(broker=broker, kind=body.kind, amount=amount, at=ledger.noon(day), note=body.note.strip()))
+    log_event(session, None, "account", f"{b['label']}: wrote down {body.kind} ${body.amount:,.2f} on {day}.")
+    session.commit()
+    return _ledger(session, b)
+
+
+@app.delete("/accounts/{broker}/money/{move_id}", response_model=LedgerOut)
+def delete_account_money(broker: str, move_id: int, session: Session = Depends(get_session)):
+    """Deletes a line written down by hand (a mistake). The bots' own moves can't be deleted: they did happen."""
+    b = _live_account(broker)
+    move = session.get(MoneyMove, move_id)
+    if move is None or move.broker != broker or move.bot_id is not None:
+        raise HTTPException(404, "no such line written down by hand")
+    log_event(session, None, "account", f"{b['label']}: deleted {move.kind} ${abs(move.amount):,.2f}.")
+    session.delete(move)
+    session.commit()
+    return _ledger(session, b)
 
 
 # ---------------------------------------------------------------------------
