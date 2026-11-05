@@ -107,6 +107,99 @@ def test_downloads_go_out_one_at_a_time_and_bots_asking_together_share_one(monke
     assert 0.3 <= waited < 0.3 + 0.2 + 0.25
 
 
+def test_what_is_kept_never_waits_behind_another_download():
+    """A long download of other symbols holds the lock: a bot whose prices are in memory doesn't wait for it."""
+    yahoo, kept = Yahoo(), yahoo_cache.Shared(120, clock=Clock())
+    kept.closes(["A"], date(2025, 6, 2), yahoo)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with yahoo_cache._lock:  # a download is going on (released before the pool waits for its thread)
+            got = pool.submit(kept.closes, ["A"], date(2025, 6, 2), yahoo).result(timeout=2)
+    assert list(got.columns) == ["A"] and len(yahoo.asked) == 1
+
+
+def test_a_frozen_read_asks_once_for_all_and_never_expires():
+    """A pass's prices: each symbol once, and every bot of the pass answered from them, however long it lasts: the kept
+    copies below run out after 120 s, these don't."""
+    clock, yahoo = Clock(), Yahoo()
+    kept = yahoo_cache.Shared(120, clock=clock)
+    read = yahoo_cache.Frozen(lambda some, since: kept.closes(some, since, yahoo), ["B", "A", "B"], date(2025, 6, 2))
+    assert yahoo.asked == [(["A", "B"], date(2025, 6, 2))]
+    clock.t += 3600
+    got = read.closes(["B", "A"], date(2025, 6, 9))
+    assert len(yahoo.asked) == 1
+    assert list(got.columns) == ["B", "A"] and got.index[0] == pd.Timestamp("2025-06-09")
+    pd.testing.assert_frame_equal(got, Yahoo()(["B", "A"], date(2025, 6, 2)).loc["2025-06-09":], check_freq=False)
+
+
+def test_a_frozen_read_goes_out_in_chunks_with_the_lock_free_between_them(monkeypatch):
+    monkeypatch.setattr(yahoo_cache, "CHUNK", 2)
+    monkeypatch.setattr(yahoo_cache, "GAP_SECONDS", 0.2)
+    yahoo, kept, beats, free = Yahoo(), yahoo_cache.Shared(120, clock=Clock()), [], []
+
+    def ask(some, since):
+        got = kept.closes(some, since, yahoo)
+        beats.append(yahoo_cache._lock.locked())
+        return got
+
+    def sleep(seconds, real=time.sleep):
+        if seconds:  # the stand-in download's own pause is none
+            free.append(yahoo_cache._lock.locked())
+        real(seconds)
+
+    monkeypatch.setattr(yahoo_cache.time, "sleep", sleep)
+    read = yahoo_cache.Frozen(ask, ["A", "B", "C", "D", "E"], date(2025, 6, 2), beat=lambda: beats.append("beat"))
+    assert [a[0] for a in yahoo.asked] == [["A", "B"], ["C", "D"], ["E"]]
+    assert beats == [False, "beat", False, "beat", False, "beat"]  # one sign of life per chunk
+    assert free == [False, False]  # the gaps are waited out with the lock free: a live bot waiting for it goes next
+    assert read.closes(["E", "A"], date(2025, 6, 2)).notna().all().all()
+
+
+def test_a_frozen_read_doesnt_wait_when_nothing_was_downloaded(monkeypatch):
+    monkeypatch.setattr(yahoo_cache, "GAP_SECONDS", 5.0)
+    monkeypatch.setattr(yahoo_cache, "CHUNK", 1)
+    yahoo_cache._last_download = float("-inf")
+    t = time.monotonic()
+    yahoo_cache.Frozen(lambda some, since: Yahoo()(some, since), ["A", "B", "C"], date(2025, 6, 2))
+    assert time.monotonic() - t < 1
+
+
+def test_a_frozen_read_answers_empty_for_a_symbol_without_prices_and_doesnt_ask_again():
+    yahoo = Yahoo()
+    read = yahoo_cache.Frozen(yahoo, ["A", "X"], date(2025, 6, 2))
+    assert read.closes(["X"], date(2025, 6, 2)).empty
+    got = read.closes(["A", "X"], date(2025, 6, 2))
+    assert list(got.columns) == ["A", "X"] and got["X"].isna().all() and got["A"].notna().all()
+    assert len(yahoo.asked) == 1
+
+
+def test_a_frozen_read_says_a_failure_once_and_only_to_the_bots_that_need_those_symbols(monkeypatch):
+    monkeypatch.setattr(yahoo_cache, "CHUNK", 1)
+    asked = []
+
+    def flaky(some, since):
+        asked.append(some)
+        if some == ["B"]:
+            raise BrokerError("Too Many Requests")
+        return Yahoo()(some, since)
+
+    read = yahoo_cache.Frozen(flaky, ["A", "B"], date(2025, 6, 2))
+    assert read.closes(["A"], date(2025, 6, 2)).notna().all().all()
+    for _ in range(3):
+        with pytest.raises(BrokerError, match="Too Many Requests"):
+            read.closes(["A", "B"], date(2025, 6, 2))
+    assert asked == [["A"], ["B"]]
+
+
+def test_a_frozen_read_sends_what_it_didnt_plan_for_to_the_normal_download():
+    """A bot that needs a longer history than the pass read (a rotation's ranking), or a symbol new since its start."""
+    yahoo = Yahoo()
+    read = yahoo_cache.Frozen(yahoo, ["A"], date(2025, 6, 9))
+    assert read.closes(["A"], date(2025, 6, 2)).index[0] == pd.Timestamp("2025-06-02")
+    assert yahoo.asked[-1] == (["A"], date(2025, 6, 2))
+    assert list(read.closes(["A", "N"], date(2025, 6, 9)).columns) == ["A", "N"]
+    assert yahoo.asked[-1] == (["A", "N"], date(2025, 6, 9))
+
+
 def test_dip_bots_share_their_bar_downloads(monkeypatch):
     """Two bots checking at the same moment: the second downloads only the symbol the first didn't have, from SHARE_DAYS
     earlier than the first one needed, but never past Yahoo's 60-day limit on 15-minute bars."""

@@ -998,7 +998,10 @@ class StatusOut(BaseModel):
     risk_check_minutes: int
     scheduler_enabled: bool
     scheduler_running: bool
-    scheduler_last_tick: datetime | None
+    scheduler_last_tick: datetime | None  # when the paper bots' last pass finished
+    scheduler_live_tick: datetime | None  # when the live bots' last pass finished
+    scheduler_state: str = "ok"  # ok | slow (the paper bots' pass runs late, nothing stuck) | stuck
+    scheduler_note: str = ""  # what's slow or stuck, in words
     live_trading_allowed: bool
     brokers: list[BrokerInfo]
 

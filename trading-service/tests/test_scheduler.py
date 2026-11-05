@@ -1,17 +1,20 @@
 """The scheduler: decides at the right moment, exactly once per day, and keeps protecting positions."""
 
 import contextlib
-from datetime import date
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 from conftest import FakeBroker, at, make_bot, signal
 from sqlalchemy import select
 
-from app import scheduler
+from app import rotation, scheduler
 from app.db import SessionLocal
 from app.decision_client import SignalError
-from app.models import Bot, Order
+from app.market import ny_date
+from app.models import DIP, Bot, Event, Holding, Order, WatchItem
 from app.trader import evaluate
 
 
@@ -320,20 +323,183 @@ def test_the_live_bots_have_a_pass_of_their_own(session, monkeypatch):
     assert scheduler.round_symbols(session) == ["GLD", "MSFT", "NVT"]
 
     seen, splits_for = [], []
+    half = timedelta(seconds=30)
+    clock = {"t": at(15, 0) + half}
+    monkeypatch.setattr(scheduler, "utcnow", lambda: clock["t"])
     monkeypatch.setattr(scheduler, "process_bot", lambda bot_id, *a: seen.append((bot_id, alpaca._round.symbols)))
     monkeypatch.setattr(scheduler.splits, "apply_all", lambda now, live=None: splits_for.append(live))
     monkeypatch.setattr(scheduler, "state", dict(scheduler.state, last_tick=None, live_tick=None))
     scheduler.tick(at(15, 0), live=True)
     assert seen == [(bots["alpaca-live"].id, ["GLD"])] and splits_for == [True]
-    assert (scheduler.state["live_tick"], scheduler.state["last_tick"]) == (at(15, 0), None)
+    assert (scheduler.state["live_tick"], scheduler.state["last_tick"]) == (at(15, 0) + half, None)  # when it finished
     seen.clear()
+    clock["t"] = at(15, 1) + half
     scheduler.tick(at(15, 1), live=False)
     assert sorted(i for i, _ in seen) == [bots["paper"].id, bots["alpaca-paper"].id] and splits_for == [True, False]
-    assert (scheduler.state["live_tick"], scheduler.state["last_tick"]) == (at(15, 0), at(15, 1))
+    assert (scheduler.state["live_tick"], scheduler.state["last_tick"]) == (at(15, 0) + half, at(15, 1) + half)
     seen.clear()
+    clock["t"] = at(15, 2) + half
     scheduler.tick(at(15, 2))  # every bot, the real-money one first
     assert [i for i, _ in seen][0] == bots["alpaca-live"].id and len(seen) == 3
-    assert (scheduler.state["live_tick"], scheduler.state["last_tick"]) == (at(15, 2), at(15, 2))
+    assert (scheduler.state["live_tick"], scheduler.state["last_tick"]) == (at(15, 2) + half, at(15, 2) + half)
+
+
+def dip_bot_with(session, symbols, **fields):
+    bot = make_bot(session, **{
+        "symbol": "DIP", "strategy": DIP, "interval": "15m", "drop_pct": 0.05, "lookback": 5, "lookback_unit": "days",
+        "drop_from": "high", "target_mode": "reference", "rise_pct": 0.05, "stop_pct": 0.05, "max_positions": 2,
+        "max_hold_days": 0, "news": False, "trend_filter": False, "universe": list(symbols),
+        "benchmark_prices": {s: 100.0 for s in symbols}, "benchmark_price": 10_000.0, "last_price": 10_000.0, **fields})
+    for s in symbols:
+        session.add(WatchItem(bot_id=bot.id, symbol=s, status="watching"))
+    session.commit()
+    return bot
+
+
+def _passing(session, monkeypatch, symbols_per_bot, **fields):
+    """Dip bots due for a check and a look at their universe at 11:00:20 New York, and what Yahoo was asked."""
+    bots = [dip_bot_with(session, symbols, **fields) for symbols in symbols_per_bot]
+    asked = {"bars": [], "daily": []}
+
+    def bars(symbols, interval, start):
+        asked["bars"].append((list(symbols), interval, start))
+        idx = pd.date_range("2025-06-02 09:45", periods=8, freq="15min", tz="America/New_York")
+        return pd.DataFrame({s: [100.0] * 8 for s in symbols}, index=idx)
+
+    def closes(symbols, start):
+        asked["daily"].append((list(symbols), start))
+        return pd.DataFrame({s: [100.0] for s in symbols}, index=pd.DatetimeIndex(["2025-06-02"]))
+
+    monkeypatch.setattr(scheduler.dip, "yahoo_bars", bars)
+    monkeypatch.setattr(rotation, "yahoo_closes", closes)
+    monkeypatch.setattr(scheduler.splits, "apply_all", lambda now, live=None: None)
+    monkeypatch.setattr(scheduler, "state", dict(scheduler.state, last_tick=None, live_tick=None, **{"pass": None}))
+    return bots, asked
+
+
+T_CHECK = datetime(2025, 6, 2, 15, 0, 20, tzinfo=timezone.utc)  # Monday 11:00:20 New York: a 15-minute bar has just closed
+
+
+def test_a_pass_asks_yahoo_once_for_all_its_bots(session, monkeypatch):
+    """However many dip bots are due: one read of bars and one of daily closes at the pass's start, each symbol once, from
+    the longest window any of them needs. The bots all read from that."""
+    bots, asked = _passing(session, monkeypatch, [["A", "B"], ["B", "C"], ["C", "D"]])
+    bots[2].lookback = 20
+    session.add(Holding(bot_id=bots[0].id, symbol="H", shares=1.0, cost_basis=10.0, entry_price=10.0, last_price=10.0,
+                        opened_at=T_CHECK - timedelta(days=1)))
+    session.commit()
+    today = ny_date(T_CHECK)
+    want = scheduler.dip.history_start(bots[2], today)
+    assert want < scheduler.dip.history_start(bots[0], today)
+    broker = FakeBroker(now=T_CHECK, prices={s: 100.0 for s in "ABCDH"})
+    scheduler.tick(T_CHECK, broker_factory=lambda b: broker, live=False)
+    assert asked["bars"] == [(["A", "B", "C", "D", "H"], "15m", want)]
+    assert asked["daily"] == [(["A", "B", "C", "D"], today - timedelta(days=rotation.UNIVERSE_DAYS))]
+    with SessionLocal() as s:
+        assert all(s.get(Bot, b.id).last_decision_at == T_CHECK for b in bots)  # each was checked, on those prices
+        assert {i.last_price for i in s.scalars(select(WatchItem))} == {100.0}
+
+
+def test_a_pass_with_nothing_due_asks_yahoo_nothing(session, monkeypatch):
+    bots, asked = _passing(session, monkeypatch, [["A", "B"]])
+    broker = FakeBroker(now=T_CHECK, prices={"A": 100.0, "B": 100.0})
+    scheduler.tick(T_CHECK, broker_factory=lambda b: broker, live=False)
+    asked["bars"].clear(), asked["daily"].clear()
+    later = T_CHECK + timedelta(seconds=30)  # checked, and looked at less than RISK_CHECK_MINUTES ago
+    broker.now = later
+    scheduler.tick(later, broker_factory=lambda b: broker, live=False)
+    assert asked == {"bars": [], "daily": []}
+    closed = datetime(2025, 6, 2, 21, 30, tzinfo=timezone.utc)  # the market has closed
+    broker.now = closed
+    scheduler.tick(closed, broker_factory=lambda b: broker, live=False)
+    assert asked == {"bars": [], "daily": []}
+
+
+def test_the_live_pass_reads_only_the_live_bots_symbols(session, monkeypatch):
+    bots, asked = _passing(session, monkeypatch, [["A"]])
+    bots[0].broker = "alpaca-paper"
+    live = dip_bot_with(session, ["L"], broker="alpaca-live")
+    session.commit()
+    broker = FakeBroker(now=T_CHECK, prices={"A": 100.0, "L": 100.0})
+    scheduler.tick(T_CHECK, broker_factory=lambda b: broker, live=True)
+    assert [a[0] for a in asked["bars"]] == [["L"]] and [a[0] for a in asked["daily"]] == [["L"]]
+    with SessionLocal() as s:
+        assert s.get(Bot, live.id).last_decision_at == T_CHECK and s.get(Bot, bots[0].id).last_decision_at is None
+
+
+def test_a_failed_read_of_a_pass_is_one_failure_not_one_per_bot(session, monkeypatch):
+    """Yahoo and Alpaca both down: the read fails once, every bot's check gets that error (their exits still run on the
+    broker's quotes), and it is tried again at the retry, not at once by each bot."""
+    bots, asked = _passing(session, monkeypatch, [["A", "B"], ["B", "C"]])
+
+    def down(symbols, interval, start):
+        asked["bars"].append(list(symbols))
+        raise scheduler.BrokerError("no prices from Yahoo")
+
+    monkeypatch.setattr(scheduler.dip, "yahoo_bars", down)
+    broker = FakeBroker(now=T_CHECK, prices={s: 100.0 for s in "ABC"})
+    scheduler.tick(T_CHECK, broker_factory=lambda b: broker, live=False)
+    assert asked["bars"] == [["A", "B", "C"]]
+    with SessionLocal() as s:
+        for b in bots:
+            assert s.get(Bot, b.id).last_decision_at is None
+            assert any("Prices failed" in e.message for e in s.scalars(select(Event).where(Event.bot_id == b.id)))
+    assert all(scheduler._retry_after[b.id] == T_CHECK + scheduler.SIGNAL_RETRY for b in bots)
+    later = T_CHECK + timedelta(minutes=1)
+    broker.now = later
+    scheduler.tick(later, broker_factory=lambda b: broker, live=False)
+    assert asked["bars"] == [["A", "B", "C"]]  # not yet
+
+
+def test_a_broken_bot_doesnt_stop_the_others_from_getting_their_prices(session, monkeypatch):
+    bots, asked = _passing(session, monkeypatch, [["A", "B"]])
+    broken = make_bot(session, symbol="DIP", strategy=DIP, universe=["Z"])  # no interval: its check can't be worked out
+    session.add(WatchItem(bot_id=broken.id, symbol="Y", status="watching"))
+    session.commit()
+    broker = FakeBroker(now=T_CHECK, prices={"A": 100.0, "B": 100.0})
+    scheduler.tick(T_CHECK, broker_factory=lambda b: broker, live=False)
+    assert asked["bars"] == [(["A", "B"], "15m", scheduler.dip.history_start(bots[0], ny_date(T_CHECK)))]
+    with SessionLocal() as s:
+        assert s.get(Bot, bots[0].id).last_decision_at == T_CHECK
+
+
+def test_a_pass_reports_how_far_it_has_got_and_the_live_pass_leaves_that_alone(session, monkeypatch):
+    """/health tells slow from stuck by the paper bots' pass: its start, its last sign of life, how many bots are done.
+    The live bots' pass, going on beside it, must not look like progress of the paper bots."""
+    bots, _ = _passing(session, monkeypatch, [["A"], ["B"]])
+    clock = {"t": T_CHECK}
+    monkeypatch.setattr(scheduler, "utcnow", lambda: clock["t"])
+    seen = []
+
+    def process(bot_id, *a):
+        seen.append(dict(scheduler.state["pass"]))
+        clock["t"] += timedelta(minutes=1)
+
+    monkeypatch.setattr(scheduler, "process_bot", process)
+    monkeypatch.setattr(scheduler, "ThreadPoolExecutor", lambda max_workers: ThreadPoolExecutor(max_workers=1))
+    scheduler.tick(T_CHECK, live=False)
+    assert seen[0]["total"] == 2 and seen[0]["started_at"] == T_CHECK and seen[0]["done"] == 0
+    assert seen[1]["started_at"] == T_CHECK and seen[1]["progress_at"] > T_CHECK and seen[1]["done"] == 1
+    assert scheduler.state["pass"] is None and scheduler.state["last_tick"] == clock["t"]
+
+    going = {"started_at": T_CHECK, "progress_at": T_CHECK, "done": 7, "total": 235}
+    scheduler.state["pass"] = going
+    dip_bot_with(session, ["L"], broker="alpaca-live")
+    monkeypatch.setattr(scheduler, "process_bot", lambda bot_id, *a: None)
+    scheduler.tick(T_CHECK, live=True)
+    assert scheduler.state["pass"] is going and going == {"started_at": T_CHECK, "progress_at": T_CHECK, "done": 7, "total": 235}
+
+
+def test_a_failed_pass_doesnt_stay_marked_as_going(session, monkeypatch):
+    def boom(*a, **kw):
+        raise RuntimeError("no database")
+
+    monkeypatch.setattr(scheduler, "state", dict(scheduler.state, **{"pass": None}))
+    monkeypatch.setattr(scheduler, "round_symbols", boom)
+    monkeypatch.setattr(scheduler.splits, "apply_all", lambda now, live=None: None)
+    with pytest.raises(RuntimeError):
+        scheduler.tick(T_CHECK, live=False)
+    assert scheduler.state["pass"] is None
 
 
 def test_a_long_pass_of_the_other_bots_never_holds_the_live_ones_back(monkeypatch):

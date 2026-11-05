@@ -33,7 +33,8 @@ echo "sleep $1" >> "$BOX/events"
 EOF
 
 # GET /status answers the next line of the ticks file (the last line stays):
-# refused = no answer; none = no finished pass yet; old / fresh = a stamp 200 / 5 seconds old
+# refused = no answer; none = no finished pass yet; fresh = a stamp 5 seconds old; slow = a pass going for minutes, the
+# last stamp 400 seconds old; first = the first pass going for minutes, no stamp yet; stuck = nothing done for minutes
 cat > "$box/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 case "$2" in */bots) echo '[]'; exit 0 ;; esac
@@ -46,11 +47,13 @@ print("\"" + (d.datetime.now(d.timezone.utc) - d.timedelta(seconds=int(sys.argv[
 }
 case "$tick" in
   refused) exit 7 ;;
-  none) last=null ;;
-  old) last=$(stamp 200) ;;
-  fresh) last=$(stamp 5) ;;
+  none) last=null; state=ok ;;
+  fresh) last=$(stamp 5); state=ok ;;
+  slow) last=$(stamp 400); state=slow ;;
+  first) last=null; state=slow ;;
+  stuck) last=$(stamp 400); state=stuck ;;
 esac
-echo "{\"scheduler_enabled\":true,\"live_trading_allowed\":true,\"market_open\":false,\"scheduler_last_tick\":$last}"
+echo "{\"scheduler_enabled\":true,\"live_trading_allowed\":true,\"market_open\":false,\"scheduler_last_tick\":$last,\"scheduler_state\":\"$state\"}"
 EOF
 
 cat > "$box/bin/docker" <<'EOF'
@@ -58,7 +61,7 @@ cat > "$box/bin/docker" <<'EOF'
 case "$*" in
   "compose ps -q") echo "docker compose ps -q" >> "$BOX/events"; echo c1 ;;
   "inspect "*) echo "/trading-trading-service-1 0 running" ;;
-  "compose exec -T watchdog "*) echo "scheduler ok" ;;
+  "compose exec -T watchdog "*) echo "scheduler ok"; [ "$(tail -n 1 "$BOX/ticks")" != slow ] || echo "slow               the paper bots' pass has been running for 8 minutes" ;;
   "compose up -d "*) echo "docker $*" >> "$BOX/events"; echo " Container x Started" ;;
 esac
 EOF
@@ -99,9 +102,19 @@ check "restart: every check comes after the wait" since_restart \
   "status refused" "sleep 10" "status none" "sleep 10" "status none" "sleep 10" "status fresh" \
   "docker compose ps -q" "status fresh"
 
-run "fresh none old fresh" restart trading-service
-check "slow first pass: its old stamp doesn't count, the next pass does" says "waited 20s"
+run "fresh none first" restart trading-service
+check "slow first pass: working, so no more waiting" says "waited 10s"
 check "slow first pass: all ok" exits 0
+check "slow first pass: says it is slow" says "scheduler on, slow"
+
+run "fresh stuck" restart trading-service
+check "stuck: a failure" exits 1
+check "stuck: the status check reports it" says "FAIL trading-service /status"
+check "stuck: gives up after 5 minutes" sleeps 10 30
+
+run "slow" verify
+check "verify on a slow pass: no failure" exits 0
+check "verify on a slow pass: says it is slow" says "scheduler on, slow"
 
 run "fresh none" restart trading-service
 check "no pass at all: still a failure" exits 1

@@ -341,6 +341,9 @@ export interface TradingStatus {
   scheduler_enabled: boolean;
   scheduler_running: boolean;
   scheduler_last_tick: string | null;
+  scheduler_live_tick: string | null;
+  scheduler_state: "ok" | "slow" | "stuck";
+  scheduler_note: string;
   live_trading_allowed: boolean;
   brokers: BrokerInfo[];
 }

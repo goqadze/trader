@@ -94,6 +94,40 @@ def test_no_email_while_alerts_are_off_and_watchdog_to_until_trading_service_eve
     assert never.recipients() == ["a@x.com", "b@x.com"]
 
 
+def test_a_slow_paper_pass_is_a_note_of_its_own_not_an_outage(env):
+    note = {"text": None}
+    env.dog.slow = lambda: note["text"]
+    env.rounds()
+    note["text"] = "the paper bots' pass has been running for 8 minutes (120 of 235 bots done)"
+    env.rounds(2)
+    assert env.sent == []  # one slow pass that ends soon is nothing to write about
+    env.rounds()
+    [msg] = env.sent
+    assert msg["Subject"] == "[Trading] Slow: the paper bots' pass"
+    body = msg.get_content()
+    assert "Nothing is down: the bots are working, but late." in body and f"Why: {note['text']}" in body
+    assert "DOWN" not in body and env.dog.status["trading-service"].fails == 0
+
+    env.rounds(30)
+    assert len(env.sent) == 1  # one email, not one a minute
+    note["text"] = None
+    env.rounds()
+    assert len(env.sent) == 1  # none when it's over
+    note["text"] = "slow again"
+    env.rounds(3)
+    assert len(env.sent) == 1  # slow every 15 minutes on a bad day: still one email in REMIND_EVERY
+    env.clock["t"] += timedelta(hours=6)
+    env.rounds()
+    assert len(env.sent) == 2 and "Why: slow again" in env.sent[-1].get_content()
+
+
+def test_two_slow_checks_that_arent_in_a_row_say_nothing(env):
+    notes = iter(["slow", "slow", None, "slow", "slow", None])
+    env.dog.slow = lambda: next(notes)
+    env.rounds(6)
+    assert env.sent == []
+
+
 def test_an_email_that_fails_is_sent_at_the_next_round(env):
     tries = []
 
@@ -122,8 +156,8 @@ def test_a_check_that_breaks_counts_as_a_problem(env):
 
 
 class _Handler(BaseHTTPRequestHandler):
-    answers = {"/ok": (200, b"{}"), "/missing": (404, b""), "/sick": (503, json.dumps({"problems": ["db gone", "late"]}).encode()),
-               "/broken": (500, b"oops")}
+    answers = {"/ok": (200, b"{}"), "/missing": (404, b""), "/sick": (503, json.dumps({"problems": ["db gone", "late"], "slow": ["x"]}).encode()),
+               "/broken": (500, b"oops"), "/slow": (200, json.dumps({"status": "slow", "problems": [], "slow": ["a", "b"]}).encode())}
 
     def do_GET(self):
         code, body = self.answers[self.path]
@@ -151,6 +185,14 @@ def test_http_checks_read_the_health_answers(server):
     assert wd.http("http://no-such-service.invalid/")().startswith("not running")
     port = server.rsplit(":", 1)[1]
     assert wd.tcp("127.0.0.1", int(port))() is None
+
+
+def test_a_slow_health_is_up_and_says_so_apart(server):
+    assert wd.http(f"{server}/slow")() is None  # not an outage
+    assert wd.slow_note(f"{server}/slow")() == "a; b"
+    assert wd.slow_note(f"{server}/ok")() is None
+    assert wd.slow_note(f"{server}/sick")() is None  # a 503: the http check reports that one
+    assert wd.slow_note("http://no-such-service.invalid/")() is None
 
 
 def test_closed_ports_are_refused():

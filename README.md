@@ -215,10 +215,19 @@ page) shows what was sent, is waiting, failed or was skipped.
 
 That outbox lives in trading-service, so it can't tell you trading-service is down. On a server the **watchdog**
 (`watchdog/watchdog.py`, its own container in `docker-compose.server.yml`) does: every minute it asks each service the
-server runs (trading-service's `/health` also checks the database and that the scheduler finished a round in the last
-5 minutes), and emails the same addresses when one fails 3 checks in a row, every 6 hours while it stays down, and
-when it's back. Also when the disk is under 10% free or the newest backup is over 36 hours old. Tests:
-`make test-watchdog`.
+server runs (trading-service's `/health` also checks the database and that the scheduler isn't stuck), and emails the
+same addresses when one fails 3 checks in a row, every 6 hours while it stays down, and when it's back. Also when the
+disk is under 10% free or the newest backup is over 36 hours old. Tests: `make test-watchdog`.
+
+Slow is not stuck. The paper bots' pass may take minutes, and it counts as stuck only when no bot has finished for 5
+minutes, when no pass is going and none finished for 5 minutes, or when none finished for 30 minutes whatever it is
+doing. After 5 minutes of a pass that is still getting somewhere, the dashboard shows **Paper bots running late** and
+the watchdog sends one `[Trading] Slow` email at most every 6 hours, none when it's over. The live bots have a pass of
+their own, and that one being 5 minutes late is always a failure.
+
+Each pass reads what its bots need from Yahoo once, at its start, up to 50 symbols at a time: bars for the dip bots with
+a check due, daily closes for the bots due to look at their universe (`scheduler.PassPrices`, `yahoo_cache.Frozen`).
+Every bot of the pass answers from that, so 200+ bots on 250 symbols don't each wait for a download of their own.
 
 ## Intraday strategies (backtest only)
 

@@ -47,16 +47,16 @@ s = json.load(sys.stdin)
 t = s.get("scheduler_last_tick")
 age = round((d.datetime.now(d.timezone.utc) - d.datetime.fromisoformat(t.replace("Z", "+00:00"))).total_seconds()) if t else None
 sched = "on" if s.get("scheduler_enabled") else "OFF"
+state = s.get("scheduler_state") or "ok"
 live = "allowed" if s.get("live_trading_allowed") else "NOT allowed"
 market = "open" if s.get("market_open") else "closed"
-print(f"status: scheduler {sched}, last tick {age}s ago, live trading {live}, market {market}")
-sys.exit(0 if s.get("scheduler_enabled") and age is not None and age < 180 else 1)
+print(f"status: scheduler {sched}, {state}, last pass finished {age}s ago, live trading {live}, market {market}")
+sys.exit(0 if s.get("scheduler_enabled") and state != "stuck" and (age is not None or state == "slow") else 1)
 '
 }
-# The scheduler stamps a pass when it ends, with the time it began. So after a restart there is no stamp for the whole
-# first pass (about 2 minutes in market hours, with ~235 paper bots), and a slow pass's stamp is already too old when it
-# appears. Wait for a recent one before any check, so the checks also see how that pass went. 5 minutes is when /health
-# calls the scheduler stuck; after that the status check below reports it.
+# The scheduler stamps a pass when it ends. So after a restart there is no stamp for the whole first pass (a minute or
+# two in market hours, with ~235 paper bots). Wait for one before any check, so the checks also see how that pass went.
+# 5 minutes is when /health calls a pass slow, or stuck if it does nothing; after that the status check below reports it.
 if [ "$WAIT_PASS" = 1 ]; then
   waited=0
   until status >/dev/null 2>&1 || [ "$waited" -ge 300 ]; do sleep 10; waited=$((waited + 10)); done
@@ -70,7 +70,7 @@ done
 echo "containers: $up running, 0 restarts"
 status || fail "trading-service /status: scheduler off, not ticking, or no answer"
 wd=$(docker compose exec -T watchdog python watchdog.py --once </dev/null 2>&1) || true
-notok=$(printf '%s\n' "$wd" | awk 'NF && $NF != "ok"')
+notok=$(printf '%s\n' "$wd" | awk 'NF && $1 != "slow" && $NF != "ok"')
 if [ -z "$notok" ]; then echo "watchdog: $(printf '%s\n' "$wd" | grep -c ok) checks ok"; else fail "watchdog: $notok"; fi
 tb=$(docker compose logs --since 10m trading-service </dev/null 2>&1 | grep -c Traceback || true)
 if [ "$tb" = 0 ]; then echo "logs: no tracebacks in trading-service's last 10 min"; else fail "trading-service logs: $tb tracebacks in 10 min"; fi

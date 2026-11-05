@@ -597,7 +597,7 @@
         <h3>Safety &amp; system</h3>
         <dl class="terms">
           <div class="term"><dt>Scheduler</dt><dd>The background loop in trading-service that runs every bot.</dd></div>
-          <div class="term"><dt>Tick</dt><dd>One pass of the scheduler, every 30 s. “Scheduler running” = ticks are arriving.</dd></div>
+          <div class="term"><dt>Tick</dt><dd>One pass of the scheduler, every 30 s. “Scheduler running” = passes are finishing. “Paper bots running late” = a long pass is still getting somewhere. “Scheduler stuck” = nothing is getting done.</dd></div>
           <div class="term"><dt>Watch</dt><dd>The 5-minute check: new price, equity point, breaker, take-profit, and the stop-loss when the broker isn't holding it.</dd></div>
           <div class="term"><dt>Lock</dt><dd>Makes sure only one thing works on a bot at a time. A click during a decision gets “bot is busy”.</dd></div>
           <div class="term"><dt>Write-ahead order</dt><dd>Saving an order before sending it, so a crash can't lose or duplicate it.</dd></div>

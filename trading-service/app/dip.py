@@ -140,9 +140,10 @@ def yahoo_bars(symbols: list[str], interval: str, start: date) -> pd.DataFrame:
     """Closes from `start` to now, one column per symbol. Intraday intervals: regular-hours bars indexed by the moment
     each CLOSED (New York time; the last one still forming); "1d": daily closes indexed by day (today's = the latest
     price during market hours). A symbol Yahoo doesn't know comes back as an empty column.
-    Every bot checking at the same moment shares one download per symbol (yahoo_cache, BARS_TTL), reaching
-    SHARE_DAYS further back than asked so that bots with a somewhat longer window share it too. What Yahoo doesn't
-    give comes from Alpaca's SIP feed (alpaca_prices)."""
+    Callers at about the same moment share one download per symbol (yahoo_cache, BARS_TTL), reaching SHARE_DAYS further
+    back than asked so that bots with a somewhat longer window share it too. A scheduler pass reads all its bots' symbols
+    through here once, at its start (scheduler.PassPrices). What Yahoo doesn't give comes from Alpaca's SIP feed
+    (alpaca_prices)."""
     wider = start - timedelta(days=SHARE_DAYS)
     if interval in ("5m", "15m", "30m"):  # not past Yahoo's limit
         wider = max(wider, ny_date(utcnow()) - timedelta(days=YAHOO_INTRADAY_DAYS))
@@ -153,7 +154,7 @@ def yahoo_bars(symbols: list[str], interval: str, start: date) -> pd.DataFrame:
     return _bars[interval].closes(symbols, start, fetch, wider)
 
 
-BARS_TTL = 120  # seconds: the bots due at one check moment are all checked well within it
+BARS_TTL = 120  # seconds: a live and a paper pass at one check moment share a download; so do Run now and previews
 SHARE_DAYS = 7
 _bars = {interval: yahoo_cache.Shared(BARS_TTL) for interval in INTERVAL_MINUTES}
 

@@ -263,35 +263,20 @@ def _broker_or_400(bot: Bot):
 # Status
 # ---------------------------------------------------------------------------
 
-TICK_LATE = timedelta(minutes=5)  # no finished tick for this long: the scheduler is stuck (a tick takes seconds)
-
-
 @app.get("/health")
 def health(session: Session = Depends(get_session)):
-    """For the watchdog (and you): the database answers and the scheduler ticks. 503 with what's wrong otherwise."""
-    problems = []
+    """For the watchdog (and you): the database answers and the scheduler isn't stuck: a 503 with what's wrong otherwise.
+    A slow pass of the paper bots is no failure: a 200 that says so under "slow" (scheduler.health)."""
+    problems, slow = [], []
     try:
         session.execute(text("SELECT 1"))
     except Exception as e:
         problems.append(f"the database doesn't answer ({type(e).__name__}): the bots can't check or trade")
     st = scheduler.state
     if settings.scheduler_enabled:
-        since = st["last_tick"] or st["started_at"]
-        live_since = st.get("live_tick") or st["started_at"]  # the live account's bots have a pass of their own
-        late = max(TICK_LATE, timedelta(seconds=10 * settings.tick_seconds))
-        error = f" (last error: {st['last_error']})" if st["last_error"] else ""
-        if not st["running"]:
-            problems.append("the scheduler isn't running: the bots don't check or trade")
-        else:
-            if since is not None and utcnow() - since > late:
-                minutes = int((utcnow() - since).total_seconds() // 60)
-                problems.append(f"the scheduler hasn't finished a round for {minutes} minutes: the bots don't check or "
-                                f"trade{error}")
-            if live_since is not None and utcnow() - live_since > late:
-                minutes = int((utcnow() - live_since).total_seconds() // 60)
-                problems.append(f"the live bots' pass hasn't finished for {minutes} minutes: the real-money bots don't "
-                                f"check or trade{error}")
-    return JSONResponse({"status": "down" if problems else "ok", "problems": problems,
+        stuck, slow = scheduler.health(utcnow())
+        problems += stuck
+    return JSONResponse({"status": "down" if problems else "slow" if slow else "ok", "problems": problems, "slow": slow,
                          "last_tick": st["last_tick"].isoformat() if st["last_tick"] else None},
                         status_code=503 if problems else 200)
 
@@ -304,6 +289,7 @@ def status(session: Session = Depends(get_session)):
     # The soonest decision of any active bot; with none, the next regular close slot
     upcoming = [t for b in session.scalars(select(Bot).where(Bot.status == "active"))
                 if (t := scheduler.next_decision_at(b, now)) is not None]
+    stuck, slow = scheduler.health(now) if settings.scheduler_enabled else ([], [])
     return StatusOut(
         now=now,
         market_open=is_open(now),
@@ -316,6 +302,9 @@ def status(session: Session = Depends(get_session)):
         scheduler_enabled=settings.scheduler_enabled,
         scheduler_running=scheduler.state["running"],
         scheduler_last_tick=scheduler.state["last_tick"],
+        scheduler_live_tick=scheduler.state["live_tick"],
+        scheduler_state="stuck" if stuck else "slow" if slow else "ok",
+        scheduler_note="; ".join(stuck or slow),
         live_trading_allowed=settings.allow_live_trading,
         brokers=catalog(),
     )

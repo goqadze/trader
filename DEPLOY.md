@@ -33,8 +33,9 @@ Sunday of November), and 18:30–01:00 in winter.
    caffeinate -i
    ```
    It keeps the Mac awake until you press Ctrl+C.
-3. Check the bot page header: **Scheduler running** means the bots are working. **Scheduler not ticking**
-   means the service stopped. See `docker compose logs trading-service`.
+3. Check the bot page header: **Scheduler running** means the bots are working. **Paper bots running late** means a
+   long pass is still getting somewhere: nothing to fix at once. **Scheduler stuck** or **No answer from the scheduler**
+   means they aren't working. See `docker compose logs trading-service`.
 
 ---
 
@@ -158,7 +159,7 @@ Skip this if you have no bots yet. Otherwise:
 cd ~/trading
 docker compose up -d --build
 docker compose ps                  # the chosen services "Up" (glitchtip-migrate exits once it's done: that's normal)
-curl -s localhost:8002/status      # "scheduler_running": true, and a recent "scheduler_last_tick"
+curl -s localhost:8002/status      # "scheduler_running": true, "scheduler_state": "ok", and a recent "scheduler_last_tick"
 ```
 
 If you restored your history in step 6, your accounts came with it. On a fresh database, create the admin:
@@ -316,13 +317,15 @@ When a new setting appears in a `.env.example`, add it to the server's `.env` by
 
 - **The watchdog emails you** (the `watchdog` container, always on): a service down for 3 minutes, and again when it's
   back; the bots' scheduler stuck or the database gone (trading-service's `/health`); under 10% of the disk free;
-  no backup for 36 hours. It writes to the addresses on the Email alerts page while alerts are on there, through the
+  no backup for 36 hours. A slow pass of the paper bots gets an email of its own, `[Trading] Slow`, at most one every 6
+  hours: nothing is down. It writes to the addresses on the Email alerts page while alerts are on there, through the
   same mail server. See what it sees: `docker compose exec watchdog python watchdog.py --once`.
 - **The whole server down** (power, network, Docker) can't be reported from inside it. For that, make a free check at
   [healthchecks.io](https://healthchecks.io) (period 1 minute, grace 5 minutes, your email as its notification), put
   its ping URL in `./.env` as `WATCHDOG_PING_URL=https://hc-ping.com/...` and `docker compose up -d watchdog`. The
   watchdog pings it every minute; healthchecks.io emails you when the pings stop.
-- **Bot page header:** `Scheduler running`, or `Scheduler not ticking` (look at the logs).
+- **Bot page header:** `Scheduler running`; `Paper bots running late` (hover it: how far the pass has got); `Scheduler
+  stuck` or `No answer from the scheduler` (look at the logs).
 - **Logs:** `docker compose logs -f trading-service`. Every order and stop is also in each bot's audit log.
 - **Errors:** set up GlitchTip once (see README), and errors from every service land there.
 - **Disk:** check with `df -h`. Old Docker images pile up after rebuilds; `docker image prune` clears them.

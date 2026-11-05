@@ -55,6 +55,7 @@ def yahoo_closes(symbols: list[str], start: date) -> pd.DataFrame:
 
 
 DAILY_TTL = 15 * 60  # seconds a daily download serves every bot: the buy & hold line and new bots' start prices
+UNIVERSE_DAYS = 10  # days of daily closes universe_prices reads: enough to reach back over a long weekend
 _daily = yahoo_cache.Shared(DAILY_TTL)
 
 
@@ -104,7 +105,7 @@ def rank(bot: Bot, today: date, closes_fn=None) -> tuple[list[str], list[tuple[s
 
 def universe_prices(universe: list[str], today: date, closes_fn=None) -> dict[str, float]:
     """Each symbol's latest daily close (today's latest price during market hours)."""
-    closes = (closes_fn or yahoo_closes)(list(universe), today - timedelta(days=10)).sort_index().ffill()
+    closes = (closes_fn or yahoo_closes)(list(universe), today - timedelta(days=UNIVERSE_DAYS)).sort_index().ffill()
     if closes.empty:
         return {}
     last = closes.iloc[-1]

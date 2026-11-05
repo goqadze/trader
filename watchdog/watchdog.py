@@ -9,6 +9,9 @@ down after FAIL_AFTER failed checks in a row: a restart during a deploy takes se
 what went down; another says when it's back and for how long it was out; a reminder goes out every REMIND_EVERY while
 it stays down. An email that can't be sent is tried again at the next round.
 
+A slow pass of the paper bots is no outage (trading-service's /health answers 200 and says so): after FAIL_AFTER checks
+in a row an email with a subject of its own, at most one every REMIND_EVERY, and none when it's over.
+
 Who gets it: the addresses on the dashboard's Email alerts page while alerts are on (switched off there = no email
 from here either). They're read from trading-service at every round and remembered in /data, so they're still known
 while trading-service is down; WATCHDOG_TO before it ever answered. Sent through the mail server the other alerts use
@@ -98,6 +101,16 @@ def http(url: str) -> Probe:
             return "; ".join(problems) or f"HTTP {e.code}"
         except Exception as e:  # noqa: BLE001  (URLError, timeouts, resets: all mean "no proper answer")
             return _why(e)
+    return probe
+
+
+def slow_note(url: str) -> Probe:
+    """What a /health that answers 200 calls slow. Any other answer says nothing here: http() reports those."""
+    def probe() -> str | None:
+        try:
+            return "; ".join(fetch_json(url).get("slow") or []) or None
+        except Exception:  # noqa: BLE001
+            return None
     return probe
 
 
@@ -258,11 +271,14 @@ def _for(d: timedelta) -> str:
 class Watchdog:
     def __init__(self, checks: list[Check], contacts: Contacts, send: Callable[[EmailMessage], None] = smtp_send,
                  now: Callable[[], datetime] = utcnow, ping_url: str = os.getenv("WATCHDOG_PING_URL", ""),
-                 ping: Callable[[str], object] = lambda url: urllib.request.urlopen(url, timeout=10).close()):
+                 ping: Callable[[str], object] = lambda url: urllib.request.urlopen(url, timeout=10).close(),
+                 slow: Probe = lambda: None):
         self.checks, self.contacts, self.send, self.now = checks, contacts, send, now
-        self.ping_url, self.ping = ping_url, ping
+        self.ping_url, self.ping, self.slow = ping_url, ping, slow
         self.status = {c.name: Status() for c in checks}
         self.outbox: list[tuple[str, str]] = []  # (subject, body) not sent yet
+        self.slow_checks = 0  # checks in a row that said the paper bots' pass is slow
+        self.slow_emailed_at: datetime | None = None
 
     def round(self) -> None:
         now = self.now()
@@ -292,12 +308,24 @@ class Watchdog:
             self.outbox.append(self._down_email(down, reminders))
         if back:
             self.outbox.append(self._back_email(back))
+        self._look_at_slow(now)
         self.flush()
         if self.ping_url:
             try:
                 self.ping(self.ping_url)
             except Exception as e:  # noqa: BLE001
                 log.warning("ping %s failed: %s", self.ping_url, e)
+
+    def _look_at_slow(self, now: datetime) -> None:
+        note = self.slow()
+        self.slow_checks = self.slow_checks + 1 if note else 0
+        if self.slow_checks < FAIL_AFTER or (self.slow_emailed_at and now - self.slow_emailed_at < REMIND_EVERY):
+            return
+        self.slow_emailed_at = now
+        self.outbox.append(("[Trading] Slow: the paper bots' pass",
+                            "\n".join(["Nothing is down: the bots are working, but late.", f"  Why: {note}", "",
+                                       f"No more of these for {_for(REMIND_EVERY)}, and none when it's over.",
+                                       *self._footer()])))
 
     def _down_email(self, down: list[Check], reminders: list[Check]) -> tuple[str, str]:
         names = [c.name for c in down + reminders]
@@ -356,6 +384,8 @@ def main() -> None:
     if "--once" in sys.argv:
         for c in checks:
             print(f"{c.name:18s} {c.probe() or 'ok'}")
+        if note := slow_note(f"{TRADING}/health")():
+            print(f"{'slow':18s} {note}")
         return
     contacts = Contacts()
     contacts.refresh()
@@ -365,7 +395,7 @@ def main() -> None:
              ", ".join(c.name for c in checks), CHECK_EVERY, FAIL_AFTER, len(contacts.recipients()),
              "; pinging WATCHDOG_PING_URL" if os.getenv("WATCHDOG_PING_URL") else "")
     dog = Watchdog(checks, contacts, send=smtp_send if os.getenv("SMTP_HOST") else
-                   lambda msg: log.warning("would email: %s", msg["Subject"]))
+                   lambda msg: log.warning("would email: %s", msg["Subject"]), slow=slow_note(f"{TRADING}/health"))
     while True:
         started = time.monotonic()
         try:

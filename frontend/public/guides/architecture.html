@@ -508,6 +508,10 @@ out.label  # a typed object, not free text</code></pre>
         can run for minutes (a burst of paper orders, slow Yahoo) without holding the live ones back. On the paper
         account a scheduled dip check doesn't wait for its fills: the next pass books them from one read of the
         account's orders, so a buy costs about one Alpaca request.</p>
+      <p class="muted">A pass reads what its bots need from Yahoo once, at its start, up to 50 symbols at a time, and
+        every bot answers from that. Slow isn't stuck: <code>/health</code> fails only when no bot has finished for 5
+        minutes or the live pass is 5 minutes late; a long paper pass that is still getting somewhere is a 200 that says
+        <code>slow</code>, a gold badge and at most one email every 6 hours.</p>
     </div>
     <div class="card">
       <h3>Brokers and safety</h3>

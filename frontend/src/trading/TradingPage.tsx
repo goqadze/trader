@@ -25,10 +25,10 @@ import { usePolling } from "./usePolling";
 /** Market clock + scheduler heartbeat, shown on both trading pages. Given a bot, shows that bot's next decision. */
 export function MarketStatus({ status, bot }: { status: TradingStatus | null; bot?: Bot }) {
   if (!status) return null;
-  // No finished pass for 5 minutes means the loop is stuck or the service is down: the same limit as /health, which the
-  // watchdog emails about. The stamp is when the paper bots' last finished pass began, and at a check moment such a pass
-  // can take 2 minutes, so a shorter limit showed this badge while the bots were fine.
-  const stale = !status.scheduler_last_tick || Date.now() - new Date(status.scheduler_last_tick).getTime() > 300_000;
+  // trading-service says whether its loop is slow or stuck (scheduler.health, also behind /health and the watchdog's
+  // emails). This answer itself being 5 minutes old means the service doesn't answer: it can't say that itself.
+  const silent = Date.now() - new Date(status.now).getTime() > 300_000;
+  const note = status.scheduler_note.charAt(0).toUpperCase() + status.scheduler_note.slice(1); // written for emails too
   const t = slotTimes(status);
   const next = bot ? bot.next_decision_at : status.next_decision_at;
   return (
@@ -51,12 +51,20 @@ export function MarketStatus({ status, bot }: { status: TradingStatus | null; bo
       </Tooltip>
       {!status.scheduler_enabled ? (
         <Tag color="red">Scheduler disabled</Tag>
-      ) : stale ? (
-        <Tooltip title="No scheduler tick in the last 5 minutes. Check `docker compose logs trading-service`.">
-          <Tag color="orange">Scheduler not ticking</Tag>
+      ) : silent ? (
+        <Tooltip title="trading-service hasn't answered for 5 minutes. Check `docker compose logs trading-service`.">
+          <Tag color="red">No answer from the scheduler</Tag>
+        </Tooltip>
+      ) : status.scheduler_state === "stuck" ? (
+        <Tooltip title={`${note}. Check \`docker compose logs trading-service\`.`}>
+          <Tag color="red">Scheduler stuck</Tag>
+        </Tooltip>
+      ) : status.scheduler_state === "slow" ? (
+        <Tooltip title={`${note}. Live bots' last pass finished ${localTime(status.scheduler_live_tick)}.`}>
+          <Tag color="gold">Paper bots running late</Tag>
         </Tooltip>
       ) : (
-        <Tooltip title={`Last tick ${localTime(status.scheduler_last_tick)}`}>
+        <Tooltip title={status.scheduler_last_tick ? `Last pass finished ${localTime(status.scheduler_last_tick)}` : "The first pass is still going"}>
           <Tag color="green">Scheduler running</Tag>
         </Tooltip>
       )}

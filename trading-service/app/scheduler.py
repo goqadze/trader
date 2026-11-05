@@ -22,9 +22,13 @@ window, that slot is simply skipped and the next one catches up.
 
 import asyncio
 import logging
+import threading
+from collections import defaultdict
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time, timedelta
 
+import pandas as pd
 from sqlalchemy import func, select, union
 
 from .brokers import SHARED_ACCOUNT_BROKERS, BrokerError, get_broker
@@ -33,7 +37,7 @@ from .config import settings
 from .db import SessionLocal, utcnow
 from .decision_client import get_signal
 from .market import NY, is_open, ny_date, session_bounds, sessions_since, slot_window
-from . import dip, rotation, splits, withdraw
+from . import dip, rotation, splits, withdraw, yahoo_cache
 from .models import DIP, HOLDINGS_STRATEGIES, OPEN_ORDER_STATUSES, ROTATION, Bot, Holding, Order, WatchItem
 from .trader import bot_lock, evaluate, log_event, protect, reconcile, sync_pending, watch
 
@@ -43,13 +47,17 @@ logger = logging.getLogger("trading-service")
 _last_watch: dict[int, datetime] = {}
 _retry_after: dict[int, datetime] = {}  # a failed signal call is retried after a pause, not every tick
 _last_error: dict[tuple[int, str], datetime] = {}  # don't write the same error to the audit log every 30s
-# The heartbeat /health reads: when the loop started, the last tick that finished, and the last tick that failed
-state: dict = {"last_tick": None, "live_tick": None, "running": False, "started_at": None, "last_error": None}
+# The heartbeat /health reads: when the loop started, when each kind of pass last finished (last_tick: all but the live
+# bots), the last tick that failed, and how far the paper bots' pass still going has got
+state: dict = {"last_tick": None, "live_tick": None, "running": False, "started_at": None, "last_error": None, "pass": None}
 
 SIGNAL_RETRY = timedelta(minutes=5)
 ERROR_LOG_EVERY = timedelta(hours=1)
 ORDERS_LOOKBACK = timedelta(hours=1)  # a pass reads the paper account's orders this far back at most (older: one by one)
 ORDERS_MARGIN = timedelta(minutes=1)  # Alpaca stamps an order when it gets it, after our pass's `now`; clocks differ a bit
+STUCK_AFTER = timedelta(minutes=5)  # no bot finished for this long, or no live pass: something hangs
+SLOW_AFTER = timedelta(minutes=5)  # the paper bots' pass still going after this long, bots still finishing: late, not stuck
+GIVE_UP_AFTER = timedelta(minutes=30)  # however busy it looks: two 15-minute checks missed, as good as stuck
 
 
 # Bot.decide_at -> its slots, in time order
@@ -124,6 +132,14 @@ def next_decision_at(bot: Bot, now: datetime) -> datetime | None:
     return None
 
 
+def _watch_due(bot: Bot, now: datetime) -> bool:
+    return now - _last_watch.get(bot.id, datetime.min.replace(tzinfo=now.tzinfo)) >= timedelta(minutes=settings.risk_check_minutes)
+
+
+def _check_due(bot: Bot, now: datetime) -> bool:
+    return dip.due(bot, now) and now >= _retry_after.get(bot.id, now)
+
+
 def process_bot(bot_id: int, now: datetime, signal_fn=get_signal, broker_factory=get_broker, closes_fn=None,
                 dip_fns: dict | None = None) -> None:
     """One scheduler pass for one bot. Never raises: one broken bot must not stop the others.
@@ -155,7 +171,7 @@ def process_bot(bot_id: int, now: datetime, signal_fn=get_signal, broker_factory
                 if not reconcile(session, bot, broker, now):
                     session.commit()
                     return
-                if now - _last_watch.get(bot.id, datetime.min.replace(tzinfo=now.tzinfo)) >= timedelta(minutes=settings.risk_check_minutes):
+                if _watch_due(bot, now):
                     _last_watch[bot.id] = now
                     watch(session, bot, broker, now)
                 if bot.status == "active" and decision_due(bot, now) and now >= _retry_after.get(bot.id, now):
@@ -175,7 +191,7 @@ def _process_rotation(session, bot: Bot, broker, now: datetime, closes_fn) -> No
     """The scheduler pass for a rotation bot, after its pending orders were synced."""
     if not is_open(now):
         return
-    if now - _last_watch.get(bot.id, datetime.min.replace(tzinfo=now.tzinfo)) >= timedelta(minutes=settings.risk_check_minutes):
+    if _watch_due(bot, now):
         _last_watch[bot.id] = now
         if not rotation.reconcile(session, bot, broker, now):
             return
@@ -196,12 +212,12 @@ def _process_dip(session, bot: Bot, broker, now: datetime, closes_fn, fns: dict)
     minutes (like a rotation bot: its holdings and the starting watchlist's value), a check at each interval."""
     if not is_open(now):
         return
-    if now - _last_watch.get(bot.id, datetime.min.replace(tzinfo=now.tzinfo)) >= timedelta(minutes=settings.risk_check_minutes):
+    if _watch_due(bot, now):
         _last_watch[bot.id] = now
         if not rotation.reconcile(session, bot, broker, now):
             return
         rotation.watch(session, bot, broker, now, closes_fn)
-    if dip.due(bot, now) and now >= _retry_after.get(bot.id, now):
+    if _check_due(bot, now):
         before = bot.last_decision_at
         with scheduled():  # its paper orders don't wait for their fills: the next pass books them
             dip.check(session, bot, broker, now, "scheduled", **fns)
@@ -248,31 +264,146 @@ def round_orders_since(session, now: datetime) -> datetime | None:
     return None if oldest is None else max(oldest, now - ORDERS_LOOKBACK) - ORDERS_MARGIN
 
 
+Wanted = tuple[set[str], date]  # symbols, and from which day their closes
+
+
+class PassPrices:
+    """What the bots of one pass read from Yahoo (process_bot's closes_fn and bars_fn): their symbols, read once at the
+    pass's start (yahoo_cache.Frozen), one lot per bar interval and one of daily closes. `bars`: dip bots with a check
+    due, {interval: (symbols, from)}; `daily`: dip and rotation bots due to look at their universe, (symbols, from)."""
+
+    def __init__(self, bars: dict[str, Wanted], daily: Wanted | None, beat: Callable[[], None] = lambda: None):
+        self._bars = {i: yahoo_cache.Frozen(lambda some, since, i=i: dip.yahoo_bars(some, i, since), *wanted, beat)
+                      for i, wanted in bars.items()}
+        self._daily = None
+        if daily:
+            self._daily = yahoo_cache.Frozen(lambda some, since: rotation.yahoo_closes(some, since), *daily, beat)
+
+    def bars_fn(self, symbols: list[str], interval: str, start: date) -> pd.DataFrame:
+        read = self._bars.get(interval)
+        return read.closes(symbols, start) if read else dip.yahoo_bars(symbols, interval, start)
+
+    def closes_fn(self, symbols: list[str], start: date) -> pd.DataFrame:
+        return self._daily.closes(symbols, start) if self._daily else rotation.yahoo_closes(symbols, start)
+
+
+def pass_wants(session, now: datetime, live: bool | None = None) -> tuple[dict[str, Wanted], Wanted | None]:
+    """What the bots of a pass at `now` will ask Yahoo for (PassPrices' `bars` and `daily`): the conditions of
+    _process_dip and _process_rotation. A dip bot checks its watchlist and holdings; a rotation or dip bot looks at its
+    universe every RISK_CHECK_MINUTES."""
+    if not is_open(now):
+        return {}, None
+    today = ny_date(now)
+    universes: set[str] = set()
+    due: dict[int, tuple[str, date]] = {}  # a dip bot with a check due -> its bar interval, and from when it needs them
+    kept = (Bot.status != "archived", Bot.strategy.in_((DIP, ROTATION)), *_which(live))
+    for bot in session.scalars(select(Bot).where(*kept)):
+        try:
+            if _watch_due(bot, now):
+                universes.update(bot.universe or [])
+            if bot.strategy == DIP and _check_due(bot, now):
+                due[bot.id] = (bot.interval, dip.history_start(bot, today))
+        except Exception:  # a broken bot must not stop the others (process_bot): its own turn in the pass reports it
+            logger.debug("bot=%s left out of the pass's prices", bot.id, exc_info=True)
+    symbols: dict[int, set[str]] = defaultdict(set)
+    if due:
+        for table in (WatchItem, Holding):
+            for bot_id, symbol in session.execute(select(table.bot_id, table.symbol).where(table.bot_id.in_(due))).all():
+                symbols[bot_id].add(symbol)
+    bars: dict[str, Wanted] = {}
+    for bot_id, (interval, start) in due.items():
+        wanted, earliest = bars.get(interval, (set(), date.max))
+        bars[interval] = (wanted | symbols[bot_id], min(earliest, start))
+    return bars, (universes, today - timedelta(days=rotation.UNIVERSE_DAYS)) if universes else None
+
+
+_alive_lock = threading.Lock()
+
+
+def _alive(finished: int = 0) -> None:
+    """A sign of life from the paper bots' pass: a lot of prices read, or a bot finished."""
+    going = state.get("pass")
+    if going is not None:
+        with _alive_lock:  # the bots of a pass finish in several threads
+            going["progress_at"] = utcnow()
+            going["done"] += finished
+
+
 def tick(now: datetime, signal_fn=get_signal, broker_factory=get_broker, live: bool | None = None) -> None:
     """One pass over the non-archived bots, a few in parallel (LLM decisions can take seconds each): the live account's
     (live=True), all the others (False), or every one, the real-money ones first (None). run_forever runs the first two
-    side by side, so many paper bots waiting for their price downloads (one at a time, yahoo_cache) or sending a burst
-    of orders never delay the live ones.
+    side by side, so many paper bots sending a burst of orders never delay the live ones.
     Stock splits first, one bot after another: dip bots sharing a symbol must all have them before any compares with
-    the account. The pass reads Alpaca's prices and each account's positions once for all the bots (shared_round): one
-    request per bot and symbol would go over Alpaca's 200 a minute with ~100 bots. So are the paper account's buying
-    power and its orders still working by our records (round_orders_since): a burst of dip buys sends them without
-    waiting for their fills, and the next pass books them all from one read."""
+    the account. Then what the bots need from Yahoo, read once for all of them (PassPrices). The pass reads Alpaca's
+    prices and each account's positions once for all the bots too (shared_round): one request per bot and symbol would
+    go over Alpaca's 200 a minute with ~100 bots. So are the paper account's buying power and its orders still working
+    by our records (round_orders_since): a burst of dip buys sends them without waiting for their fills, and the next
+    pass books them all from one read."""
+    paper = live is not True  # the live bots' pass leaves the paper bots' progress alone: it is going on beside it
+    alive = _alive if paper else lambda finished=0: None
+    if paper:
+        state["pass"] = {"started_at": utcnow(), "progress_at": utcnow(), "done": 0, "total": 0}
     try:
-        splits.apply_all(now, live=live)
-    except Exception:
-        logger.exception("split pass failed")
-    with SessionLocal() as session:
-        ids = list(session.scalars(select(Bot.id).where(Bot.status != "archived", *_which(live))
-                                   .order_by((Bot.broker == "alpaca-live").desc(), Bot.id)))
-        symbols = round_symbols(session, live)
-        orders_since = None if live else round_orders_since(session, now)
-    with shared_round(symbols, orders_since), ThreadPoolExecutor(max_workers=4) as pool:
-        list(pool.map(lambda i: process_bot(i, now, signal_fn, broker_factory), ids))
+        try:
+            splits.apply_all(now, live=live)
+        except Exception:
+            logger.exception("split pass failed")
+        with SessionLocal() as session:
+            ids = list(session.scalars(select(Bot.id).where(Bot.status != "archived", *_which(live))
+                                       .order_by((Bot.broker == "alpaca-live").desc(), Bot.id)))
+            symbols = round_symbols(session, live)
+            orders_since = None if live else round_orders_since(session, now)
+            bars, daily = pass_wants(session, now, live)
+        if paper:
+            state["pass"]["total"] = len(ids)
+        prices = PassPrices(bars, daily, alive)
+
+        def run(bot_id: int) -> None:
+            process_bot(bot_id, now, signal_fn, broker_factory, prices.closes_fn, {"bars_fn": prices.bars_fn})
+            alive(1)
+
+        with shared_round(symbols, orders_since), ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(run, ids))
+    finally:
+        if paper:
+            state["pass"] = None
     if live is not False:
-        state["live_tick"] = now
+        state["live_tick"] = utcnow()
     if live is not True:
-        state["last_tick"] = now
+        state["last_tick"] = utcnow()
+
+
+def health(now: datetime) -> tuple[list[str], list[str]]:
+    """How the loop is doing, for /health and the dashboard: (what's stuck: bots don't check or trade, what's slow: they
+    do, but late). The paper bots' pass may take minutes: it is stuck only when no bot finished for STUCK_AFTER, when no
+    pass is going and none finished lately (each one fails), or after GIVE_UP_AFTER whatever it is doing. The live bots'
+    pass takes seconds and real money depends on it: late is stuck."""
+    if not state["running"]:
+        return ["the scheduler isn't running: the bots don't check or trade"], []
+    stuck, slow = [], []
+    late = max(STUCK_AFTER, timedelta(seconds=10 * settings.tick_seconds))
+    error = f" (last error: {state['last_error']})" if state["last_error"] else ""
+    going = state.get("pass")
+    since = state["last_tick"] or state["started_at"]
+    live_since = state.get("live_tick") or state["started_at"]
+
+    def minutes(d: timedelta) -> int:
+        return int(d.total_seconds() // 60)
+
+    if going is not None and now - going["progress_at"] > late:
+        stuck.append(f"the paper bots' pass has done nothing for {minutes(now - going['progress_at'])} minutes "
+                     f"({going['done']} of {going['total']} bots done): it looks stuck, they don't check or trade{error}")
+    elif since is not None and now - since > (late if going is None else GIVE_UP_AFTER):
+        stuck.append(f"the scheduler hasn't finished a round for {minutes(now - since)} minutes: the paper bots don't "
+                     f"check or trade{error}")
+    elif going is not None and now - going["started_at"] > SLOW_AFTER:
+        slow.append(f"the paper bots' pass has been running for {minutes(now - going['started_at'])} minutes "
+                    f"({going['done']} of {going['total']} bots done): their checks and orders run late. It isn't stuck, "
+                    "and the live bots have a pass of their own")
+    if live_since is not None and now - live_since > late:
+        stuck.append(f"the live bots' pass hasn't finished for {minutes(now - live_since)} minutes: the real-money bots "
+                     f"don't check or trade{error}")
+    return stuck, slow
 
 
 def _pass(live: bool) -> None:
@@ -287,7 +418,7 @@ async def run_forever() -> None:
     """Started by main.py on startup; cancelled on shutdown. Every TICK_SECONDS: a pass of the live account's bots (a
     few seconds), awaited; then a pass of all the others in the background, unless the last one is still going (a burst
     of paper orders, slow Yahoo downloads). The live bots' account check, prices and checks never wait behind it, and
-    at a check moment their downloads go first."""
+    at a check moment their download goes first, or right after the lot being read (yahoo_cache.CHUNK)."""
     state["running"], state["started_at"] = True, utcnow()
     logger.info("scheduler started (tick every %ss)", settings.tick_seconds)
     others: asyncio.Future | None = None

@@ -229,21 +229,64 @@ def test_status_reports_market_clock_and_brokers(client):
 
 
 def test_health_says_when_the_scheduler_is_stuck_or_stopped(client, clock, monkeypatch):
-    assert client.get("/health").json() == {"status": "ok", "problems": [], "last_tick": None}  # scheduler off in tests
+    assert client.get("/health").json() == {"status": "ok", "problems": [], "slow": [], "last_tick": None}  # scheduler off in tests
     monkeypatch.setattr(main, "settings", main.settings.__class__(scheduler_enabled=True, tick_seconds=30))
-    state = {"running": True, "started_at": at(22, 50), "last_tick": at(22, 58), "live_tick": at(22, 59), "last_error": None}
+    state = {"running": True, "started_at": at(22, 50), "last_tick": at(22, 58), "live_tick": at(22, 59), "last_error": None, "pass": None}
     monkeypatch.setattr(main.scheduler, "state", state)
     assert client.get("/health").status_code == 200  # 2 minutes ago: fine
     state["last_tick"], state["last_error"] = at(22, 40), "OperationalError: connection refused"
     r = client.get("/health")
     assert r.status_code == 503 and r.json()["status"] == "down"
-    assert r.json()["problems"] == ["the scheduler hasn't finished a round for 20 minutes: the bots don't check or trade "
-                                    "(last error: OperationalError: connection refused)"]
+    assert r.json()["problems"] == ["the scheduler hasn't finished a round for 20 minutes: the paper bots don't check or "
+                                    "trade (last error: OperationalError: connection refused)"]
     state["last_tick"], state["live_tick"], state["last_error"] = at(22, 59), at(22, 50), None  # the live bots' own pass
     assert client.get("/health").json()["problems"] == [
         "the live bots' pass hasn't finished for 10 minutes: the real-money bots don't check or trade"]
     state["running"] = False
     assert client.get("/health").json()["problems"] == ["the scheduler isn't running: the bots don't check or trade"]
+
+
+def test_a_slow_paper_pass_is_no_outage_and_a_stuck_one_is(client, clock, monkeypatch):
+    """The clock says 23:00. A pass that has run for 8 minutes with bots still finishing: a 200 that says slow. The same
+    pass with no bot finished for 6 minutes: down. So is one that has been busy for over half an hour."""
+    monkeypatch.setattr(main, "settings", main.settings.__class__(scheduler_enabled=True, tick_seconds=30))
+    going = {"started_at": at(22, 52), "progress_at": at(22, 59), "done": 120, "total": 235}
+    state = {"running": True, "started_at": at(20, 0), "last_tick": at(22, 52), "live_tick": at(22, 59), "last_error": None, "pass": going}
+    monkeypatch.setattr(main.scheduler, "state", state)
+
+    r = client.get("/health")
+    assert r.status_code == 200 and r.json()["status"] == "slow" and r.json()["problems"] == []
+    assert r.json()["slow"] == ["the paper bots' pass has been running for 8 minutes (120 of 235 bots done): their checks "
+                                "and orders run late. It isn't stuck, and the live bots have a pass of their own"]
+    s = client.get("/status").json()
+    assert s["scheduler_state"] == "slow" and s["scheduler_note"] == r.json()["slow"][0]
+
+    going["started_at"], state["last_tick"] = at(22, 56), at(22, 56)  # 4 minutes in: nothing to say yet
+    assert client.get("/health").json() == {"status": "ok", "problems": [], "slow": [], "last_tick": at(22, 56).isoformat()}
+    assert client.get("/status").json()["scheduler_state"] == "ok"
+
+    going["started_at"], state["last_tick"], going["progress_at"] = at(22, 40), at(22, 40), at(22, 54)
+    r = client.get("/health")
+    assert r.status_code == 503 and r.json()["slow"] == []
+    assert r.json()["problems"] == ["the paper bots' pass has done nothing for 6 minutes (120 of 235 bots done): it looks "
+                                    "stuck, they don't check or trade"]
+    assert client.get("/status").json()["scheduler_state"] == "stuck"
+
+    going["progress_at"], state["last_tick"] = at(22, 59), at(22, 29)  # busy, but no pass finished for 31 minutes
+    r = client.get("/health")
+    assert r.status_code == 503
+    assert r.json()["problems"] == ["the scheduler hasn't finished a round for 31 minutes: the paper bots don't check or trade"]
+
+
+def test_a_slow_paper_pass_doesnt_hide_a_late_live_pass(client, clock, monkeypatch):
+    monkeypatch.setattr(main, "settings", main.settings.__class__(scheduler_enabled=True, tick_seconds=30))
+    going = {"started_at": at(22, 52), "progress_at": at(22, 59), "done": 120, "total": 235}
+    monkeypatch.setattr(main.scheduler, "state", {"running": True, "started_at": at(20, 0), "last_tick": at(22, 52),
+                                                  "live_tick": at(22, 50), "last_error": None, "pass": going})
+    r = client.get("/health")
+    assert r.status_code == 503
+    assert r.json()["problems"] == ["the live bots' pass hasn't finished for 10 minutes: the real-money bots don't check or trade"]
+    assert r.json()["slow"][0].startswith("the paper bots' pass has been running for 8 minutes")
 
 
 def test_unknown_bot_is_404(client):
