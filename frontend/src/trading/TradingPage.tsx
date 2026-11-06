@@ -1,6 +1,6 @@
 import { DownOutlined, FallOutlined, PlusOutlined, RetweetOutlined, StopOutlined } from "@ant-design/icons";
 import {
-  Alert, App as AntApp, Badge, Button, Card, Col, Dropdown, Grid, List, Row, Segmented, Select, Space, Statistic, Switch, Table, Tag, Tooltip,
+  Alert, App as AntApp, Badge, Button, Card, Col, Dropdown, Grid, Input, List, Row, Segmented, Select, Space, Statistic, Switch, Table, Tag, Tooltip,
   Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
@@ -370,12 +370,14 @@ export default function TradingPage() {
   const [sort, setSort] = useState(rememberedSort);
   const [kindPick, setKindPick] = useState<BotKind[] | null>(null);
   const [sectorPick, setSectorPick] = useState<string[] | null>(null);
+  const [typed, setTyped] = useState(""); // the search box as typed; `search` is what was asked for
+  const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(rememberedPageSize);
 
   // One page of the table, filtered, sorted and cut by trading-service, with the counts and totals of all the bots
   const query: BotTableQuery = {
-    broker: brokerPick, archived: showArchived, kinds: kindPick ?? [], sectors: sectorPick ?? [], sort: sort.order ? (sort.key as BotSort) : null,
+    broker: brokerPick, archived: showArchived, kinds: kindPick ?? [], sectors: sectorPick ?? [], q: search, sort: sort.order ? (sort.key as BotSort) : null,
     order: sort.order === "ascend" ? "asc" : "desc", offset: (page - 1) * pageSize, limit: pageSize,
   };
   const bots = usePolling(() => tradingApi.botTable(query), 15_000, [JSON.stringify(query)]);
@@ -427,6 +429,14 @@ export default function TradingPage() {
     setFormOpen(true);
     navigate(location.pathname, { replace: true, state: null }); // don't reopen on refresh
   }, [location, navigate]);
+
+  // Typing in the search box asks once it pauses (Enter or clearing it: at once), from the first page
+  const find = (v: string) => { setSearch(v.trim()); setPage(1); };
+  useEffect(() => {
+    if (typed.trim() === search) return;
+    const t = setTimeout(() => { setSearch(typed.trim()); setPage(1); }, 300);
+    return () => clearTimeout(t);
+  }, [typed, search]);
 
   // The filters left fewer bots than this page starts at: trading-service answered with the last page
   useEffect(() => {
@@ -571,6 +581,11 @@ export default function TradingPage() {
         title={broker === "all" ? "Bots" : `Bots · ${brokerLabel(broker)}`}
         extra={<Space><span style={{ color: "#8b98b5" }}>Show archived</span><Switch size="small" checked={showArchived} onChange={(v) => { setShowArchived(v); setPage(1); }} /></Space>}
       >
+        {/* Like Test results' box: a setup started as several bots (its code in their names) finds them all */}
+        <div style={{ marginBottom: 12 }}>
+          <Input.Search allowClear placeholder="Find a bot, #id, setup or symbol" value={typed} onChange={(e) => setTyped(e.target.value)}
+            onSearch={find} style={{ width: phone ? "100%" : 300 }} />
+        </div>
         <Table<Bot>
           rowKey="id"
           columns={sorted}
@@ -601,7 +616,7 @@ export default function TradingPage() {
             setPage(1);
           }}
           onRow={(b) => ({ onClick: (e) => { if (!(e.target as HTMLElement).closest("a")) navigate(`/trading/${b.id}`); }, style: { cursor: "pointer" } })}
-          locale={{ emptyText: "No bots yet. Run a backtest you trust, then click “Trade this strategy”, or create one with New bot." }}
+          locale={{ emptyText: search ? `No bot's name, setup or symbols have “${search}”` : "No bots yet. Run a backtest you trust, then click “Trade this strategy”, or create one with New bot." }}
         />
       </Card>
 

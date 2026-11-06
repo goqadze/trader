@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import os
+import re
 import time
 from collections import Counter
 from contextlib import asynccontextmanager
@@ -439,11 +440,25 @@ class _Row:
     sectors: list[str]
     equity: float
     keys: dict[str, float | None]  # BotSort -> its value (None: no tested setup, buy & hold or closed trade, sorted last either way)
+    text: str  # what the search box looks in (_search_text)
 
 
 def _kind(bot: Bot) -> str:
     """Its BotKind, for the bot table's Bot filter."""
     return "dip" if bot.strategy == DIP else "rotation" if bot.strategy == ROTATION else "symbol"
+
+
+def _search_text(bot: Bot, watched: list[str], held: list[Holding]) -> str:
+    """What the bot table's search box looks in, lowercased: the bot's name, its tested setup's code and watchlist
+    ("N0901", "Gas": a setup started as several bots finds them all) and every symbol it trades, watches or holds."""
+    setup = bot.setup or {}
+    symbols = [bot.symbol, *(bot.universe or []), *watched, *(h.symbol for h in held)]
+    return " ".join([bot.name, str(setup.get("code") or ""), str(setup.get("watchlist") or ""), *symbols]).lower()
+
+
+def _found(row: _Row, words: list[str]) -> bool:
+    """Every word typed is somewhere in the bot's search text, in any order; "#7" is bot 7 only (not #70)."""
+    return all(row.bot.id == int(w[1:]) if re.fullmatch(r"#\d+", w) else w in row.text for w in words)
 
 
 def _archived_result(bot: Bot) -> float:
@@ -455,10 +470,11 @@ def _archived_result(bot: Bot) -> float:
 
 @app.get("/bots/table", response_model=BotTableOut)
 def bot_table(broker: str = "all", include_archived: bool = False, sector: list[str] = Query([]),
-              kind: list[BotKind] = Query([]), sort: BotSort | None = None, order: Literal["asc", "desc"] = "desc", offset: int = Query(0, ge=0),
+              kind: list[BotKind] = Query([]), search: str = Query("", alias="q", max_length=200), sort: BotSort | None = None, order: Literal["asc", "desc"] = "desc", offset: int = Query(0, ge=0),
               limit: int = Query(50, ge=1, le=500), session: Session = Depends(get_session)):
     """The overview's bot table, one page at a time: one broker's bots ("all", or a broker with none: every bot), those
-    of any of the `kind`s (dip buyer, momentum rotation, single symbol) and with any of the `sector` badges, sorted by a
+    of any of the `kind`s (dip buyer, momentum rotation, single symbol), with any of the `sector` badges and whose name,
+    #id, tested setup or symbols have every word of `q` (the search box; _search_text), sorted by a
     column (none: newest first; ties keep that order, but equal win rates put the most trades first; no tested setup, buy & hold or closed trade: last either way), from `offset`. With it, what
     the page shows of all of them: bots per broker, the broker's totals, kind and sector choices, the active bots for
     Halt all, and every bot's kind for the activity feed.
@@ -484,7 +500,7 @@ def bot_table(broker: str = "all", include_archived: bool = False, sector: list[
             "id": bot.id, "rating": bot.rating, "score": (bot.setup or {}).get("score"), "all": _setup_all(bot),
             "ret": ret, "pos": _unrealized(bot, mine, price), "win": _win_shown(_win_rate(closed.get(bot.id))),
             # How far its return is ahead of buy & hold, in points (the Return column's two numbers, as shown)
-            "beat": round(ret - return_pct(bot, bh), 2) if bh else None})
+            "beat": round(ret - return_pct(bot, bh), 2) if bh else None}, _search_text(bot, watched.get(bot.id, []), mine))
 
     rows = [row(b) for b in bots]
     brokers = Counter(r.bot.broker for r in rows)
@@ -505,6 +521,8 @@ def bot_table(broker: str = "all", include_archived: bool = False, sector: list[
         rows = [r for r in rows if _kind(r.bot) in kind]
     if sector:
         rows = [r for r in rows if set(r.sectors) & set(sector)]
+    if words := search.lower().split():  # like the kind and sector filters: the table and its count, not the cards
+        rows = [r for r in rows if _found(r, words)]
     if sort == "win":  # equal win rates, either way: the most trades first (100% of 20 trades says more than 100% of one)
         rows.sort(key=lambda r: closed.get(r.bot.id, (0, 0))[0], reverse=True)
     if sort:

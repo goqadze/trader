@@ -215,6 +215,49 @@ def test_the_bot_filter_shows_dip_buyers_rotations_or_single_symbol_bots(client,
     assert client.get("/bots/table", params={"kind": "stock"}).status_code == 422
 
 
+def test_the_search_finds_bots_by_name_number_setup_or_symbol(client, bots, session):
+    """The search box above the table: every word typed, in any order and any case, in the bot's name, its tested
+    setup's code or watchlist, or a symbol it trades, watches or holds; "#7" is bot 7 only. Like the kind and sector
+    filters it narrows the table and its count, not the cards."""
+    a, b, c, d, e, f, g = (bots[k] for k in "abcdefg")
+    dip_rules = dict(strategy=DIP, symbol="DIP", drop_pct=0.03, lookback=5, lookback_unit="days", interval="1d", max_positions=2)
+    gas = make_bot(session, name="s3 Pick 2 · N0901 Gas · 3% in 5d · back · stop 12%", universe=["EQT", "AR"],
+                   setup=setup("N0901", 4.0) | {"watchlist": "Gas"}, **dip_rules).id
+    session.add_all([WatchItem(bot_id=gas, symbol=s) for s in ("EQT", "AR", "RRC")])  # RRC: added after the start
+    session.commit()
+    cons = make_bot(session, name="Consumer dips", universe=["PG"], setup=setup("D2771", 2.0) | {"watchlist": "Staples"}, **dip_rules).id
+    rot = make_bot(session, name="bonds", symbol="ROT", strategy=ROTATION, universe=["SPY", "TLT"], top_n=1).id
+
+    assert ids(client, q="N0901") == [gas]  # the setup's code, in its name
+    assert ids(client, q="gas n0901") == ids(client, q="  STOP 12%  ") == [gas]  # any order, any case, every word
+    assert ids(client, q="d2771") == ids(client, q="staples") == [cons]  # the setup's code and watchlist, not in its name
+    assert ids(client, q="rrc") == [gas]  # a symbol on its watchlist
+    assert ids(client, q="tlt") == [rot]  # a rotation's universe
+    assert ids(client, q="xom") == [d, b]  # d watches and holds it, b trades it; newest first as always
+    assert ids(client, q="aapl") == [e, d, a]
+    assert ids(client, q="aapl", sort="id", order="asc") == [a, d, e]  # and sorted like the rest
+    assert ids(client, q="gas xom") == []  # every word, not any
+    assert len(ids(client, q="")) == len(ids(client, q="   ")) == 9
+
+    # "#" and a number: that bot only, not the ones whose number starts with it
+    assert str(rot).startswith(str(a)) and rot != a
+    assert ids(client, q=f"#{a}") == [a]
+    assert ids(client, q=f"#{rot}") == [rot]
+
+    # With the other filters, the broker and the archived bots
+    assert ids(client, q="xom", kind="symbol") == [b]
+    assert ids(client, q="aapl", broker="alpaca-live") == [e]
+    assert ids(client, q="msft") == []
+    assert ids(client, q="msft", include_archived=True) == [f]
+
+    # The table's count and pages follow it; the cards and the filters' choices are still the broker's
+    t = table(client, q="aapl", limit=2)
+    assert ([x["id"] for x in t["items"]], t["total"]) == ([e, d], 3)
+    assert (t["totals"]["count"], t["kinds"]) == (9, {"symbol": 5, "dip": 3, "rotation": 1})
+    assert table(client, q="aapl", limit=2, offset=50)["offset"] == 2  # past the end: the last page
+    assert client.get("/bots/table", params={"q": "x" * 201}).status_code == 422
+
+
 def test_archived_bots_keep_what_they_made_or_lost_in_the_cards_and_a_history(client, session):
     """Archiving hands a bot's cash back to the account, so the running bots' totals drop its loss: the cards count
     the shown broker's archived bots apart, and GET /bots/archived lists them, the earliest archived first, with a

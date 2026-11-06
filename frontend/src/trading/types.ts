@@ -267,6 +267,7 @@ export interface BotTableQuery {
   archived: boolean;
   kinds: BotKind[]; // any of these kinds ([] = every bot)
   sectors: string[]; // any of these badges ([] = every bot)
+  q: string; // the search box: every word in the bot's name, #id, tested setup or symbols ("" = every bot)
   sort: BotSort | null; // null = newest first
   order: "asc" | "desc";
   offset: number;

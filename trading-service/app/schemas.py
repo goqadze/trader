@@ -905,7 +905,7 @@ class BotTableOut(BaseModel):
     """One page of the overview's bot table, and what the page shows of all the bots it was cut from."""
 
     items: list[BotOut]
-    total: int  # the bots the broker, kind and sector filters leave
+    total: int  # the bots the broker, kind and sector filters and the search leave
     offset: int  # where this page starts (moved back when the filters left fewer bots than the page asked for)
     broker: str  # the broker shown: "all", or the one asked for when it has bots
     brokers: dict[str, int]  # bots per broker (archived ones too when asked for)

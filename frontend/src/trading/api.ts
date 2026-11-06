@@ -28,6 +28,7 @@ export const tradingApi = {
     params.set("order", query.order);
     for (const k of query.kinds) params.append("kind", k);
     for (const s of query.sectors) params.append("sector", s);
+    if (query.q) params.set("q", query.q);
     return request<BotTable>("GET", `/bots/table?${params}`);
   },
   archivedBots: (broker: string) => request<ArchivedBots>("GET", `/bots/archived?${new URLSearchParams({ broker })}`),
