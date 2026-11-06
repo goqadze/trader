@@ -243,7 +243,13 @@ class DipConfig(BaseModel):
     # The price the fall is measured from (and, with target_mode "reference", the price to get back to): the highest
     # close in the window (it rose, then turned down) or the close at its start (down x% over the last y days)
     drop_from: Literal["high", "start"] = "high"
-    target_mode: Literal["reference", "percent"] = "reference"  # back at the starting price, or up rise_pct from the buy
+    # Backtest only (no bot has these yet): what triggers a buy. "fall" = the rules above. "ibs" = at the day's last
+    # check, a close near the day's low: IBS = (price - the day's low so far) / (the day's high so far - its low)
+    # under ibs_below, lowest first. A known mean-reversion effect of index ETFs; drop_*, lookback and rebound unused
+    buy_rule: Literal["fall", "ibs"] = "fall"
+    ibs_below: float = Field(0.2, gt=0, lt=1)
+    # Back at the starting price, up rise_pct from the buy, or (backtest only) above the previous day's high
+    target_mode: Literal["reference", "percent", "prev_high"] = "reference"
     rise_pct: float = Field(0.05, gt=0, le=2)
     stop_pct: float = Field(0.05, gt=0, le=0.5)  # z: sell this far below the buy, and blacklist the symbol
     max_positions: int = Field(5, ge=1, le=20)  # each buy gets an equal slot of the equity: 1/max_positions

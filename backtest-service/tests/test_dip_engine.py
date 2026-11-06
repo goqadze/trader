@@ -11,9 +11,9 @@ import pytest
 from pydantic import ValidationError
 
 from app.engines import DipEngine
-from app.engines.dip import daily_moves, downsample, references, uptrend
+from app.engines.dip import daily_moves, downsample, ibs, references, uptrend
 from app.models import DipConfig
-from app.runner import _bar_closes
+from app.runner import _bar_closes, _bar_ranges
 
 START = date(2024, 1, 2)
 
@@ -398,3 +398,86 @@ def test_the_daily_move_is_the_average_range_of_the_days_before():
     # ... until a gap up from 100 to 110: that day's range runs from the previous close (11 = 10% of 110). It counts
     # from the next day on: no peeking at the day itself
     assert m.iloc[16] == pytest.approx((13 * 0.02 + 0.1) / 14)
+
+
+# --- IBS: buy a close near the day's low, sell above yesterday's high (backtest only) -----------------------
+
+
+def _ranges(highs: dict, lows: dict, index) -> pd.DataFrame:
+    """The day's high and low at each check, columns (High|Low, symbol)."""
+    return pd.concat({"High": pd.DataFrame(highs, index=index), "Low": pd.DataFrame(lows, index=index)}, axis=1)
+
+
+def _run_ibs(closes, ranges, **kw):
+    first, last = closes.index[0], closes.index[-1]
+    cfg = DipConfig(**({"symbols": list(closes.columns), "start": first.date(), "end": last.date(), "interval": "1d",
+                        "buy_rule": "ibs", "target_mode": "prev_high", "stop_pct": 0.5, "max_positions": 1,
+                        "slippage_pct": 0.0} | kw))
+
+    async def emit(ev):
+        pass
+
+    return asyncio.run(DipEngine().run(cfg, closes, emit, ranges=ranges))
+
+
+def test_ibs_is_where_the_price_sits_in_the_days_range():
+    assert ibs(101, 110, 100) == pytest.approx(0.1)
+    assert ibs(110, 110, 100) == 1.0 and ibs(95, 110, 100) == 0.0  # the price stretches the range
+    assert ibs(100, 100, 100) is None  # no range, no reading
+
+
+def test_ibs_buys_a_close_near_the_low_and_sells_above_yesterdays_high():
+    idx = pd.bdate_range("2024-01-02", periods=5)
+    closes = pd.DataFrame({"A": [105, 101, 104, 106, 108], "B": [105] * 5}, index=idx)
+    ranges = _ranges({"A": [106, 110, 106, 107, 109], "B": [110] * 5}, {"A": [104, 100, 101, 104, 105], "B": [100] * 5}, idx)
+    r = _run_ibs(closes, ranges)
+    buy, sell = r["trades"]
+    # Jan 3: 101 in a 100-110 day = IBS 0.1, bought at the close; B sits mid-range (0.5) every day
+    assert (buy["symbol"], buy["date"], buy["price"], buy["ibs"], buy["reference"]) == ("A", "2024-01-03", 101.0, 0.1, 110.0)
+    assert (buy["peak_price"], buy["drop_pct"]) == (110.0, pytest.approx(-8.18, abs=0.01))  # fell from the day's high
+    # The target moves each morning to yesterday's high: Jan 4 110 (104 isn't above), Jan 5 106 (106 isn't ABOVE),
+    # Jan 8 107: 108 sells
+    assert (sell["date"], sell["reason"], sell["price"], sell["target"]) == ("2024-01-08", "target", 108.0, 107.0)
+    assert r["dip_stats"]["dips"] == 1 and r["dip_stats"]["bought"] == 1
+
+
+def test_ibs_gives_the_free_slot_to_the_lowest_reading():
+    idx = pd.bdate_range("2024-01-02", periods=2)
+    closes = pd.DataFrame({"A": [101.5, 101.5], "B": [100.5, 100.5]}, index=idx)
+    ranges = _ranges({"A": [110, 110], "B": [110, 110]}, {"A": [100, 100], "B": [100, 100]}, idx)
+    r = _run_ibs(closes, ranges)  # A 0.15, B 0.05, one slot
+    assert [t["symbol"] for t in r["trades"] if t["side"] == "BUY"] == ["B"]
+    assert r["dip_stats"]["no_slot"] == 2  # A waited both days
+
+
+def test_ibs_buys_only_at_the_days_last_check():
+    # Jan 2: at the day's low at 11:00 (IBS 0) but back up to 99 of 95-100 by 15:45 (IBS 0.8): not bought.
+    # Jan 3: 96 at 15:45 is the day's low: bought then, not at 16:00 (the bell only marks the equity)
+    closes = pd.concat([_session(2, [100] * 5 + [95] + [99] * 20), _session(3, [100] * 24 + [96])])
+    days = closes.index.date
+    ranges = _ranges({"A": closes["A"].groupby(days).cummax()}, {"A": closes["A"].groupby(days).cummin()}, closes.index)
+    r = _run_ibs(closes, ranges, interval="15m")
+    assert [(t["side"], t["date"], t["time"], t["price"]) for t in r["trades"]] == [("BUY", "2024-01-03", "15:45", 96.0)]
+    assert r["trades"][0]["peak_t"].startswith("2024-01-03T09:45")  # the day's high, first seen at 9:45
+
+
+def test_ibs_and_the_prev_high_target_need_the_days_range():
+    closes = _daily(A=RECOVERS)
+    with pytest.raises(ValueError, match="high and low"):
+        _run_ibs(closes, None)
+    with pytest.raises(ValueError, match="high and low"):
+        _run_ibs(closes, None, buy_rule="fall")  # the target alone needs it too
+    base = {"symbols": ["A"], "start": date(2024, 1, 2), "end": date(2024, 6, 1)}
+    for bad in ({"buy_rule": "gap"}, {"ibs_below": 0}, {"ibs_below": 1}):
+        with pytest.raises(ValidationError):
+            DipConfig(**base | bad)
+
+
+def test_bar_ranges_hold_the_days_high_and_low_so_far_at_each_check():
+    starts = pd.DatetimeIndex([pd.Timestamp(f"2024-01-0{d} {t}", tz="America/New_York") for d, t in
+                               [(2, "09:30"), (2, "10:00"), (2, "10:30"), (2, "11:00"), (2, "15:00"), (2, "15:30"), (3, "09:30")]])
+    bars = pd.DataFrame({"High": [1, 2, 3, 4, 6, 5, 1.5], "Low": [0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 1.2],
+                         "Close": [1.0] * 7}, index=starts)
+    hourly = _bar_ranges(bars, 60, 30)
+    assert hourly.index.equals(_bar_closes(bars, 60, 30).index)  # the same rows as the closes
+    assert hourly["High"].tolist() == [2, 4, 6, 6, 1.5] and hourly["Low"].tolist() == [0.8, 0.6, 0.5, 0.4, 1.2]

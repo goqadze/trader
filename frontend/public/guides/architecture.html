@@ -468,6 +468,9 @@ out.label  # a typed object, not free text</code></pre>
       <ul class="plain">
         <li>A watchlist checked every 5/15/30/60 min (or daily): buy a drop_pct fall under the window's high (by default
           once it turns up rebound_pct from its low), sell back at it; a stop sells and blacklists the symbol.</li>
+        <li>Backtest only: <code>buy_rule</code> "ibs" buys at the day's last check a price in the bottom ibs_below of
+          the day's range so far, and <code>target_mode</code> "prev_high" sells above the previous day's high; both read
+          each check's day high and low (<code>runner._dip_ranges</code>).</li>
         <li>Each trade carries its chart points (the fall's high, the low, buy, sale); <code>/runs/{id}/prices</code>
           serves the prices around them.</li>
         <li>Intraday bars from decision-service (5/15/30-min), each check on the bar that just closed; news verdicts

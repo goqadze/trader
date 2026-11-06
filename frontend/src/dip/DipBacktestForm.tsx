@@ -5,7 +5,7 @@ import { lastMonths, periodExtra, periodOptions } from "../periods";
 import UniverseField from "../rotation/UniverseField";
 import PresetPicker from "./PresetPicker";
 import RulesFields, { type RulesForm, fromRulesForm, toRulesForm } from "./RulesFields";
-import { DEFAULT_RULES, type DipConfig, type DipPresetConfig, pickRules } from "./types";
+import { backtestOnly, DEFAULT_RULES, type DipConfig, type DipPresetConfig, pickRules } from "./types";
 import type { Period } from "./useDip";
 
 const MUTED = "#8b98b5";
@@ -24,8 +24,11 @@ interface FormValues extends RulesForm {
 
 const fmt = (d: Dayjs) => d.format("YYYY-MM-DD");
 
+/** The backtest-only rules (IBS) on top of the shared ones: ibs_below from % to a fraction. */
+const backtestRules = (v: Partial<FormValues>) => ({ buy_rule: v.buy_rule ?? "fall", ibs_below: +((v.ibs_below ?? 20) / 100).toFixed(4) });
+
 function toConfigs(v: FormValues): Partial<Record<Period, DipConfig>> {
-  const base = { ...fromRulesForm(v), symbols: v.symbols, reenable_days: v.reenable_days ?? 0, initial_cash: v.initial_cash };
+  const base = { ...fromRulesForm(v), ...backtestRules(v), symbols: v.symbols, reenable_days: v.reenable_days ?? 0, initial_cash: v.initial_cash };
   return {
     practice: { ...base, start: fmt(v.practice[0]), end: fmt(v.practice[1]) },
     ...(v.exam_on && { exam: { ...base, start: fmt(v.exam[0]), end: fmt(v.exam[1]) } }),
@@ -56,10 +59,13 @@ export default function DipBacktestForm({ onRun, starting, loadRequest }: Props)
   const years = v?.practice ? ((examOn && v.exam ? v.exam[1] : v.practice[1]).diff(v.practice[0], "day")) / 365 : 2;
   const intraday = (v?.interval ?? "15m") !== "1d";
   const symbols = v?.symbols?.length ?? 0;
+  // IBS and "above yesterday's high" can't be saved as a setup: a saved setup is what a bot can run
+  const unsaveable = !!v && backtestOnly({ ...backtestRules(v), target_mode: v.target_mode });
 
   const load = (c: DipPresetConfig) =>
     form.setFieldsValue({
       ...toRulesForm(pickRules(c)),
+      buy_rule: "fall", // saved setups and tests are the fall rules
       symbols: c.symbols,
       reenable_days: c.reenable_days ?? 0,
       ...(c.initial_cash && { initial_cash: c.initial_cash }),
@@ -103,6 +109,8 @@ export default function DipBacktestForm({ onRun, starting, loadRequest }: Props)
         initialValues={{
           symbols: DEFAULT_SYMBOLS,
           ...toRulesForm(DEFAULT_RULES),
+          buy_rule: "fall",
+          ibs_below: 20,
           reenable_days: 0,
           initial_cash: 10_000,
           period_months: 12,
@@ -111,7 +119,12 @@ export default function DipBacktestForm({ onRun, starting, loadRequest }: Props)
         }}
       >
         <Form.Item label="Saved setups" tooltip="Liked a result? Save these settings under a name, then pick the name here any time to fill them all back in. Also offered when you create or edit a dip bot.">
-          <PresetPicker onLoad={load} values={v ? toPreset(v) : null} validate={async () => toPreset(await form.validateFields())} />
+          <PresetPicker onLoad={load} values={v ? toPreset(v) : null} validate={unsaveable ? undefined : async () => toPreset(await form.validateFields())} />
+          {unsaveable && (
+            <Typography.Text style={{ display: "block", fontSize: 12, color: MUTED, marginTop: 4 }}>
+              IBS and “above yesterday's high” are backtest only: they can't be saved as a setup.
+            </Typography.Text>
+          )}
         </Form.Item>
         <UniverseField name="symbols" label="Watchlist" noCrypto min={1} />
         <RulesFields compact />

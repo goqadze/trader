@@ -193,11 +193,12 @@ export default function DipResultView({ title, run }: { title: string; run?: Dip
                       { title: "Symbol", dataIndex: "symbol", render: (s: string) => <b>{s}</b>, filters: [...new Set(trips.map((t) => t.symbol))].map((s) => ({ text: s, value: s })), onFilter: (v, t) => t.symbol === v },
                       { title: "Bought", key: "b", render: (_, t) => <span>{when(t.buy)} <span style={{ color: MUTED }}>@ ${t.buy.price.toFixed(2)}</span></span> },
                       {
-                        title: <Tooltip title="How far under the price the fall started from it was bought; ↗ = how far up from its low (waiting for the turn)">Fall</Tooltip>,
+                        title: <Tooltip title="How far under the price the fall started from it was bought (with IBS: the day's high, and the IBS: 0 = at the day's low); ↗ = how far up from its low (waiting for the turn)">Fall</Tooltip>,
                         key: "fall", align: "right",
                         render: (_, t) => (
                           <span style={{ color: MUTED }}>
                             {signed(t.buy.drop_pct)}
+                            {t.buy.ibs != null && <span> · IBS {t.buy.ibs.toFixed(2)}</span>}
                             {t.buy.rebound_pct != null && <span style={{ color: "#13c2c2" }}> ↗{t.buy.rebound_pct.toFixed(1)}%</span>}
                           </span>
                         ),

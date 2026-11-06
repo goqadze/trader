@@ -7,7 +7,7 @@ import DipBotForm, { type DipBotInitial } from "../dip/DipBotForm";
 import { SignalsList, dipRules } from "../dip/DipParts";
 import DipResultView from "../dip/DipResultView";
 import { DIP_KIT } from "../dip/kit";
-import { type DipBotCreate, type DipPresetConfig, pickRules } from "../dip/types";
+import { backtestOnly, type DipBotCreate, type DipPresetConfig, pickRules } from "../dip/types";
 import { useDip } from "../dip/useDip";
 import TestResults from "../studies/TestResults";
 import { isListedEtf } from "../symbols";
@@ -111,7 +111,7 @@ export default function DipPage() {
   /** Opens the new dip bot form with exactly the rules and watchlist that were tested (the bot keeps its own safety
    *  defaults: a backtest runs without the drawdown breaker unless asked). */
   const paperTrade = () => {
-    if (!cfg) return;
+    if (!cfg || backtestOnly(cfg)) return;
     setInitial({
       ...pickRules(cfg), symbols: cfg.symbols, ...(cfg.initial_cash && { allocated_cash: cfg.initial_cash }),
       ...(cfg.slippage_pct != null && { slippage_pct: cfg.slippage_pct }),
@@ -163,11 +163,16 @@ export default function DipPage() {
         )}
         {runs.practice || runs.exam ? (
           <>
-            {done && (
+            {done && !backtestOnly(cfg) && (
               <Space wrap style={{ marginBottom: 16 }}>
                 <Button type="primary" icon={<RocketOutlined />} onClick={paperTrade}>Paper trade these rules</Button>
                 <span style={{ color: MUTED, fontSize: 12 }}>A dip bot with these rules and this watchlist on a paper account. You can change both while it runs.</span>
               </Space>
+            )}
+            {done && backtestOnly(cfg) && (
+              <Typography.Paragraph style={{ color: MUTED, fontSize: 12 }}>
+                IBS and “above yesterday's high” are backtest only: no bot can run these rules yet.
+              </Typography.Paragraph>
             )}
             <DipResultView title="Practice" run={runs.practice} />
             <DipResultView title="Exam" run={runs.exam} />

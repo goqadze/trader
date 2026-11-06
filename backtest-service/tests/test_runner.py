@@ -4,6 +4,7 @@ import asyncio
 from datetime import date, timedelta
 
 import pandas as pd
+import pytest
 
 from app.models import RunConfig
 from app.runner import Run, _finished_sessions
@@ -182,3 +183,35 @@ def test_yahoo_gets_share_classes_with_a_dash(monkeypatch):
     monkeypatch.setattr(runner.yf, "download", lambda symbol, **kw: asked.append(symbol) or bars)
     runner._fetch_prices("BRK.B", date(2026, 9, 1), date(2026, 9, 2))
     assert asked == ["BRK-B"]
+
+
+def test_an_ibs_run_reads_the_days_range_from_the_same_bars(monkeypatch):
+    """buy_rule "ibs": the runner brings the day's high and low at each check, built from the same intraday bars."""
+    from app import runner
+    from app.models import DipConfig
+
+    up = _half_hours("2026-09-24")  # closes 100 ... 112: the last check (15:30) near the day's high
+    down = _half_hours("2026-09-25")
+    down[["Open", "High", "Low", "Close"]] = up[["Open", "High", "Low", "Close"]].values[::-1] - 2  # 110 ... 98
+    monkeypatch.setattr(runner, "_intraday_bars", lambda sym, start, end, tf: pd.concat([up, down]))
+    cfg = DipConfig(symbols=["SPY"], start=date(2026, 9, 24), end=date(2026, 9, 25), interval="30m", buy_rule="ibs",
+                    target_mode="prev_high", stop_pct=0.5, max_positions=1)
+    run = Run(cfg)
+    asyncio.run(runner._execute_dip(run))
+    assert run.status == "done", run.events[-1]
+    [buy] = run.result["trades"]
+    # Sep 25 at 15:30 (the 15:00 bar's close, 99, bought with 0.05% slippage): its day ran 110.5 to 98.5 so far -> IBS 0.04
+    assert (buy["date"], buy["time"], buy["price"], buy["ibs"]) == ("2026-09-25", "15:30", pytest.approx(99 * 1.0005), 0.042)
+    assert buy["target"] == 112.5  # yesterday's high
+
+
+def test_dip_ranges_are_daily_highs_and_lows_for_a_daily_check(monkeypatch):
+    from app import runner
+
+    days = [date(2026, 9, 24), date(2026, 9, 25)]
+    frame = pd.concat({f: pd.DataFrame({"SPY": v}, index=days) for f, v in
+                       (("High", [101, 103]), ("Low", [99, 98]), ("Close", [100, 99]))}, axis=1)
+    monkeypatch.setattr(runner, "_daily_ranges", lambda key, start, end: frame)
+    out = runner._dip_ranges("1d|SPY", days[0], days[1])
+    assert out.index.equals(pd.DatetimeIndex(days)) and out["High"]["SPY"].tolist() == [101, 103]
+    assert out.columns.get_level_values(0).unique().tolist() == ["High", "Low"]

@@ -140,6 +140,13 @@ prices and checks back.
 The backtest replays every check on intraday bars from decision-service (Alpaca, years of history; 15-minute bars
 were added for this) or on Yahoo daily closes, with practice and exam windows and the usual recommendation. It counts
 the blacklist too: `reenable_days` stands in for you re-enabling a symbol (0 = never, like a bot you never touch).
+Two rules exist in the backtest only (no bot runs them yet, so there is no **Paper trade these rules** and no saved
+setup for them): **IBS** (`buy_rule` "ibs", "Buy when it closes near the day's low"), which replaces the fall: at the
+day's last check (once a day: the close) it buys the symbols whose price is in the bottom `ibs_below` (20%) of the
+day's range so far, lowest first, measured from the day's high; and **above yesterday's high** (`target_mode`
+"prev_high"), which sells at a check whose price is above the previous day's high (the target moves each morning).
+Both read each check's view of the day's high and low from the same bars (`runner._dip_ranges`). IBS is a known
+mean-reversion effect of index ETFs (a close near the day's low tends to bounce), not of gold or bonds.
 **Test the last** n months sets the periods for you: the exam is the last n months up to today, the practice the n
 months before (a setup saved that way counts back from the day it is loaded). **Paper trade these rules** creates
 the bot with the same rules. The result's **Charts** tab draws each symbol's

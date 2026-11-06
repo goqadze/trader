@@ -68,6 +68,28 @@ def iso(t) -> str:
     return t.isoformat() if t.tzinfo is not None else t.date().isoformat()
 
 
+def ibs(price: float, high: float, low: float) -> float | None:
+    """Where the price sits in the day's range so far: 0 = at the low, 1 = at the high (Internal Bar Strength). The
+    price counts as part of the range. None without a range (a day that hasn't moved)."""
+    high, low = max(high, price), min(low, price)
+    return None if not high > low else (price - low) / (high - low)
+
+
+def ibs_candidates(prices: pd.Series, highs: pd.Series, lows: pd.Series, below: float) -> dict[str, tuple]:
+    """buy_rule "ibs": the symbols whose price is in the bottom `below` of the day's range so far, each as (the day's
+    high, the fall from it, its IBS)."""
+    out = {}
+    for s, p in prices.items():
+        h, low = highs.get(s), lows.get(s)
+        if pd.isna(p) or pd.isna(h) or pd.isna(low):
+            continue
+        v = ibs(float(p), float(h), float(low))
+        if v is not None and v < below:
+            high = max(float(h), float(p))
+            out[s] = (high, 1 - float(p) / high, v)
+    return out
+
+
 def uptrend(daily: pd.DataFrame) -> pd.DataFrame:
     """Per day and symbol: was it in a long-term uptrend as of the PREVIOUS close (50-day average above the 200-day)?
     False while there are fewer than 200 days."""
@@ -92,6 +114,10 @@ class DipEngine:
       - With `rebound` (on by default) a fall into the buy zone isn't bought yet: it waits, remembering the reference
         it fell from and its lowest close since, and is bought once the price is rebound_pct above that low (bearish
         turned bullish) while still under the reference. Back at the reference first = that dip is over.
+      - buy_rule "ibs" (backtest only) replaces the fall: at the day's last check, the symbols whose price is in the
+        bottom ibs_below of the day's range so far (see `ibs`) are bought, lowest first; the reference is the day's
+        high. target_mode "prev_high" (backtest only) sells at a check whose price is above the previous day's high.
+        Both need `ranges`: the day's highest high and lowest low up to each check.
     Every round trip carries what a chart needs: where the fall started (the window's high, or its start), the lowest
     close between there and the sale, the buy and the sale, each with its moment.
     Every fill pays slippage and the fee. Equity is marked at each day's last close. The benchmark: all the symbols
@@ -100,13 +126,24 @@ class DipEngine:
     name = "dip"
 
     async def run(self, cfg: DipConfig, closes: pd.DataFrame, emit: EmitFn, daily: pd.DataFrame | None = None,
-                  news_fn: NewsFn | None = None, moves: pd.DataFrame | None = None) -> dict:
+                  news_fn: NewsFn | None = None, moves: pd.DataFrame | None = None,
+                  ranges: pd.DataFrame | None = None) -> dict:
         """`daily`: daily closes for the trend filter (intraday runs). `moves`: drop_mode "volatility"'s daily moves
-        (see `daily_moves`, indexed by day): without them nothing is bought."""
+        (see `daily_moves`, indexed by day): without them nothing is bought. `ranges`: per check and symbol, the day's
+        highest high and lowest low so far (columns (High|Low, symbol), indexed like `closes`), for buy_rule "ibs"
+        and target_mode "prev_high"."""
         closes = closes.sort_index().ffill()
         intraday = cfg.interval != "1d"
         refs = references(closes, cfg)
         day_of = pd.Series([pd.Timestamp(t).date() for t in closes.index], index=closes.index)
+        by_range = cfg.buy_rule == "ibs" or cfg.target_mode == "prev_high"
+        if by_range and ranges is None:
+            raise ValueError("IBS and the previous day's high need the day's high and low at each check")
+        if by_range:
+            highs = ranges["High"].reindex(index=closes.index, columns=closes.columns)
+            lows = ranges["Low"].reindex(index=closes.index, columns=closes.columns)
+            # A day's last row holds its whole range: the previous day's high is that row of the day before
+            prev_highs = highs.groupby(day_of.values).last().shift(1)
         in_window = (day_of >= cfg.start) & (day_of <= cfg.end)
         rows, ref_rows, row_days = closes[in_window.values], refs[in_window.values], day_of[in_window.values]
         days = sorted(set(row_days))
@@ -150,6 +187,11 @@ class DipEngine:
             at = past.idxmax() if cfg.drop_from == "high" else past.index[0]
             return at, float(past.loc[at])
 
+        def day_peak(sym: str, first, t) -> tuple:
+            """IBS buys: the day's high so far, at the first check that saw it (the high itself may come between checks)."""
+            seg = highs[sym].loc[first:t].dropna()
+            return seg.index[int((seg >= seg.iloc[-1]).argmax())], float(seg.iloc[-1])
+
         def low_between(sym: str, start, end) -> tuple:
             seg = closes[sym].loc[start:end].dropna()
             at = seg.idxmin()
@@ -184,7 +226,12 @@ class DipEngine:
                 return False
             fee = shares * fill * cfg.fee_pct
             cash -= shares * fill + fee
-            target = round(ref, 2) if cfg.target_mode == "reference" else round(fill * (1 + cfg.rise_pct), 2)
+            if cfg.target_mode == "percent":
+                target = round(fill * (1 + cfg.rise_pct), 2)
+            elif cfg.target_mode == "prev_high" and prev_high is not None and pd.notna(prev_high.get(sym)):
+                target = round(float(prev_high[sym]), 2)  # today's checks sell above yesterday's high
+            else:
+                target = round(ref, 2)  # "reference"; "prev_high" without a yesterday (moved to it tomorrow)
             held[sym] = {"shares": shares, "cost": shares * fill + fee, "entry": round(fill, 4), "ref": round(ref, 2),
                          "target": target, "stop": round(fill * (1 - cfg.stop_pct), 2), "entry_i": i,
                          "buy_t": t, "peak_t": peak[0], "peak": peak[1]}
@@ -219,6 +266,11 @@ class DipEngine:
             if cfg.drop_mode == "volatility" and moves is not None:  # daily rows, each from the days before
                 past = moves.loc[:pd.Timestamp(day)]
                 moves_today = past.iloc[-1] if len(past) else None
+            prev_high = prev_highs.loc[day] if by_range else None
+            if cfg.target_mode == "prev_high":  # each morning the target moves to yesterday's high
+                for sym, p in held.items():
+                    if pd.notna(prev_high.get(sym)):
+                        p["target"] = round(float(prev_high[sym]), 2)
             # A session's last bar closes at the bell: it only marks the day's equity (a live bot can't trade at 16:00)
             checks = day_rows.index[:-1] if intraday else day_rows.index
             for t in checks:
@@ -232,48 +284,55 @@ class DipEngine:
                         sell(sym, price, t, i, "stop-loss")
                         blacklisted[sym] = i
                         note(t, sym, "blacklisted", f"{sym} hit its stop ${p['stop']:.2f} at ${price:.2f}: sold and blacklisted")
-                    elif price >= p["target"]:
+                    elif (price > p["target"]) if cfg.target_mode == "prev_high" else (price >= p["target"]):  # above, not at
                         sell(sym, price, t, i, "target")
                     elif cfg.max_hold_days and i - p["entry_i"] >= cfg.max_hold_days:
                         sell(sym, price, t, i, "time")
                     else:
                         continue
                     sold_today.add(sym)
-                drops = {s: 1 - float(px[s]) / float(ref[s]) for s in rows.columns
-                         if pd.notna(px.get(s)) and pd.notna(ref.get(s)) and float(ref[s]) > 0}
-                need = {s: cfg.buy_fall(float(ref[s]), None if moves_today is None else float(moves_today.get(s, math.nan)))
-                        for s in drops}
-                now_zone = {s for s, d in drops.items() if need[s] is not None and d >= need[s] - 1e-12}
-                stats["dips"] += len(now_zone - zone)
-                zone = now_zone
-                if cfg.rebound:
-                    # Falls already waiting: follow their low; back at their reference first = that dip is over
-                    for sym in list(armed):
-                        a, p_ = armed[sym], px.get(sym)
-                        if pd.isna(p_):
-                            continue
-                        if float(p_) < a["low"]:
-                            a["low"], a["low_t"] = float(p_), t
-                        if float(p_) >= a["ref"]:
-                            del armed[sym]
-                    for sym in now_zone - set(armed) - set(held) - set(blacklisted):  # new falls start waiting
-                        armed[sym] = {"ref": float(ref[sym]), "peak": peak_of(sym, t), "low": float(px[sym]), "low_t": t,
-                                      "turned": False, "zone": need[sym]}
-                    turned = {}
-                    for sym, a in armed.items():
-                        p_ = px.get(sym)
-                        if pd.notna(p_) and float(p_) >= a["low"] * (1 + cfg.rebound_pct) - 1e-9 and float(p_) < a["ref"]:
-                            turned[sym] = 1 - float(p_) / a["ref"]
-                            if not a["turned"]:
-                                a["turned"] = True
-                                stats["rebounds"] += 1
-                    candidates = {sym: (armed[sym]["ref"], d) for sym, d in turned.items()}
+                if cfg.buy_rule == "ibs":  # only at the day's last check: (the day's high, the fall from it, IBS)
+                    candidates = ibs_candidates(px, highs.loc[t], lows.loc[t], cfg.ibs_below) if t == checks[-1] else {}
+                    need = {s: c[1] for s, c in candidates.items()}
+                    stats["dips"] += len(candidates)
                 else:
-                    candidates = {sym: (float(ref[sym]), drops[sym]) for sym in now_zone}
+                    drops = {s: 1 - float(px[s]) / float(ref[s]) for s in rows.columns
+                             if pd.notna(px.get(s)) and pd.notna(ref.get(s)) and float(ref[s]) > 0}
+                    need = {s: cfg.buy_fall(float(ref[s]), None if moves_today is None else float(moves_today.get(s, math.nan)))
+                            for s in drops}
+                    now_zone = {s for s, d in drops.items() if need[s] is not None and d >= need[s] - 1e-12}
+                    stats["dips"] += len(now_zone - zone)
+                    zone = now_zone
+                    if cfg.rebound:
+                        # Falls already waiting: follow their low; back at their reference first = that dip is over
+                        for sym in list(armed):
+                            a, p_ = armed[sym], px.get(sym)
+                            if pd.isna(p_):
+                                continue
+                            if float(p_) < a["low"]:
+                                a["low"], a["low_t"] = float(p_), t
+                            if float(p_) >= a["ref"]:
+                                del armed[sym]
+                        for sym in now_zone - set(armed) - set(held) - set(blacklisted):  # new falls start waiting
+                            armed[sym] = {"ref": float(ref[sym]), "peak": peak_of(sym, t), "low": float(px[sym]), "low_t": t,
+                                          "turned": False, "zone": need[sym]}
+                        turned = {}
+                        for sym, a in armed.items():
+                            p_ = px.get(sym)
+                            if pd.notna(p_) and float(p_) >= a["low"] * (1 + cfg.rebound_pct) - 1e-9 and float(p_) < a["ref"]:
+                                turned[sym] = 1 - float(p_) / a["ref"]
+                                if not a["turned"]:
+                                    a["turned"] = True
+                                    stats["rebounds"] += 1
+                        candidates = {sym: (armed[sym]["ref"], d) for sym, d in turned.items()}
+                    else:
+                        candidates = {sym: (float(ref[sym]), drops[sym]) for sym in now_zone}
                 if paused_on is not None:
                     continue
                 equity = cash + sum(p["shares"] * float(px[s]) for s, p in held.items() if pd.notna(px.get(s)))
-                for sym in sorted(candidates, key=lambda s: -candidates[s][1]):
+                # The deepest fall first; with IBS the lowest IBS first
+                order = (lambda s: candidates[s][2]) if cfg.buy_rule == "ibs" else (lambda s: -candidates[s][1])
+                for sym in sorted(candidates, key=order):
                     if sym in held or sym in sold_today or sym in vetoed_today:
                         continue
                     if sym in blacklisted:
@@ -295,11 +354,13 @@ class DipEngine:
                         if verdict.get("error") or verdict.get("sentiment") in (None, "unavailable"):
                             no_news += 1
                     a = armed.get(sym)
-                    peak_at = a["peak"] if a else peak_of(sym, t)
+                    peak_at = a["peak"] if a else day_peak(sym, day_rows.index[0], t) if cfg.buy_rule == "ibs" else peak_of(sym, t)
                     low_at = (a["low_t"], a["low"]) if a else None
                     if buy(sym, float(px[sym]), candidates[sym][0], candidates[sym][1], t, i, equity, peak_at, low_at,
                            a["zone"] if a else need[sym]):
                         armed.pop(sym, None)
+                        if cfg.buy_rule == "ibs":
+                            trades[-1]["ibs"] = round(candidates[sym][2], 3)
             last = day_rows.iloc[-1]
             equity = float(cash + sum(p["shares"] * float(last[s]) for s, p in held.items()))
             bh = float(sum(n * float(last[s]) for s, n in bh_shares.items() if pd.notna(last[s])))

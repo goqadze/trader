@@ -1,12 +1,13 @@
 import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
 import { Button, Checkbox, Col, Form, InputNumber, Radio, Row, Select, Switch, Tooltip, Typography } from "antd";
-import { DEFAULT_RULES, type DipRules, type DropMode, INTERVALS, type PriceTier, tierSpans } from "./types";
+import { type BuyRule, DEFAULT_RULES, type DipRules, type DropMode, INTERVALS, type PriceTier, tierSpans } from "./types";
 
 const MUTED = "#8b98b5";
 
-/** The rules as the form holds them: percentages as numbers (5 = 5%), fractions on the wire. */
+/** The rules as the form holds them: percentages as numbers (5 = 5%), fractions on the wire. buy_rule and
+ *  ibs_below (in %) only in the backtest form: fromRulesForm leaves them out, the backtest adds them. */
 export type RulesForm = Omit<DipRules, "drop_pct" | "rise_pct" | "stop_pct" | "rebound_pct"> & {
-  drop_pct: number; rise_pct: number; stop_pct: number; rebound_pct: number;
+  drop_pct: number; rise_pct: number; stop_pct: number; rebound_pct: number; buy_rule?: BuyRule; ibs_below?: number;
 };
 
 const PCT = ["drop_pct", "rise_pct", "stop_pct", "rebound_pct"] as const;
@@ -144,7 +145,8 @@ export const BOT_MAX_DAYS: Record<string, number> = { "5m": 40, "15m": 40, "30m"
 
 const pct = (min: number, max: number, step: number) => <InputNumber min={min} max={max} step={step} addonAfter="%" style={{ width: "100%" }} />;
 
-/** The dip buyer's rules, inside a Form whose values are a RulesForm. `forBot`: a live bot's limits on the window. */
+/** The dip buyer's rules, inside a Form whose values are a RulesForm. `forBot`: a live bot's limits on the window, and
+ *  none of the backtest-only rules (IBS, above yesterday's high). */
 export default function RulesFields({ forBot = false, compact = false }: { forBot?: boolean; compact?: boolean }) {
   const form = Form.useFormInstance();
   const interval = Form.useWatch("interval", form) ?? "15m";
@@ -152,6 +154,7 @@ export default function RulesFields({ forBot = false, compact = false }: { forBo
   const targetMode = Form.useWatch("target_mode", form) ?? "reference";
   const rebound = Form.useWatch("rebound", form) ?? true;
   const dropMode: DropMode = Form.useWatch("drop_mode", form) ?? "percent";
+  const isIbs = !forBot && Form.useWatch("buy_rule", form) === "ibs";
   const daily = interval === "1d";
   const span = compact ? 24 : 12;
   return (
@@ -159,110 +162,131 @@ export default function RulesFields({ forBot = false, compact = false }: { forBo
       <Form.Item name="interval" label="Check" tooltip="At the end of each bar of this length from the 9:30 open (the last check is before the close), or once a day in the last 30 minutes. Exits are checked at the same times.">
         <Select options={INTERVALS.map((i) => ({ value: i.value, label: i.label }))} />
       </Form.Item>
-      <Row gutter={12}>
-        <Col span={span}>
-          <Form.Item
-            label="Buy after a fall of"
-            required
-            tooltip="x: how far under its reference price a symbol must be to buy it. For every stock: the same x. By price: x for the cheapest stocks, a share of it for pricier ones (the tiers below). By daily move: this many times the stock's usual daily move, so a calm stock needs a smaller fall and a wild one a bigger one."
-          >
-            <Row gutter={6} wrap={false}>
-              {/* Both always mounted (one hidden): antd leaves an unmounted field out of the submitted values */}
-              <Col flex="1 1 auto" style={dropMode === "volatility" ? { display: "none" } : undefined}>
-                <Form.Item name="drop_pct" noStyle rules={[{ required: dropMode !== "volatility" }]}>
-                  <InputNumber min={0.1} max={50} step={0.5} addonAfter="%" style={{ width: "100%" }} />
-                </Form.Item>
-              </Col>
-              <Col flex="1 1 auto" style={dropMode === "volatility" ? undefined : { display: "none" }}>
-                <Form.Item name="drop_atr" noStyle rules={[{ required: dropMode === "volatility" }]}>
-                  <InputNumber min={0.1} max={10} step={0.1} addonAfter="× move" style={{ width: "100%" }} />
-                </Form.Item>
-              </Col>
-              <Col flex="0 0 112px">
-                <Form.Item name="drop_mode" noStyle>
-                  <Select
-                    options={DROP_MODES}
-                    popupMatchSelectWidth={false}
-                    optionRender={(o) => <span>{o.label} <span style={{ color: MUTED, fontSize: 12 }}>· {o.data.hint}</span></span>}
-                  />
-                </Form.Item>
-              </Col>
-            </Row>
+      {!forBot && (
+        <>
+          <Form.Item name="buy_rule" label="Buy when it" tooltip="Falls x% (the rules below), or closes near the day's low: IBS (Internal Bar Strength), where the price sits in the day's range so far, 0% at the low and 100% at the high. Index ETFs tend to bounce after a close near the low. Backtest only: no bot runs IBS yet.">
+            <Radio.Group options={[{ value: "fall", label: "falls" }, { value: "ibs", label: "closes near the day's low (IBS)" }]} />
           </Form.Item>
-        </Col>
-        <Col span={span}>
-          <Form.Item label="During the last" required tooltip="y: the window the fall is measured in (trading days, or market hours)">
-            <Row gutter={6} wrap={false}>
-              <Col flex="1 1 auto">
-                <Form.Item
-                  name="lookback"
-                  noStyle
-                  dependencies={["interval", "lookback_unit"]}
-                  rules={[
-                    { required: true },
-                    ({ getFieldValue }) => ({
-                      validator: (_, n: number) => {
-                        const iv = getFieldValue("interval");
-                        const u = iv === "1d" ? "days" : getFieldValue("lookback_unit");
-                        const minutes = INTERVALS.find((i) => i.value === iv)?.minutes ?? 15;
-                        if (u === "hours" && n * 60 < minutes) return Promise.reject(new Error("Shorter than one check"));
-                        const days = u === "days" ? n : n / 6.5;
-                        if (forBot && days > BOT_MAX_DAYS[iv]) return Promise.reject(new Error(`At most ${BOT_MAX_DAYS[iv]} days with this check`));
-                        return Promise.resolve();
-                      },
-                    }),
-                  ]}
-                >
-                  <InputNumber min={1} max={1600} style={{ width: "100%" }} />
-                </Form.Item>
-              </Col>
-              <Col flex="0 0 96px">
-                <Form.Item name="lookback_unit" noStyle>
-                  <Select options={[{ value: "days", label: "days" }, { value: "hours", label: "hours", disabled: daily }]} />
-                </Form.Item>
-              </Col>
-            </Row>
-          </Form.Item>
-        </Col>
-      </Row>
-      {daily && unit === "hours" && <Typography.Text type="warning" style={{ fontSize: 12 }}>A daily check measures in days.</Typography.Text>}
-      <PriceTiers hidden={dropMode !== "price"} />
-      {dropMode === "volatility" && (
-        <Typography.Paragraph style={{ fontSize: 12, color: MUTED }}>
-          A stock's usual daily move is its average high-to-low range over the last 14 trading days (recounted every day).
-          1.5 × a 2% daily move = a 3% fall; 1.5 × a 4% move = a 6% fall.
-        </Typography.Paragraph>
+          {/* Always mounted (only hidden): antd leaves an unmounted field out of the submitted values */}
+          <div style={isIbs ? undefined : { display: "none" }}>
+            <Form.Item name="ibs_below" label="Near the low" rules={[{ required: isIbs }]}>
+              <InputNumber min={1} max={99} step={5} addonBefore="in the bottom" addonAfter="% of the day's range" style={{ width: "100%" }} />
+            </Form.Item>
+            <Typography.Paragraph style={{ fontSize: 12, color: MUTED }}>
+              At the day's last check (once a day: the close) it buys every symbol whose price is in the bottom of the day's range
+              so far, the lowest first, while slots are free. The fall rules don't apply. Usually sold above yesterday's high.
+            </Typography.Paragraph>
+          </div>
+        </>
       )}
-      <Form.Item label="Then wait for the turn" tooltip="x1: after the fall, don't buy yet. Follow its lowest price and buy once it is back up this much from that low (bearish turned bullish), still under the price the fall started from. Off: buy as soon as it has fallen x%.">
-        <Row gutter={8} wrap={false} align="middle">
-          <Col flex="0 0 auto">
-            <Form.Item name="rebound" valuePropName="checked" noStyle>
-              <Switch checkedChildren="On" unCheckedChildren="Off" />
+      {/* The fall rules: hidden with IBS (kept mounted for the submitted values) */}
+      <div style={isIbs ? { display: "none" } : undefined}>
+        <Row gutter={12}>
+          <Col span={span}>
+            <Form.Item
+              label="Buy after a fall of"
+              required
+              tooltip="x: how far under its reference price a symbol must be to buy it. For every stock: the same x. By price: x for the cheapest stocks, a share of it for pricier ones (the tiers below). By daily move: this many times the stock's usual daily move, so a calm stock needs a smaller fall and a wild one a bigger one."
+            >
+              <Row gutter={6} wrap={false}>
+                {/* Both always mounted (one hidden): antd leaves an unmounted field out of the submitted values */}
+                <Col flex="1 1 auto" style={dropMode === "volatility" ? { display: "none" } : undefined}>
+                  <Form.Item name="drop_pct" noStyle rules={[{ required: dropMode !== "volatility" }]}>
+                    <InputNumber min={0.1} max={50} step={0.5} addonAfter="%" style={{ width: "100%" }} />
+                  </Form.Item>
+                </Col>
+                <Col flex="1 1 auto" style={dropMode === "volatility" ? undefined : { display: "none" }}>
+                  <Form.Item name="drop_atr" noStyle rules={[{ required: dropMode === "volatility" }]}>
+                    <InputNumber min={0.1} max={10} step={0.1} addonAfter="× move" style={{ width: "100%" }} />
+                  </Form.Item>
+                </Col>
+                <Col flex="0 0 112px">
+                  <Form.Item name="drop_mode" noStyle>
+                    <Select
+                      options={DROP_MODES}
+                      popupMatchSelectWidth={false}
+                      optionRender={(o) => <span>{o.label} <span style={{ color: MUTED, fontSize: 12 }}>· {o.data.hint}</span></span>}
+                    />
+                  </Form.Item>
+                </Col>
+              </Row>
             </Form.Item>
           </Col>
-          {/* Always mounted (only disabled): antd leaves an unmounted field out of the submitted values */}
-          <Col flex="1 1 auto">
-            <Form.Item name="rebound_pct" noStyle rules={[{ required: rebound }]}>
-              <InputNumber min={0.1} max={50} step={0.25} addonBefore="up" addonAfter="% from the low" disabled={!rebound} style={{ width: "100%" }} />
+          <Col span={span}>
+            <Form.Item label="During the last" required tooltip="y: the window the fall is measured in (trading days, or market hours)">
+              <Row gutter={6} wrap={false}>
+                <Col flex="1 1 auto">
+                  <Form.Item
+                    name="lookback"
+                    noStyle
+                    dependencies={["interval", "lookback_unit"]}
+                    rules={[
+                      { required: true },
+                      ({ getFieldValue }) => ({
+                        validator: (_, n: number) => {
+                          const iv = getFieldValue("interval");
+                          const u = iv === "1d" ? "days" : getFieldValue("lookback_unit");
+                          const minutes = INTERVALS.find((i) => i.value === iv)?.minutes ?? 15;
+                          if (u === "hours" && n * 60 < minutes) return Promise.reject(new Error("Shorter than one check"));
+                          const days = u === "days" ? n : n / 6.5;
+                          if (forBot && days > BOT_MAX_DAYS[iv]) return Promise.reject(new Error(`At most ${BOT_MAX_DAYS[iv]} days with this check`));
+                          return Promise.resolve();
+                        },
+                      }),
+                    ]}
+                  >
+                    <InputNumber min={1} max={1600} style={{ width: "100%" }} />
+                  </Form.Item>
+                </Col>
+                <Col flex="0 0 96px">
+                  <Form.Item name="lookback_unit" noStyle>
+                    <Select options={[{ value: "days", label: "days" }, { value: "hours", label: "hours", disabled: daily }]} />
+                  </Form.Item>
+                </Col>
+              </Row>
             </Form.Item>
           </Col>
         </Row>
-      </Form.Item>
-      <Form.Item name="drop_from" label="Measured from" tooltip="High: it rose, then turned down (the top of the window). Start: down x% compared with y days ago.">
-        <Radio.Group
-          options={[
-            { value: "high", label: "the window's highest price" },
-            { value: "start", label: "the price at its start" },
-          ]}
-        />
-      </Form.Item>
+        {daily && unit === "hours" && <Typography.Text type="warning" style={{ fontSize: 12 }}>A daily check measures in days.</Typography.Text>}
+        <PriceTiers hidden={dropMode !== "price"} />
+        {dropMode === "volatility" && (
+          <Typography.Paragraph style={{ fontSize: 12, color: MUTED }}>
+            A stock's usual daily move is its average high-to-low range over the last 14 trading days (recounted every day).
+            1.5 × a 2% daily move = a 3% fall; 1.5 × a 4% move = a 6% fall.
+          </Typography.Paragraph>
+        )}
+        <Form.Item label="Then wait for the turn" tooltip="x1: after the fall, don't buy yet. Follow its lowest price and buy once it is back up this much from that low (bearish turned bullish), still under the price the fall started from. Off: buy as soon as it has fallen x%.">
+          <Row gutter={8} wrap={false} align="middle">
+            <Col flex="0 0 auto">
+              <Form.Item name="rebound" valuePropName="checked" noStyle>
+                <Switch checkedChildren="On" unCheckedChildren="Off" />
+              </Form.Item>
+            </Col>
+            {/* Always mounted (only disabled): antd leaves an unmounted field out of the submitted values */}
+            <Col flex="1 1 auto">
+              <Form.Item name="rebound_pct" noStyle rules={[{ required: rebound }]}>
+                <InputNumber min={0.1} max={50} step={0.25} addonBefore="up" addonAfter="% from the low" disabled={!rebound} style={{ width: "100%" }} />
+              </Form.Item>
+            </Col>
+          </Row>
+        </Form.Item>
+        <Form.Item name="drop_from" label="Measured from" tooltip="High: it rose, then turned down (the top of the window). Start: down x% compared with y days ago.">
+          <Radio.Group
+            options={[
+              { value: "high", label: "the window's highest price" },
+              { value: "start", label: "the price at its start" },
+            ]}
+          />
+        </Form.Item>
+      </div>
       <Row gutter={12}>
         <Col span={targetMode === "percent" ? 16 : 24}>
-          <Form.Item name="target_mode" label="Sell when" tooltip="Back at the price the fall was measured from (a 5% fall needs a 5.3% rise back), or a fixed rise above your buy">
+          <Form.Item name="target_mode" label="Sell when" tooltip={`Back at the price the fall was measured from (a 5% fall needs a 5.3% rise back; with IBS: the day's high), or a fixed rise above your buy${forBot ? "" : ", or at a check above the previous day's high (backtest only)"}`}>
             <Radio.Group
               options={[
                 { value: "reference", label: "back at the starting price" },
                 { value: "percent", label: "up by" },
+                ...(forBot ? [] : [{ value: "prev_high", label: "above yesterday's high" }]),
               ]}
             />
           </Form.Item>

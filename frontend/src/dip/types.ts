@@ -9,8 +9,12 @@ export type DipInterval = "5m" | "15m" | "30m" | "1h" | "1d";
 export type LookbackUnit = "days" | "hours";
 /** The price a fall is measured from: the window's highest close (it rose, then turned) or its first close. */
 export type DropFrom = "high" | "start";
-/** Sell back at that price ("reference"), or a fixed rise above the buy ("percent"). */
-export type TargetMode = "reference" | "percent";
+/** Sell back at that price ("reference"), a fixed rise above the buy ("percent"), or (backtest only) at a check above
+ *  the previous day's high ("prev_high"). */
+export type TargetMode = "reference" | "percent" | "prev_high";
+/** Backtest only (no bot runs it yet): what triggers a buy. "fall" = the fall rules; "ibs" = at the day's last check,
+ *  a price in the bottom ibs_below of the day's range so far (IBS, Internal Bar Strength), lowest first. */
+export type BuyRule = "fall" | "ibs";
 /** How the fall x applies to each symbol: the same for all ("percent"), scaled by its price tier ("price": pricier
  *  stocks need a smaller fall), or drop_atr times its usual daily move ("volatility"). */
 export type DropMode = "percent" | "price" | "volatility";
@@ -113,11 +117,17 @@ export const fallText = (r: Pick<DipRules, "drop_pct" | "drop_mode" | "price_tie
 
 /** "back at that price" / "+3% above the buy" */
 export const sellText = (r: Pick<DipRules, "target_mode" | "rise_pct">) =>
-  r.target_mode === "reference" ? "back at the price the fall started from" : `${+(r.rise_pct * 100).toFixed(2)}% above the buy`;
+  r.target_mode === "reference" ? "back at the price the fall started from"
+    : r.target_mode === "prev_high" ? "above the previous day's high" : `${+(r.rise_pct * 100).toFixed(2)}% above the buy`;
 
 // --- The backtest -------------------------------------------------------------------------------------
 
+/** Rules no bot can run yet (IBS, the previous day's high): no "Paper trade these rules", no saved setup. */
+export const backtestOnly = (c?: Partial<DipConfig> | null) => !!c && (c.buy_rule === "ibs" || c.target_mode === "prev_high");
+
 export interface DipConfig extends DipRules {
+  buy_rule?: BuyRule; // backtest only
+  ibs_below?: number; // buy_rule "ibs": 0.2 = the bottom 20% of the day's range
   symbols: string[];
   start: string;
   end: string;
@@ -156,6 +166,7 @@ export interface DipTrade {
   low_t?: string;
   low_price?: number;
   rebound_pct?: number; // BUYs that waited for the turn: how far up from the low it was bought
+  ibs?: number; // IBS buys: where the price sat in the day's range (0 = at its low)
 }
 
 export interface DipEvent {

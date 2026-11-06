@@ -273,6 +273,43 @@ def _dip_closes(key: str, start: date, end: date) -> pd.DataFrame:
     return close.sort_index()
 
 
+def _bar_ranges(df: pd.DataFrame, minutes: int, step: int) -> pd.DataFrame:
+    """The day's highest high and lowest low up to each check: the `step`-minute bars regrouped into bars of `minutes`
+    from the 9:30 open, indexed like _bar_closes by the moment each one closed (what a bot knows of the day then)."""
+    if df.empty:
+        return pd.DataFrame(columns=["High", "Low"], dtype=float)
+    starts = df.index
+    opens = starts.normalize() + pd.Timedelta(hours=9, minutes=30)
+    bucket = opens + ((starts - opens) // pd.Timedelta(minutes=minutes)) * pd.Timedelta(minutes=minutes)
+    grouped = df.assign(bucket=bucket, done=starts + pd.Timedelta(minutes=step)).groupby("bucket")
+    bars = grouped.agg(high=("High", "max"), low=("Low", "min"), done=("done", "max"))
+    days = [t.date() for t in bars["done"]]
+    return pd.DataFrame({"High": bars["high"].groupby(days).cummax().values, "Low": bars["low"].groupby(days).cummin().values},
+                        index=pd.DatetimeIndex(bars["done"]))
+
+
+def _dip_ranges(key: str, start: date, end: date) -> pd.DataFrame:
+    """buy_rule "ibs" and target_mode "prev_high": per check, the day's high and low so far (columns (High|Low,
+    symbol)), on the same rows as _dip_closes (same key). "1d": each day's whole range from Yahoo's daily bars."""
+    interval, symbols_key = key.split("|", 1)
+    symbols = symbols_key.split(",")
+    if interval == "1d":
+        out = _daily_ranges(symbols_key, start, end)[["High", "Low"]]
+        out.index = pd.DatetimeIndex(out.index)
+        return out
+    minutes = {"5m": 5, "15m": 15, "30m": 30, "1h": 60}[interval]
+    timeframe = DIP_TIMEFRAMES[interval]
+    step = int(timeframe.removesuffix("Min"))
+
+    def one(sym: str) -> pd.DataFrame:
+        return _bar_ranges(_intraday_bars(sym, start, end, timeframe), minutes, step)
+
+    with ThreadPoolExecutor(DIP_DOWNLOADS) as pool:
+        per_symbol = dict(zip(symbols, pool.map(one, symbols)))
+    return pd.concat({f: pd.concat({s: r[f] for s, r in per_symbol.items()}, axis=1).reindex(columns=symbols)
+                      for f in ("High", "Low")}, axis=1).sort_index()
+
+
 def _dip_history_start(cfg: DipConfig) -> date:
     """How far before the start to download: the first check needs a full window behind it (and the trend filter 200
     days of daily closes)."""
@@ -330,11 +367,15 @@ async def _execute_dip(run: Run) -> None:
                                             _daily_ranges)
                 moves = daily_moves(ranges["High"], ranges["Low"], ranges["Close"])
                 moves.index = pd.DatetimeIndex(moves.index)
+            day_ranges = None
+            if cfg.buy_rule == "ibs" or cfg.target_mode == "prev_high":  # the day's high and low at each check
+                day_ranges = await _load_prices(key, first, cfg.end, _dip_ranges)
             async with httpx.AsyncClient() as client:
                 async def news(symbol: str, day: date, at: datetime | None) -> dict:
                     return await _news(client, symbol, day, at)
 
-                run.result = await DipEngine().run(cfg, closes, run.emit, daily=daily, news_fn=news, moves=moves)
+                run.result = await DipEngine().run(cfg, closes, run.emit, daily=daily, news_fn=news, moves=moves,
+                                                   ranges=day_ranges)
             run.status = "done"
         except Exception as e:
             run.status = "error"

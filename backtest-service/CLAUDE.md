@@ -7,9 +7,9 @@ scans. FastAPI on :8001. Find a symbol with `grep -nE "^(async def|def|class) " 
 |---|---|---|
 | `main.py` | `POST /runs /runs/rotation /runs/dip`, `GET /runs /runs/{id} /runs/{id}/prices`, `WS /ws/{id}`, `POST/GET /scans`, `POST /scans/{id}/stop` | `create_run`, `create_dip_run`, `create_rotation_run`, `create_scan` |
 | `models.py` | Request shapes + validation | `RunConfig`, `RunSettings`, `DipConfig`, `RotationConfig`, `ScanConfig`, `Period`, `RunSummary`, `Strategy` list |
-| `runner.py` | Runs in the background, streams progress | `Run`, `start_run`, `start_dip_run`, `start_rotation_run` |
+| `runner.py` | Runs in the background, streams progress | `Run`, `start_run`, `start_dip_run`, `start_rotation_run`, `_dip_closes` / `_dip_ranges` (a dip run's prices and day ranges per check) |
 | `engines/simple.py` | Daily strategy portfolio (fees, slippage, stops on the day's range) | `SimplePortfolioEngine` |
-| `engines/dip.py` | Dip buyer replay (same rules as trading-service `dip.py`, synced by hand) | `DipEngine`, `references`, `daily_moves`, `uptrend` |
+| `engines/dip.py` | Dip buyer replay (same rules as trading-service `dip.py`, synced by hand; IBS + `prev_high` are backtest only) | `DipEngine`, `references`, `daily_moves`, `uptrend`, `ibs`, `ibs_candidates` |
 | `engines/rotation.py` | Momentum rotation (same `momentum()` as trading-service `rotation.py`) | `RotationEngine`, `momentum` |
 | `engines/intraday.py` | Intraday plans bar by bar | `IntradayEngine` |
 | `scan.py`, `verdict.py` | Practice/exam scans; plain-words grade of a result | `start_scan`, `scan_summary`, `judge` |
