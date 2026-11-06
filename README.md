@@ -170,6 +170,12 @@ bot asks first). Saving under an existing name replaces it. Kept in trading-db (
 Setups saved from Test results before they kept their test (2026-10-27) get it back at startup (`link_saved_setups`):
 the test with the same name and the same rules, from the newest study that existed when it was saved. Switching a bot
 to a saved setup without a test (saved from a form) keeps the bot's own tested setup, and the Edit form says so.
+The dip buyer's **Saved tests** tab shows every setup saved from a test, whichever batch it came from, in one grid: its
+batch, watchlist, sector badges, Score, Ret/DD, All and each window's return against holding, drawdown and trades, from
+the copy kept when it was saved (a window's dates are its own batch's: hover a return), plus the rules they differ in.
+It sorts and filters by any column, searches by name, code or symbol, opens a test's charts while its batch still exists,
+and loads a setup into the backtest form, starts a bot from it (`setup_preset_id`) or deletes it. `GET /dip/presets`
+(and `/rotation/presets`) give each saved setup its symbols' `sectors` and a tested one its `setup.all`, as for a bot.
 In the Test results tab (dip and rotation), a tested setup's rocket button opens the new-bot form filled in with its
 rules, watchlist and capital, named after it: pick the broker, check it, create. The bot keeps a copy of that test
 (`setup_test_id` in `POST /bots/dip` and `/bots/rotation`; `setup` on the bot): its name, study, rules and results per

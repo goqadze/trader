@@ -13,8 +13,9 @@ export interface SavedSetup<C> {
   strategy?: StudyStrategy;
   config: C;
   // The tested setup it was saved from (a bot's Tested setup popup, Test results), with its results: a bot started from
-  // it or switched to it keeps this. null = saved from a form
-  setup?: Omit<BotSetup, "started_at" | "switched" | "all"> | null;
+  // it or switched to it keeps this. null = saved from a form. Its All is worked out when listed
+  setup?: Omit<BotSetup, "started_at" | "switched"> | null;
+  sectors?: string[]; // its symbols' sector badges (in the lists only)
   created_at: string;
   updated_at: string;
 }

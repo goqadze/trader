@@ -10,6 +10,7 @@ import type { ColumnGroupType, ColumnsType, ColumnType, SortOrder } from "antd/e
 import dayjs from "dayjs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
+import { ApiError } from "../http";
 import { tradingApi } from "../trading/api";
 import { SectorTags } from "../trading/sectors";
 import { PERIOD_LABEL, type RuleColumn, type StrategyKit } from "./kit";
@@ -18,10 +19,10 @@ import type { Study, StudySummary, StudyTest, StudyTestDetail, TestNumbers, Test
 const MUTED = "#8b98b5";
 const GREEN = "#33c088";
 const RED = "#ef5b6b";
-const color = (v: number | null | undefined) => (v == null || Math.abs(v) < 0.005 ? undefined : v > 0 ? GREEN : RED);
-const signed = (v: number | null | undefined, d = 1) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(d)}%`);
+export const color = (v: number | null | undefined) => (v == null || Math.abs(v) < 0.005 ? undefined : v > 0 ? GREEN : RED);
+export const signed = (v: number | null | undefined, d = 1) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(d)}%`);
 
-const months = (p?: [string, string]) => (p ? Math.round(dayjs(p[1]).diff(dayjs(p[0]), "day") / 30.44) : 0);
+export const months = (p?: [string, string]) => (p ? Math.round(dayjs(p[1]).diff(dayjs(p[0]), "day") / 30.44) : 0);
 const PERIOD_TIP: Record<string, (n: number) => string> = {
   practice: (n) => `The ${n} months before the exam.`,
   exam: (n) => `The last ${n} months, up to today.`,
@@ -38,7 +39,7 @@ const periodLabel = (k: string, p?: [string, string]) =>
   `${PERIOD_LABEL[k] ?? k.charAt(0).toUpperCase() + k.slice(1)}${p ? ` · ${months(p)} mo` : ""}`;
 const periodTip = (k: string, p?: [string, string], tips?: Record<string, (n: number) => string>) =>
   (tips?.[k] ?? PERIOD_TIP[k])?.(months(p)) ?? "";
-const span = (p?: [string, string]) => (p ? `${p[0]} → ${p[1]}` : "");
+export const span = (p?: [string, string]) => (p ? `${p[0]} → ${p[1]}` : "");
 
 /** The grid's sorting and filters, done by the server: each column says how it is sorted and filtered right now. */
 interface Controls {
@@ -118,15 +119,17 @@ function periodColumns<C>(period: string, range: [string, string] | undefined, c
   };
 }
 
-/** One test opened up: the rules in words, then per window its equity against holding, and each symbol's trades. */
-function TestDetailView<C extends { symbols: string[] }>({ test, periods, kit }: {
-  test: StudyTest<C>; periods: Record<string, [string, string]>; kit: StrategyKit<C>;
+/** One test opened up: the rules in words, then per window its equity against holding, and each symbol's trades.
+ *  gone: what to say instead of an error when the test no longer exists (a saved copy of a study since replaced). */
+export function TestDetailView<C extends { symbols: string[] }>({ test, periods, kit, gone }: {
+  test: Pick<StudyTest<C>, "id" | "config" | "extra" | "note">; periods: Record<string, [string, string]>; kit: StrategyKit<C>; gone?: string;
 }) {
   const [detail, setDetail] = useState<StudyTestDetail<C> | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    tradingApi.studyTest<C>(test.id).then(setDetail, (e) => setError(e instanceof Error ? e.message : String(e)));
-  }, [test.id]);
+    tradingApi.studyTest<C>(test.id).then(setDetail, (e) =>
+      setError(gone && e instanceof ApiError && e.status === 404 ? gone : e instanceof Error ? e.message : String(e)));
+  }, [test.id, gone]);
   const c = test.config;
   return (
     <div style={{ padding: "4px 8px" }}>
@@ -139,13 +142,13 @@ function TestDetailView<C extends { symbols: string[] }>({ test, periods, kit }:
           message={`Plus a filter the bots don't have yet: ${test.extra}. Saved as a setup, it keeps the rules only.`} />
       )}
       {test.note && <Alert type="info" showIcon message={test.note} style={{ marginBottom: 8 }} />}
-      {error && <Alert type="error" showIcon message={error} />}
+      {error && <Alert type={error === gone ? "info" : "error"} showIcon message={error} />}
       {!detail && !error && <Spin />}
       {detail && (
         <Row gutter={[12, 12]}>
           {Object.keys(periods).map((p) => {
             const d = detail.detail[p];
-            const x = test.results[p];
+            const x = detail.results[p]; // all its numbers (a saved copy keeps only the grid's)
             if (!d || !x) return null;
             const data = d.curve.map(([date, equity, hold]) => ({ date, equity, hold }));
             const traded = d.by_symbol.filter((s) => s.trades || s.status !== "watching");

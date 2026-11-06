@@ -1662,6 +1662,38 @@ def test_test_results_saves_a_setup_with_its_test(api):
     assert r.status_code == 422 and "is a dip setup, not a rotation one" in r.text
 
 
+def test_saved_setups_are_listed_with_their_sector_badges_and_a_tested_ones_all(api):
+    """The Saved tests tab shows the setups saved from every study together: each with its sector badges, and a tested
+    one with its All (its full windows back to back), worked out when listed, as for a bot."""
+    c, _, _ = api
+    periods = {**STUDY["periods"], "stress": ["2024-10-09", "2025-07-08"], "bear": ["2022-01-03", "2022-09-30"]}
+    study = c.put("/dip/studies", json={**STUDY, "periods": periods}).json()
+    results = {"practice": {"total_return_pct": 10.0}, "exam": {"total_return_pct": 10.0}, "stress": {"total_return_pct": -10.0},
+               "bear": {"total_return_pct": -50.0}}  # a window only some tests have: not part of All
+    c.post(f"/dip/studies/{study['id']}/tests", json=[one_setup("T3", 10.0, results=results)])
+    test = c.get(f"/dip/studies/{study['id']}/tests").json()["items"][0]
+    assert c.post("/dip/presets", json={"name": "Tested", "config": SETUP, "test_id": test["id"]}).status_code == 200
+    c.post("/dip/presets", json={"name": "Form", "config": {**SETUP, "symbols": ["XLE", "XOM", "CVX", "AAPL"]}})
+
+    listed = {p["name"]: p for p in c.get("/dip/presets").json()}
+    tested, form = listed["Tested"], listed["Form"]
+    assert tested["setup"]["all"] == pytest.approx(8.9)  # 0.9 x 1.1 x 1.1 - 1
+    assert (tested["setup"]["study"], tested["setup"]["periods"]) == ("Sweep 1", periods)
+    assert tested["sectors"] == ["Tech", "Financials"] and form["sectors"] == ["Energy", "Tech"]
+    assert form["setup"] is None
+    # Two windows or fewer can't be chained: no All, as in the grid
+    c.put("/dip/studies", json={**STUDY, "name": "Sweep 2"})
+    two = c.get("/dip/studies").json()[0]
+    c.post(f"/dip/studies/{two['id']}/tests", json=[one_setup("T4", 4.0)])
+    t4 = c.get(f"/dip/studies/{two['id']}/tests").json()["items"][0]
+    c.post("/dip/presets", json={"name": "Two windows", "config": SETUP, "test_id": t4["id"]})
+    assert {p["name"]: p for p in c.get("/dip/presets").json()}["Two windows"]["setup"]["all"] is None
+    # The rotation's list has them too
+    c.post("/rotation/presets", json={"name": "M", "config": {"symbols": ["SPY", "QQQ", "TLT"], "top_n": 2, "lookback_months": 12,
+                                                                  "skip_months": 1, "abs_filter": True, "fractional": True}})
+    assert c.get("/rotation/presets").json()[0]["sectors"] == ["Broad market", "Bonds"]
+
+
 def test_a_running_dip_bot_switches_to_a_saved_setup_its_rules_watchlist_and_tested_setup(api, monkeypatch):
     c, clock, broker = api
     _, tested = _tested_bot(c)

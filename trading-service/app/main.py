@@ -1242,6 +1242,19 @@ def _presets(session: Session, strategy: str) -> list[DipPreset]:
     return list(session.scalars(select(DipPreset).where(DipPreset.strategy == strategy).order_by(func.lower(DipPreset.name))))
 
 
+def _listed(session: Session, strategy: str) -> list[DipPresetOut]:
+    """A strategy's saved setups as the dashboard lists them (the pickers, the Saved tests tab): each with its symbols'
+    sector badges, by the bots' rule, and a tested one with its All worked out from the windows it keeps, like a bot's."""
+    yahoo = badges.yahoo_sectors(session)
+    out = []
+    for p in _presets(session, strategy):
+        o = DipPresetOut.model_validate(p)
+        if o.setup:
+            o = o.model_copy(update={"setup": o.setup.model_copy(update={"all": studies.all_return(p.setup["periods"], p.setup["results"])})})
+        out.append(o.model_copy(update={"sectors": badges.badges(p.config.get("symbols", []), yahoo)}))
+    return out
+
+
 def _save_preset(session: Session, name: str, config: dict, strategy: str, setup: dict | None = None) -> DipPreset:
     """Save a setup under a name; a name that exists (ignoring case) is replaced, unless it is the other strategy's.
     setup: the tested setup it is saved from (DipPreset.setup); None = from a form, and a replaced one loses its own."""
@@ -1310,7 +1323,7 @@ def _delete_preset(session: Session, preset_id: int, strategy: str) -> None:
 @app.get("/dip/presets", response_model=list[DipPresetOut])
 def list_dip_presets(session: Session = Depends(get_session)):
     """The dip buyer setups you saved, by name."""
-    return _presets(session, "dip")
+    return _listed(session, "dip")
 
 
 @app.post("/dip/presets", response_model=DipPresetOut)
@@ -1327,7 +1340,7 @@ def delete_dip_preset(preset_id: int, session: Session = Depends(get_session)):
 @app.get("/rotation/presets", response_model=list[DipPresetOut])
 def list_rotation_presets(session: Session = Depends(get_session)):
     """The momentum rotation setups you saved, by name."""
-    return _presets(session, "rotation")
+    return _listed(session, "rotation")
 
 
 @app.post("/rotation/presets", response_model=DipPresetOut)

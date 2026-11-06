@@ -7,8 +7,9 @@ import DipBotForm, { type DipBotInitial } from "../dip/DipBotForm";
 import { SignalsList, dipRules } from "../dip/DipParts";
 import DipResultView from "../dip/DipResultView";
 import { DIP_KIT } from "../dip/kit";
-import { backtestOnly, type DipBotCreate, type DipPresetConfig, pickRules } from "../dip/types";
+import { backtestOnly, type DipBotCreate, type DipPreset, type DipPresetConfig, pickRules } from "../dip/types";
 import { useDip } from "../dip/useDip";
+import SavedTests from "../studies/SavedTests";
 import TestResults from "../studies/TestResults";
 import { isListedEtf } from "../symbols";
 import { tradingApi } from "../trading/api";
@@ -135,6 +136,14 @@ export default function DipPage() {
     setFormOpen(true);
   };
 
+  /** The Saved tests tab's "Start a bot": like Test results', from the saved setup, so the bot keeps its copy of the test
+   *  (the test itself may be gone with a replaced batch). */
+  const startSaved = (config: DipPresetConfig, saved: DipPreset) => {
+    setInitial({ ...pickRules(config), name: saved.name, symbols: config.symbols, ...(config.initial_cash && { allocated_cash: config.initial_cash }) });
+    setFromTest({ id: saved.id, name: saved.setup?.name ?? saved.name, preset: true });
+    setFormOpen(true);
+  };
+
   const create = async (body: DipBotCreate) => {
     const link = fromTest && (fromTest.preset ? { setup_preset_id: fromTest.id } : { setup_test_id: fromTest.id });
     const bot = await tradingApi.createDipBot({ ...body, ...link });
@@ -229,6 +238,7 @@ export default function DipPage() {
           { key: "bots", label: `Bots & signals${dipBots.length ? ` (${dipBots.length})` : ""}`, children: live },
           { key: "backtest", label: "Backtest", children: backtest },
           { key: "tests", label: "Test results", children: <TestResults kit={DIP_KIT} onLoad={loadTest} onStartBot={startTest} /> },
+          { key: "saved", label: "Saved tests", children: <SavedTests kit={DIP_KIT} active={tab === "saved"} onLoad={loadTest} onStartBot={startSaved} /> },
         ]}
       />
       <DipBotForm

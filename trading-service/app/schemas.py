@@ -409,6 +409,7 @@ class DipPresetOut(BaseModel):
     strategy: str = "dip"
     config: dict  # as saved: DipPresetConfig or RotationPresetConfig (the dashboard fills any rule added since with its default)
     setup: "BotSetup | None" = None  # the tested setup it was saved from (no started_at); None = saved from a form
+    sectors: list[str] = []  # its symbols' sector badges, by the bots' rule (sectors.badges; in the lists only)
     created_at: datetime
     updated_at: datetime
 
