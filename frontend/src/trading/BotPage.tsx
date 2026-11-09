@@ -12,6 +12,7 @@ import { CartesianGrid, Legend, Line, LineChart, ReferenceDot, ResponsiveContain
 import AddMoney from "./AddMoney";
 import { tradingApi } from "./api";
 import BotForm from "./BotForm";
+import { BotMoneyHistory } from "./BotMoney";
 import { useConfirm } from "./confirm";
 import { BotRating } from "./rating";
 import { SectorBadges } from "./sectors";
@@ -29,6 +30,7 @@ import { usePolling } from "./usePolling";
 import WithdrawMoney from "./WithdrawMoney";
 
 const MUTED = "#8b98b5";
+const KPI = { height: "100%" };
 
 // ---------------------------------------------------------------------------
 // History tables
@@ -179,6 +181,7 @@ export default function BotPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [takeOpen, setTakeOpen] = useState(false);
+  const [moneyOpen, setMoneyOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
   // One poll for everything on the page, so all panels show the same moment
@@ -370,9 +373,9 @@ export default function BotPage() {
       )}
       {page.error && <Alert type="error" showIcon message={`Refresh failed: ${page.error}`} style={{ marginBottom: 16 }} />}
 
-      {/* ---------- KPIs ---------- */}
+      {/* ---------- KPIs (one height, as the Equity card has a line more) ---------- */}
       <Row gutter={[16, 16]}>
-        <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="Equity" value={usd(bot.equity)} />
+        <Col xs={12} md={8} xl={4}><Card size="small" style={KPI}><Statistic title="Equity" value={usd(bot.equity)} />
           <Tooltip title={bot.added_cash || bot.withdrawn_cash
             ? `${usd(bot.allocated_cash)} at the start${bot.added_cash ? `, ${usd(bot.added_cash)} added since` : ""}${bot.withdrawn_cash ? `, ${usd(bot.withdrawn_cash)} taken out (the return counts it)` : ""}`
             : undefined}>
@@ -381,20 +384,23 @@ export default function BotPage() {
               {bot.withdrawn_cash ? `, ${usd(bot.withdrawn_cash, 0)} taken out` : ""}
             </span>
           </Tooltip>
+          <div>
+            <Button type="link" size="small" style={{ padding: 0, height: "auto", fontSize: 12 }} onClick={() => setMoneyOpen(true)}>Money history</Button>
+          </div>
         </Card></Col>
         <Col xs={12} md={8} xl={4}>
-          <Card size="small">
+          <Card size="small" style={KPI}>
             <Statistic title="Return" value={pct(bot.return_pct)} valueStyle={{ color: pnlColor(bot.return_pct) }} />
             <span style={{ color: MUTED, fontSize: 12 }}>
               {rotation ? `all ${bot.universe?.length} held equally` : dip ? `starting ${bot.universe?.length} held equally` : "buy & hold"} {pct(bot.buy_hold_return_pct)}
             </span>
           </Card>
         </Col>
-        <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="Realized P&L" value={usd(bot.realized_pnl)} valueStyle={{ color: pnlColor(bot.realized_pnl) }} /><span style={{ color: MUTED, fontSize: 12 }}>closed trades</span></Card></Col>
-        <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="Unrealized P&L" value={usd(bot.unrealized_pnl)} valueStyle={{ color: pnlColor(bot.unrealized_pnl) }} /><span style={{ color: MUTED, fontSize: 12 }}>{many ? "open positions" : "open position"}</span></Card></Col>
-        <Col xs={12} md={8} xl={4}><Card size="small"><Statistic title="Cash" value={usd(bot.cash)} /><span style={{ color: MUTED, fontSize: 12 }}>uninvested</span></Card></Col>
+        <Col xs={12} md={8} xl={4}><Card size="small" style={KPI}><Statistic title="Realized P&L" value={usd(bot.realized_pnl)} valueStyle={{ color: pnlColor(bot.realized_pnl) }} /><span style={{ color: MUTED, fontSize: 12 }}>closed trades</span></Card></Col>
+        <Col xs={12} md={8} xl={4}><Card size="small" style={KPI}><Statistic title="Unrealized P&L" value={usd(bot.unrealized_pnl)} valueStyle={{ color: pnlColor(bot.unrealized_pnl) }} /><span style={{ color: MUTED, fontSize: 12 }}>{many ? "open positions" : "open position"}</span></Card></Col>
+        <Col xs={12} md={8} xl={4}><Card size="small" style={KPI}><Statistic title="Cash" value={usd(bot.cash)} /><span style={{ color: MUTED, fontSize: 12 }}>uninvested</span></Card></Col>
         <Col xs={12} md={8} xl={4}>
-          <Card size="small">
+          <Card size="small" style={KPI}>
             <Statistic title="Win rate" value={winRate(bot)} />
             <span style={{ color: MUTED, fontSize: 12 }}>
               {/* a rotation bot's trims count too: each sale books its slice of the cost as P&L */}
@@ -525,6 +531,7 @@ export default function BotPage() {
         />
       </Card>
 
+      <BotMoneyHistory bot={bot} open={moneyOpen} onClose={() => setMoneyOpen(false)} />
       <AddMoney bot={bot} open={addOpen} onClose={() => setAddOpen(false)}
         onAdded={() => { message.success("Money added"); setAddOpen(false); page.reload(); }} />
       <WithdrawMoney bot={bot} open={takeOpen} onClose={() => setTakeOpen(false)}

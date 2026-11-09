@@ -16,7 +16,13 @@ Only real-money accounts: the simulator has no account, and the Alpaca paper acc
 
 The start and the real deposits and withdrawals are rows in the database (MoneyMove without a bot), written down on the
 dashboard: no bot can know them, the repo is public so no amount goes in the code, they change without a restart, and the
-database's backups keep them. They are only records: nothing here reaches the broker."""
+database's backups keep them. They are only records: nothing here reaches the broker.
+
+A bot has its own, smaller history (of_bot), on any broker, as its records know it all:
+
+    its equity = start + added - taken out + its trades' gains and losses
+
+Its moves are the start, each Add money and each withdrawal, and its cash going back to the account when archived."""
 
 import re
 from collections import defaultdict
@@ -27,7 +33,7 @@ from sqlalchemy.orm import Session
 
 from .market import NY
 from .models import AccountFee, Bot, Event, MoneyMove
-from .schemas import LedgerMove, LedgerOut
+from .schemas import BotLedgerOut, BotMove, LedgerMove, LedgerOut
 from .trader import capital
 
 ACCOUNT_KINDS = ("start", "deposit", "withdrawal")
@@ -93,28 +99,43 @@ def backfill(session: Session) -> int:
     return written
 
 
+def _bots_moves(rows: list[MoneyMove]) -> list[dict]:
+    """The bots' adds and withdrawals, into the bot (negative: out of it). A withdrawal whose sales raise less than
+    asked is two rows at one moment, one withdrawal to the reader."""
+    same: dict[tuple, float] = defaultdict(float)
+    for m in rows:
+        same[m.bot_id, m.kind, m.at, m.note] += m.amount
+    out = []
+    for (bot_id, kind, at, note), amount in same.items():
+        if kind == "take_out" and amount > 0 and not note:
+            note = "A withdrawal's sales raised less than estimated: this stayed in the bot."
+        out.append(dict(at=at, kind=kind, bot_id=bot_id, amount=amount, note=note))
+    return out
+
+
+def _archived_at(session: Session, bot_ids: list[int]) -> dict[int, datetime]:
+    """When each archived bot was archived, by its last "archived" event."""
+    return dict(session.execute(select(Event.bot_id, func.max(Event.created_at)).where(
+        Event.kind == "archived", Event.bot_id.in_(bot_ids)).group_by(Event.bot_id)).all())
+
+
 def _moves(session: Session, broker: str, bots: list[Bot]) -> list[LedgerMove]:
     """The history, the earliest first: every move of the account's free cash. A new bot's start and an archived bot's
     cash coming back come from the bots themselves; a fee booked to a bot after it was archived is already in that cash."""
     names = {b.id: b.name for b in bots}
-    archived = dict(session.execute(select(Event.bot_id, func.max(Event.created_at)).where(
-        Event.kind == "archived", Event.bot_id.in_(list(names))).group_by(Event.bot_id)).all())
+    archived = _archived_at(session, list(names))
     lines: list[dict] = []
     for b in bots:
         lines.append(dict(at=b.created_at, kind="new_bot", bot_id=b.id, amount=-b.allocated_cash))
         if b.status == "archived":
             lines.append(dict(at=archived.get(b.id) or b.created_at, kind="archived", bot_id=b.id, amount=b.cash))
-    # A withdrawal whose sales raise less than asked is two rows at one moment, one withdrawal to the reader
-    same: dict[tuple, float] = defaultdict(float)
+    theirs = []
     for m in session.scalars(select(MoneyMove).where(MoneyMove.broker == broker)):
         if m.bot_id is None:
             lines.append(dict(id=m.id, at=m.at, kind=m.kind, amount=m.amount, note=m.note))
         else:
-            same[m.bot_id, m.kind, m.at, m.note] += m.amount
-    for (bot_id, kind, at, note), amount in same.items():
-        if kind == "take_out" and amount > 0 and not note:
-            note = "A withdrawal's sales raised less than estimated: this stayed in the bot."
-        lines.append(dict(at=at, kind=kind, bot_id=bot_id, amount=-amount, note=note))
+            theirs.append(m)
+    lines += [{**x, "amount": -x["amount"]} for x in _bots_moves(theirs)]  # into a bot is out of free cash
     for f in session.scalars(select(AccountFee).where(AccountFee.broker == broker, AccountFee.bot_id.is_(None))):
         lines.append(dict(at=f.created_at, kind="fee", amount=-f.amount, note=f.description))
     lines.sort(key=lambda x: (x["kind"] != "start", x["at"]))  # the start comes first, whatever day it was given
@@ -160,3 +181,24 @@ def account(session: Session, broker: str, label: str, equity_of: dict[int, floa
         difference=None if equity is None or expected is None else round(equity - expected, 2), error=error,
         checked_at=checked_at, first_bot_day=bots[0].created_at.astimezone(NY).date() if bots else None,
         moves=_moves(session, broker, bots))
+
+
+def of_bot(session: Session, b: Bot, equity: float) -> BotLedgerOut:
+    """A bot's money from its start (module docstring), on any broker. equity: the bot's, cash and what it holds; an
+    archived bot holds nothing, so its cash, which went back to the account. The running total after each line is what
+    is still put in: below zero once more came out than went in."""
+    lines = [dict(at=b.created_at, kind="start", amount=b.allocated_cash, note="")]
+    lines += _bots_moves(list(session.scalars(select(MoneyMove).where(MoneyMove.bot_id == b.id))))
+    archived = b.status == "archived"
+    if archived:
+        lines.append(dict(at=_archived_at(session, [b.id]).get(b.id) or b.created_at, kind="archived", amount=-b.cash, note=""))
+    lines.sort(key=lambda x: ({"start": 0, "archived": 2}.get(x["kind"], 1), x["at"]))
+    moves, net = [], 0.0
+    for x in lines:
+        net = round(net + x["amount"], 2)
+        moves.append(BotMove(at=x["at"], kind=x["kind"], amount=round(x["amount"], 2), net_after=net, note=x["note"]))
+    added, taken_out = round(b.added_cash or 0.0, 2), round(b.withdrawn_cash or 0.0, 2)
+    put_in = round(capital(b) - taken_out, 2)
+    fees = session.scalar(select(func.sum(AccountFee.amount)).where(AccountFee.bot_id == b.id)) or 0.0
+    return BotLedgerOut(bot_id=b.id, start=b.allocated_cash, added=added, taken_out=taken_out, net=put_in, equity=equity,
+                        result=round(equity - put_in, 2), fees=round(fees, 2), archived=archived, moves=moves)

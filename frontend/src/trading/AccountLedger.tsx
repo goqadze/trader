@@ -94,8 +94,8 @@ function MoneyForm({ ledger, onSaved }: { ledger: Ledger; onSaved: (l: Ledger) =
   );
 }
 
-/** One line of the sum. */
-const Line = ({ label, v, signed, strong, tip }: { label: string; v: number | null; signed?: boolean; strong?: boolean; tip?: string }) => {
+/** One line of the sum (a bot's too: BotMoney.tsx). */
+export const Line =({ label, v, signed, strong, tip }: { label: string; v: number | null; signed?: boolean; strong?: boolean; tip?: string }) => {
   const shown = v == null ? "unknown" : signed ? <Money v={v} /> : usd(v);
   const text = strong ? <b>{label}</b> : label;
   return (

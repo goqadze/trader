@@ -35,7 +35,7 @@ from .db import SessionLocal, get_session, init_db, utcnow
 from .market import is_open, next_decision_time, ny_date, session_bounds
 from .models import (DIP, HOLDINGS_STRATEGIES, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPreset, DipStudy, DipTest,
                      EquitySnapshot, Event, Holding, MoneyMove, Notification, Order, Signal, WatchItem)
-from .schemas import (AccountOut, ArchivedBot, ArchivedOut, BotBrief, BotCreate, BotKind, BotOut, BotSetupSave, BotSort, BotTableOut, BotTotals, BotUpdate, CapitalAdd, CapitalWithdraw, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn,
+from .schemas import (AccountOut, ArchivedBot, ArchivedOut, BotBrief, BotCreate, BotKind, BotLedgerOut, BotOut, BotSetupSave, BotSort, BotTableOut, BotTotals, BotUpdate, CapitalAdd, CapitalWithdraw, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn,
                       DipPresetOut, DipStudyIn, DipStudyOut, DipStudySummaryOut, DipTestDetailOut, DipTestIn, DipTestOut, DipTestPageOut,
                       EmailAlertsIn, EmailAlertsOut, EventOut, HoldingOut, LedgerOut, MoneyIn, NotificationOut, RiskReportOut, NotifyCategoryOut, OrderOut,
                       PRESET_CONFIGS, RatingIn, RotationBotCreate, RotationPresetIn, SectorsIn, SignalOut, SnapshotOut, StatusOut, StudyStrategy,
@@ -1212,6 +1212,14 @@ def list_orders(bot_id: int, limit: int = Query(200, le=1000), offset: int = 0, 
 def list_bot_events(bot_id: int, limit: int = Query(200, le=1000), offset: int = 0, session: Session = Depends(get_session)):
     _get_bot(session, bot_id)
     return _page(session, Event, bot_id, Event.id, limit, offset)
+
+
+@app.get("/bots/{bot_id}/ledger", response_model=BotLedgerOut)
+def bot_ledger(bot_id: int, session: Session = Depends(get_session)):
+    """A bot's money from its start: the sum from what was put in to its equity, and every move of money into or out of
+    it (ledger.of_bot)."""
+    bot = _get_bot(session, bot_id)
+    return ledger.of_bot(session, bot, bot_equity(session, bot, _price(bot)))
 
 
 @app.get("/bots/{bot_id}/equity", response_model=list[SnapshotOut])

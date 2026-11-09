@@ -1059,6 +1059,31 @@ class LedgerOut(BaseModel):
     moves: list[LedgerMove]  # the earliest first
 
 
+class BotMove(BaseModel):
+    """One line of a bot's money history: money going into the bot or out of it, seen from the bot."""
+
+    at: datetime
+    kind: Literal["start", "add", "take_out", "archived"]
+    amount: float  # into the bot; negative: out of it
+    net_after: float  # put in less taken out, after this line
+    note: str
+
+
+class BotLedgerOut(BaseModel):
+    """A bot's money from its start (ledger.bot): start + added - taken_out = net, and net + result = equity."""
+
+    bot_id: int
+    start: float
+    added: float
+    taken_out: float
+    net: float  # what is still put in: start + added - taken_out
+    equity: float  # an archived bot's: the cash that went back to the account
+    result: float  # equity - net: its trades' gains and losses, closed and open, after fees
+    fees: float  # Alpaca's fees booked to it, already in the result
+    archived: bool
+    moves: list[BotMove]  # the earliest first
+
+
 class AccountOut(BaseModel):
     """One real broker account (Alpaca paper or live) and how much of its own money no bot holds (GET /accounts)."""
     broker: str

@@ -413,6 +413,29 @@ export interface Ledger {
   moves: LedgerMove[]; // the earliest first
 }
 
+/** One line of a bot's money history: money going into the bot or out of it (BotMove). */
+export interface BotMove {
+  at: string;
+  kind: "start" | "add" | "take_out" | "archived";
+  amount: number; // into the bot; negative: out of it
+  net_after: number; // put in less taken out, after this line
+  note: string;
+}
+
+/** A bot's money from its start (trading-service GET /bots/{id}/ledger, ledger.of_bot). */
+export interface BotLedger {
+  bot_id: number;
+  start: number;
+  added: number;
+  taken_out: number;
+  net: number; // start + added - taken_out
+  equity: number; // an archived bot's: the cash that went back to the account
+  result: number; // equity - net
+  fees: number; // Alpaca's fees booked to it, already in the result
+  archived: boolean;
+  moves: BotMove[]; // the earliest first
+}
+
 // --- Email alerts (trading-service notify.py, /email-alerts) ---
 
 export type NotifyCategory = "trades" | "risk" | "problems" | "signals" | "report";

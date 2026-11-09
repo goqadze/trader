@@ -318,3 +318,63 @@ def test_the_add_and_withdraw_endpoints_record_their_moves(client, session, monk
 
     rows = session.query(MoneyMove).filter_by(bot_id=bot.id).all()
     assert sorted((m.kind, m.amount) for m in rows) == [("add", 15.0), ("take_out", -40.0)]
+
+
+# A bot's own money history (ledger.of_bot, GET /bots/{id}/ledger)
+
+def _bot_ledger(client, bot):
+    r = client.get(f"/bots/{bot.id}/ledger")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_a_bots_history_adds_up_from_its_start_to_its_equity(client, session):
+    """Started with $200, $5 added before the history was kept, $30 added, $50 asked out of which $49.95 came; then its
+    trades made $12. Every move is a line, the last one at what is still put in, and that plus the gain is its equity."""
+    bot = make_bot(session, broker="paper", cash=200.0, allocated_cash=200.0, peak_equity=200.0, created_at=at(14, 0))
+    session.add(MoneyMove(broker="paper", bot_id=bot.id, kind="add", amount=5.0, at=bot.created_at,
+                          note="From before this history was kept: the bot's events don't say when."))
+    bot.added_cash, bot.cash = 5.0, 205.0
+    add_capital(session, bot, 30.0, NOW)
+    withdraw.take_out(session, bot, 50.0, at(23, 30))
+    withdraw.take_out(session, bot, -0.05, at(23, 30))  # its sales raised less: one withdrawal of $49.95
+    bot.cash = round(bot.cash + 12.0, 2)  # what its trades made
+    session.commit()
+
+    r = _bot_ledger(client, bot)
+
+    assert [(m["kind"], m["amount"], m["net_after"]) for m in r["moves"]] == [
+        ("start", 200.0, 200.0), ("add", 5.0, 205.0), ("add", 30.0, 235.0), ("take_out", -49.95, 185.05)]
+    assert r["moves"][1]["note"].startswith("From before")  # on the start's moment, after the start
+    assert (r["start"], r["added"], r["taken_out"], r["net"]) == (200.0, 35.0, 49.95, 185.05)
+    assert r["net"] == r["moves"][-1]["net_after"]
+    assert (r["equity"], r["result"], r["archived"]) == (197.05, 12.0, False)
+
+
+def test_a_bots_history_counts_what_it_holds_and_its_fees(client, session):
+    bot = make_bot(session, broker=LIVE, cash=40.0, allocated_cash=100.0, peak_equity=100.0, shares=1, last_price=55.0,
+                   created_at=at(14, 0))
+    session.add(AccountFee(broker=LIVE, activity_id="a", day=date(2025, 6, 2), amount=0.02, bot_id=bot.id))
+    session.add(AccountFee(broker=LIVE, activity_id="b", day=date(2025, 6, 2), amount=0.07, bot_id=None))  # not its own
+    session.commit()
+
+    r = _bot_ledger(client, bot)
+    assert (r["equity"], r["result"], r["fees"]) == (95.0, -5.0, 0.02)
+    assert [m["kind"] for m in r["moves"]] == ["start"]
+
+
+def test_an_archived_bots_cash_going_back_is_its_last_line(client, session):
+    """What it lost stays as what was put in and never came back."""
+    bot = make_bot(session, broker="paper", cash=90.0, allocated_cash=100.0, peak_equity=100.0, status="archived",
+                   created_at=at(14, 0))
+    session.add(Event(bot_id=bot.id, kind="archived", message="Archived by user", created_at=at(16, 0, 7)))
+    session.commit()
+
+    r = _bot_ledger(client, bot)
+    assert [(m["kind"], m["amount"], m["net_after"]) for m in r["moves"]] == [("start", 100.0, 100.0), ("archived", -90.0, 10.0)]
+    assert r["moves"][-1]["at"].startswith("2025-06-07T")
+    assert (r["equity"], r["result"], r["archived"]) == (90.0, -10.0, True)
+
+
+def test_a_missing_bot_has_no_history(client):
+    assert client.get("/bots/999/ledger").status_code == 404

@@ -415,6 +415,12 @@ a fractional fill's rounding, or for a minute around a fill the account's read b
 stay in the database, not in the code or `.env`: this repo is public, they change without a restart and the backups keep
 them. Only real-money accounts: the paper account is shared with the Mac's bots, and the simulator has no account.
 
+Each bot has its own Money history too, under its Equity card (`GET /bots/{id}/ledger`, `ledger.of_bot`), on any broker:
+what it started with, plus money added, minus money taken out, is what is still put in; that plus its gain or loss (its
+trades, closed and open, after the Alpaca fees booked to it) is its equity. E.g. $200 at the start, $50 added and $30
+taken out is $220 put in; equity $231 is a gain of $11. Below it every move, the newest first, with what is put in after it: the start,
+each Add money and Take out, and an archived bot's cash going back to the account.
+
 Alpaca's fees (`fees.py`): Alpaca takes two small fees a trading day from the live account, not per order: a CAT fee
 ($0.01 on any day with trades, buys too) and a REG fee (SEC and FINRA on the day's sales, rounded up to a cent). Its
 orders come back without them, so once an hour trading-service reads the account's fee lines of the last 30 days and
