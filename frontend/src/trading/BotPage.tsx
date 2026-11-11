@@ -3,12 +3,14 @@ import {
   ThunderboltOutlined,
 } from "@ant-design/icons";
 import {
-  Alert, App as AntApp, Button, Card, Col, Descriptions, Empty, Row, Space, Statistic, Table, Tabs, Tag, Tooltip, Typography,
+  Alert, App as AntApp, Button, Card, Col, Descriptions, Empty, Grid, Row, Space, Statistic, Table, Tabs, Tag, Tooltip, Typography,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { CartesianGrid, Legend, Line, LineChart, ReferenceDot, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis } from "recharts";
+import {
+  CartesianGrid, Legend, Line, LineChart, ReferenceDot, ReferenceLine, ResponsiveContainer, Tooltip as RTooltip, XAxis, YAxis,
+} from "recharts";
 import AddMoney from "./AddMoney";
 import { tradingApi } from "./api";
 import BotForm from "./BotForm";
@@ -25,7 +27,7 @@ import { DipEditForm, DipHoldingsCard, DipParamsCard, SignalsList, WatchlistCard
 import { strategyInfo, strategyName, type StrategyId } from "../strategies";
 import { HoldingsCard, RotationEditForm, RotationParamsCard } from "./RotationParts";
 import { MarketStatus } from "./TradingPage";
-import type { Bot, BotUpdate, Decision, Order, RotationBotUpdate, Snapshot, TradingEvent } from "./types";
+import type { Bot, BotUpdate, Decision, Drawdown, Drawdowns, Order, RotationBotUpdate, Snapshot, TradingEvent } from "./types";
 import { usePolling } from "./usePolling";
 import WithdrawMoney from "./WithdrawMoney";
 
@@ -125,19 +127,45 @@ function DecisionDetail({ d }: { d: Decision }) {
 }
 
 // ---------------------------------------------------------------------------
-// Equity chart
+// Gain chart + worst drawdowns
 // ---------------------------------------------------------------------------
 
-/** Bot equity per trading day vs. simply buying the stock with the same capital on day one (a rotation bot: its whole
- *  universe in equal parts, the rotation backtest's benchmark). */
-function EquityCard({ bot, snapshots, orders }: { bot: Bot; snapshots: Snapshot[]; orders: Order[] }) {
-  const held = isRotation(bot) ? `All ${bot.universe?.length} held equally` : isDip(bot) ? `Starting ${bot.universe?.length} held equally` : "Buy & hold";
-  const data = snapshots.map((s) => ({
-    day: s.day,
-    bot: Math.round(s.equity * 100) / 100,
-    // Saved per day since money can be added (it buys more on that day); days from before: the starting capital alone
-    buyhold: s.benchmark ?? (bot.benchmark_price ? Math.round((bot.allocated_cash * s.price) / bot.benchmark_price * 100) / 100 : null),
-  }));
+const MOVE = "#e0b341"; // a day money was added or taken out
+const shortDay = (day: string) => new Date(`${day}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+const heldLabel = (bot: Bot) =>
+  isRotation(bot) ? `All ${bot.universe?.length} held equally` : isDip(bot) ? `Starting ${bot.universe?.length} held equally` : "Buy & hold";
+
+interface GainPoint { day: string; bot: number; buyhold: number | null; equity: number; put_in: number; moved: number }
+
+/** The chart's hover box: the day's gains and the money behind them. */
+function GainTip({ active, payload, held }: { active?: boolean; payload?: { payload: GainPoint }[]; held: string }) {
+  const p = active ? payload?.[0]?.payload : undefined;
+  if (!p) return null;
+  return (
+    <div style={{ background: "#182031", border: "1px solid #2a3550", padding: "8px 10px", fontSize: 12, maxWidth: 260 }}>
+      <div style={{ color: "#e6ebf5", marginBottom: 4 }}>{p.day}</div>
+      <div><span style={{ color: "#4f8cff" }}>Bot</span> <span style={{ color: pnlColor(p.bot) }}>{usd(p.bot)}</span></div>
+      {p.buyhold != null && <div><span style={{ color: MUTED }}>{held}</span> <span style={{ color: pnlColor(p.buyhold) }}>{usd(p.buyhold)}</span></div>}
+      <div style={{ color: MUTED, marginTop: 4 }}>Equity {usd(p.equity)} of {usd(p.put_in)} put in</div>
+      {p.moved !== 0 && <div style={{ color: MOVE }}>{p.moved > 0 ? `${usd(p.moved)} added` : `${usd(-p.moved)} taken out`}</div>}
+    </div>
+  );
+}
+
+/** What the bot made or lost in dollars per trading day (its equity less the money put in by then, so adding or taking
+ *  out money doesn't move it) vs. simply buying the stock with the same money (a rotation bot: its whole universe in
+ *  equal parts, the rotation backtest's benchmark; buy & hold buys and sells it with each move of money). */
+function GainCard({ bot, snapshots, orders }: { bot: Bot; snapshots: Snapshot[]; orders: Order[] }) {
+  const phone = Grid.useBreakpoint().sm === false;
+  const held = heldLabel(bot);
+  const data: GainPoint[] = [];
+  let before = bot.allocated_cash;
+  for (const s of snapshots) {
+    const putIn = s.put_in ?? before;
+    data.push({ day: s.day, bot: s.gain ?? s.equity - putIn, buyhold: s.benchmark_gain ?? null, equity: s.equity, put_in: putIn,
+                moved: Math.round((putIn - before) * 100) / 100 });
+    before = putIn;
+  }
   // Mark filled trades on the curve (orders are timestamped; snapshots are New York trading days)
   const nyDay = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
   const markers = orders
@@ -146,24 +174,72 @@ function EquityCard({ bot, snapshots, orders }: { bot: Bot; snapshots: Snapshot[
     .filter((m) => m.point);
 
   return (
-    <Card title={`Equity vs. ${held.toLowerCase()}`} size="small" style={{ marginTop: 16 }}>
+    <Card title={`Gain vs. ${held.toLowerCase()}`} size="small" style={{ height: "100%" }}>
       {data.length < 2 ? (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="The chart fills in as the bot runs: one point per trading day, updated every few minutes while the market is open." />
       ) : (
-        <ResponsiveContainer width="100%" height={260}>
-          <LineChart data={data}>
-            <CartesianGrid stroke="#2a3550" />
-            <XAxis dataKey="day" tick={{ fill: MUTED, fontSize: 11 }} minTickGap={40} />
-            <YAxis tick={{ fill: MUTED, fontSize: 11 }} width={70} domain={["auto", "auto"]} />
-            <RTooltip contentStyle={{ background: "#182031", border: "1px solid #2a3550" }} labelStyle={{ color: "#e6ebf5" }} />
-            <Legend />
-            <Line type="monotone" dataKey="bot" name={bot.name} stroke="#4f8cff" dot={false} strokeWidth={2} isAnimationActive={false} />
-            <Line type="monotone" dataKey="buyhold" name={held} stroke={MUTED} dot={false} strokeDasharray="5 4" isAnimationActive={false} />
-            {markers.map(({ o, point }) => (
-              <ReferenceDot key={o.id} x={point!.day} y={point!.bot} r={5} fill={o.side === "BUY" ? "#33c088" : "#ef5b6b"} stroke="none" />
-            ))}
-          </LineChart>
-        </ResponsiveContainer>
+        <>
+          <div style={{ color: MUTED, fontSize: 12, marginBottom: 8 }}>
+            Its equity less the money put in by then, so adding or taking out money doesn't move the lines
+            {data.some((d) => d.moved) && <> (<span style={{ color: MOVE }}>yellow</span>: a day money moved)</>}.
+          </div>
+          <ResponsiveContainer width="100%" height={260}>
+            <LineChart data={data}>
+              <CartesianGrid stroke="#2a3550" />
+              <XAxis dataKey="day" tick={{ fill: MUTED, fontSize: 11 }} minTickGap={40} />
+              <YAxis tick={{ fill: MUTED, fontSize: 11 }} width={70} domain={["auto", "auto"]} tickFormatter={(v: number) => usd(v, 0)} />
+              <RTooltip content={<GainTip held={held} />} />
+              <Legend />
+              <ReferenceLine y={0} stroke="#3a4766" />
+              {data.filter((d) => d.moved).map((d) => (
+                <ReferenceLine key={d.day} x={d.day} stroke={MOVE} strokeDasharray="3 3"
+                  label={phone ? undefined : { value: `${d.moved > 0 ? "+" : "-"}${usd(Math.abs(d.moved), 0)}`, position: "insideTopRight", fill: MOVE, fontSize: 11 }} />
+              ))}
+              <Line type="monotone" dataKey="bot" name={bot.name} stroke="#4f8cff" dot={false} strokeWidth={2} isAnimationActive={false} />
+              <Line type="monotone" dataKey="buyhold" name={held} stroke={MUTED} dot={false} strokeDasharray="5 4" isAnimationActive={false} />
+              {markers.map(({ o, point }) => (
+                <ReferenceDot key={o.id} x={point!.day} y={point!.bot} r={5} fill={o.side === "BUY" ? "#33c088" : "#ef5b6b"} stroke="none" />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </>
+      )}
+    </Card>
+  );
+}
+
+const ddColumns: ColumnsType<Drawdown> = [
+  { title: "High → bottom", dataIndex: "peak_day", render: (v: string, d) => <span style={{ whiteSpace: "nowrap" }}>{shortDay(v)} → {shortDay(d.bottom_day)}</span> },
+  { title: "Drop", dataIndex: "depth_pct", align: "right", render: (v: number) => <span style={{ color: pnlColor(v) }}>{pct(v, 1)}</span> },
+  { title: "Lost", dataIndex: "loss", align: "right", render: (v: number) => <span style={{ color: pnlColor(v) }}>{usd(v)}</span> },
+  { title: "Back by", dataIndex: "recovered_day", render: (v: string | null) => (v ? shortDay(v) : <Tag color="orange" style={{ marginInlineEnd: 0 }}>not yet</Tag>) },
+  { title: "Days", dataIndex: "days", align: "right", render: (v: number, d) => (d.recovered_day ? v : `${v} so far`) },
+];
+
+/** The bot's worst falls from a high (trading-service performance.drawdowns), with buy & hold's worst and the breaker. */
+function DrawdownsCard({ bot, dd }: { bot: Bot; dd?: Drawdowns }) {
+  return (
+    <Card size="small" style={{ height: "100%" }} title={
+      <Tooltip title={"Each fall of the bot's return from a high, until it was back at that high. Measured in % from its daily "
+        + "points, so money added or taken out is neither a gain nor a loss. Lost: the dollars it lost from the high to the "
+        + "bottom. Days: calendar days below that high."}>
+        Worst drawdowns
+      </Tooltip>
+    }>
+      {!dd ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} /> : (
+        <>
+          <Space size={[16, 4]} wrap style={{ fontSize: 12, marginBottom: 8 }}>
+            <span>Now: {dd.now_pct < 0 ? <span style={{ color: pnlColor(dd.now_pct) }}>{pct(dd.now_pct, 1)} from its high</span> : "at its high"}</span>
+            {dd.buy_hold_max_pct != null && <span style={{ color: MUTED }}>{heldLabel(bot)}: worst {pct(dd.buy_hold_max_pct, 1)}</span>}
+            <Tooltip title="The breaker pauses the bot when its equity falls this far below its highest, checked every few minutes (money added or taken out moves that high with it), so it can see a fall the daily points miss.">
+              <span style={{ color: MUTED }}>Breaker: {bot.max_drawdown_pct ? `pauses at -${frac(bot.max_drawdown_pct)}` : "off"}</span>
+            </Tooltip>
+          </Space>
+          <Table<Drawdown>
+            rowKey="peak_day" size="small" columns={ddColumns} dataSource={dd.worst} pagination={false} scroll={{ x: 400 }}
+            locale={{ emptyText: "No fall from a high yet." }}
+          />
+        </>
       )}
     </Card>
   );
@@ -189,12 +265,13 @@ export default function BotPage() {
     () => Promise.all([
       tradingApi.getBot(id), tradingApi.decisions(id), tradingApi.orders(id), tradingApi.events(id), tradingApi.equity(id),
       tradingApi.botSignals(id), // only dip bots have any
+      tradingApi.drawdowns(id),
     ]),
     15_000,
     [id],
   );
   const status = usePolling(tradingApi.status, 30_000);
-  const [bot, decisions = [], orders = [], events = [], snapshots = [], signals = []] = page.data ?? [];
+  const [bot, decisions = [], orders = [], events = [], snapshots = [], signals = [], drawdowns] = page.data ?? [];
 
   // Why is it paused? Show the most recent event that paused it (user, breaker, reconcile, halt)
   const pauseReason = useMemo(
@@ -481,7 +558,10 @@ export default function BotPage() {
         </Row>
       )}
 
-      <EquityCard bot={bot} snapshots={snapshots} orders={orders} />
+      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+        <Col xs={24} xl={15}><GainCard bot={bot} snapshots={snapshots} orders={orders} /></Col>
+        <Col xs={24} xl={9}><DrawdownsCard bot={bot} dd={drawdowns} /></Col>
+      </Row>
 
       {/* ---------- History ---------- */}
       <Card size="small" style={{ marginTop: 16 }}>

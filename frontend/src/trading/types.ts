@@ -254,7 +254,28 @@ export interface Snapshot {
   cash: number;
   shares: number;
   price: number;
-  benchmark?: number | null; // buy & hold's value that day, added money included (null on days from before)
+  benchmark?: number | null; // buy & hold's value that day, money added and taken out included
+  // Money added and taken out moves the equity without being a gain (trading-service performance.points): what was
+  // put in and not taken out by the time that day's equity was measured, and the gain over it
+  put_in?: number | null;
+  gain?: number | null;
+  benchmark_gain?: number | null;
+}
+
+/** One fall from a high and the climb back, in % so money moved on the way isn't a gain or a loss (performance.drawdowns). */
+export interface Drawdown {
+  peak_day: string; // the high it fell from (the bot's start when it fell from the first day on)
+  bottom_day: string;
+  recovered_day: string | null; // null: still below that high
+  depth_pct: number; // negative
+  loss: number; // dollars lost from the high to the bottom, negative
+  days: number; // calendar days from the high to the recovery, or to the last day while still below
+}
+
+export interface Drawdowns {
+  worst: Drawdown[]; // the deepest first, up to 5
+  now_pct: number; // how far below its high it is now (0 = at a high)
+  buy_hold_max_pct: number | null;
 }
 
 /** The bot table's sortable columns (trading-service schemas.BotSort). */

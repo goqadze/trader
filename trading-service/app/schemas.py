@@ -966,7 +966,30 @@ class SnapshotOut(BaseModel):
     cash: float
     shares: int
     price: float
-    benchmark: float | None = None  # buy & hold's value that day, money added included (None on days from before)
+    benchmark: float | None = None  # buy & hold's value that day, money added and taken out included
+    # Money added and taken out moves the equity without being a gain (performance.points): what was put in and not
+    # taken out by the time that day's equity was measured, and the gain over it, the bot's and buy & hold's
+    put_in: float | None = None
+    gain: float | None = None
+    benchmark_gain: float | None = None
+
+
+class DrawdownOut(BaseModel):
+    """One fall from a high and the climb back (performance.drawdowns), measured in % so that money added or taken out
+    on the way doesn't count as a gain or a loss."""
+
+    peak_day: date  # the high it fell from (the bot's start when it fell from the first day on)
+    bottom_day: date
+    recovered_day: date | None  # the first day back at that high; None: still below it
+    depth_pct: float  # from the high to the bottom, negative
+    loss: float  # the dollars it lost from the high to the bottom (the chart's gain line), negative
+    days: int  # calendar days from the high to the recovery, or to the last day while still below
+
+
+class DrawdownsOut(BaseModel):
+    worst: list[DrawdownOut]  # the deepest first, up to 5
+    now_pct: float  # how far below its high it is at its last point (0 = at a high)
+    buy_hold_max_pct: float | None  # buy & hold's deepest fall over the same days (None: no buy & hold price)
 
 
 class EventOut(BaseModel):

@@ -27,16 +27,16 @@ from pydantic import ValidationError
 from sqlalchemy import case, delete, func, select, text
 from sqlalchemy.orm import Session, defer
 
-from . import auth, dip, fees, journal, ledger, notify, risk_report, rotation, scheduler, studies, withdraw
+from . import auth, dip, fees, journal, ledger, notify, performance, risk_report, rotation, scheduler, studies, withdraw
 from . import sectors as badges
 from .brokers import SHARED_ACCOUNT_BROKERS, BrokerError, catalog, get_broker
 from .config import settings
 from .db import SessionLocal, get_session, init_db, utcnow
 from .market import is_open, next_decision_time, ny_date, session_bounds
 from .models import (DIP, HOLDINGS_STRATEGIES, OPEN_ORDER_STATUSES, ROTATION, Bot, Decision, DipPreset, DipStudy, DipTest,
-                     EquitySnapshot, Event, Holding, MoneyMove, Notification, Order, Signal, WatchItem)
+                     Event, Holding, MoneyMove, Notification, Order, Signal, WatchItem)
 from .schemas import (AccountOut, ArchivedBot, ArchivedOut, BotBrief, BotCreate, BotKind, BotLedgerOut, BotOut, BotSetupSave, BotSort, BotTableOut, BotTotals, BotUpdate, CapitalAdd, CapitalWithdraw, DecisionOut, DipBotCreate, DipBotUpdate, DipPresetIn,
-                      DipPresetOut, DipStudyIn, DipStudyOut, DipStudySummaryOut, DipTestDetailOut, DipTestIn, DipTestOut, DipTestPageOut,
+                      DipPresetOut, DipStudyIn, DipStudyOut, DipStudySummaryOut, DipTestDetailOut, DipTestIn, DipTestOut, DipTestPageOut, DrawdownsOut,
                       EmailAlertsIn, EmailAlertsOut, EventOut, HoldingOut, LedgerOut, MoneyIn, NotificationOut, RiskReportOut, NotifyCategoryOut, OrderOut,
                       PRESET_CONFIGS, RatingIn, RotationBotCreate, RotationPresetIn, SectorsIn, SignalOut, SnapshotOut, StatusOut, StudyStrategy,
                       WatchItemOut, WatchSymbols, WithdrawalPlanOut, WithdrawalSaleOut, check_window)
@@ -1224,8 +1224,15 @@ def bot_ledger(bot_id: int, session: Session = Depends(get_session)):
 
 @app.get("/bots/{bot_id}/equity", response_model=list[SnapshotOut])
 def list_equity(bot_id: int, session: Session = Depends(get_session)):
-    _get_bot(session, bot_id)
-    return list(session.scalars(select(EquitySnapshot).where(EquitySnapshot.bot_id == bot_id).order_by(EquitySnapshot.day)))
+    """The bot's equity per day, with what was put in by then and the gain over it (performance.points)."""
+    return performance.points(session, _get_bot(session, bot_id))
+
+
+@app.get("/bots/{bot_id}/drawdowns", response_model=DrawdownsOut)
+def list_drawdowns(bot_id: int, session: Session = Depends(get_session)):
+    """The bot's worst falls from a high, money added and taken out left out (performance.drawdowns)."""
+    bot = _get_bot(session, bot_id)
+    return performance.drawdowns(bot, performance.points(session, bot))
 
 
 @app.get("/bots/{bot_id}/signals", response_model=list[SignalOut])

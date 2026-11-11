@@ -300,8 +300,8 @@ order at the broker, and Alpaca's crypto orders take only market, limit and stop
 Once a backtest convinces you, click **Trade this strategy** on its result, or open **Live trading → New bot**.
 Each **bot** is one symbol + one parameter set + its own capital, so you can run many stocks, or the
 same stock with different parameters side by side, and compare them. Every bot has a page with its
-position, equity vs. buy & hold, and its full history: every decision (with the agent's reasoning),
-every order, and an audit log of every change.
+position, its gain vs. buy & hold and its worst drawdowns (money added or taken out left out), and its full history:
+every decision (with the agent's reasoning), every order, and an audit log of every change.
 
 How a bot runs (`trading-service/app/scheduler.py`):
 
@@ -458,6 +458,15 @@ of the account changes, so the account's free cash goes down or up):
   the smaller equity, and a single-symbol bot's stop order at the broker is placed again for the shares left. Each
   withdrawal is in the bot's events and emailed with the trades (category *Buys and sells*); its sales show as
   `withdrawal` orders.
+- **The bot page's chart and drawdowns** (`trading-service/app/performance.py`, `GET /bots/{id}/equity` and
+  `/drawdowns`): the chart draws the gain in dollars, each day's equity less what was put in and not taken out by then,
+  so adding or taking out money doesn't move it (a dashed yellow line marks the day; its last point is the Money
+  history's gain). Buy & hold's gain is drawn the same way. The worst drawdowns (up to 5) are falls from a high, until
+  it's back at that high, of the bot's return chained day by day, so a withdrawal isn't a fall and an add isn't a climb
+  back; a day's move counts for half of that day. Each shows its high and bottom, the drop in %, the dollars lost, when
+  it was back (or "not yet") and how long it lasted, beside buy & hold's worst over the same days. Example: $200 grows
+  to $240, $100 is taken out ($140 left), then it falls to $126. In dollars that reads as −47.5% from $240; the
+  drawdown is −10%, $14 lost, and the gain line goes from $40 to $26.
 
 Safety built in:
 

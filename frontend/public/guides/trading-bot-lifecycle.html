@@ -518,7 +518,7 @@
           <div class="term"><dt>Unrealized P&amp;L</dt><dd>Profit or loss “on paper” for shares you still hold. Changes with the price.</dd></div>
           <div class="term"><dt>Win rate</dt><dd>Share of finished trades that made money.</dd></div>
           <div class="term"><dt>Peak equity</dt><dd>The bot's best equity so far. Used by the drawdown breaker.</dd></div>
-          <div class="term"><dt>Drawdown</dt><dd>How far equity has fallen from its peak, in %.</dd></div>
+          <div class="term"><dt>Drawdown</dt><dd>How far equity has fallen from its peak, in %. The bot page lists its worst ones, measured on its return, so money added or taken out is neither a fall nor a climb back.</dd></div>
         </dl>
       </div>
 
@@ -603,7 +603,7 @@
           <div class="term"><dt>Write-ahead order</dt><dd>Saving an order before sending it, so a crash can't lose or duplicate it.</dd></div>
           <div class="term"><dt>Reconcile</dt><dd>Comparing the real account's shares with the bot's records. A mismatch pauses the bot.</dd></div>
           <div class="term"><dt>Kill switch (Halt all)</dt><dd>One menu option (More ▾ → Halt all bots) that pauses every bot.</dd></div>
-          <div class="term"><dt>Equity snapshot</dt><dd>One chart point per bot per trading day, updated during the day.</dd></div>
+          <div class="term"><dt>Equity snapshot</dt><dd>One chart point per bot per trading day, updated during the day. The chart draws its gain: the equity less the money put in by then.</dd></div>
           <div class="term"><dt>Audit log (events)</dt><dd>Diary of everything: created, paused, settings changed, orders, errors.</dd></div>
           <div class="term"><dt>Archive</dt><dd>Retire a bot without deleting its history.</dd></div>
         </dl>

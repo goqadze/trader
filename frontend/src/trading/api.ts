@@ -6,7 +6,7 @@ import { request as http } from "../http";
 import type { RotationPresetConfig } from "../rotation/types";
 import type { SavedSetup, Study, StudyStrategy, StudySummary, StudyTestDetail, StudyTestPage, TestQuery } from "../studies/types";
 import type {
-  AccountInfo, ArchivedBots, Bot, BotCreate, BotLedger, BotTable, BotTableQuery, BotUpdate, CapitalAdd, CapitalWithdraw, Decision, EmailAlert, EmailAlerts, EmailAlertsSave, Ledger, MoneyIn, Order, RotationBotCreate, RotationBotUpdate, Snapshot,
+  AccountInfo, ArchivedBots, Bot, BotCreate, BotLedger, BotTable, BotTableQuery, BotUpdate, CapitalAdd, CapitalWithdraw, Decision, Drawdowns, EmailAlert, EmailAlerts, EmailAlertsSave, Ledger, MoneyIn, Order, RotationBotCreate, RotationBotUpdate, Snapshot,
   TradingEvent, TradingStatus, WithdrawalPlan,
 } from "./types";
 
@@ -54,6 +54,7 @@ export const tradingApi = {
   orders: (id: number) => request<Order[]>("GET", `/bots/${id}/orders`),
   events: (id: number) => request<TradingEvent[]>("GET", `/bots/${id}/events`),
   equity: (id: number) => request<Snapshot[]>("GET", `/bots/${id}/equity`),
+  drawdowns: (id: number) => request<Drawdowns>("GET", `/bots/${id}/drawdowns`),
   allEvents: (broker?: string) => request<TradingEvent[]>("GET", broker ? `/events?broker=${encodeURIComponent(broker)}` : "/events"),
   // Dip buyers (trading-service dip.py): rules, the watchlist (changes while it runs), the blacklist, signals
   createDipBot: (body: DipBotCreate) => request<Bot>("POST", "/bots/dip", body),
